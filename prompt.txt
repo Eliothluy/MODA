@@ -1,0 +1,515 @@
+Atue como um engenheiro sênior de ns-3/5G-LENA, especialista em 5G NR MAC scheduling, OFDMA scheduling, QoS flows, RLC/MAC, tracing, CMake do ns-3 e simulações reprodutíveis.
+
+Contexto do projeto:
+Tenho uma simulação 5G-LENA network-only inspirada no artigo RSLAQ. A versão atual usa:
+- 1 gNB
+- 20 UEs
+- 3 slices: eMBB, URLLC e MTC
+- 5 UEs eMBB
+- 5 UEs URLLC
+- 10 UEs MTC
+- 2.59 GHz
+- 10 MHz
+- numerologia 0 / SCS 15 kHz
+- TDD
+- 50 PRBs aproximados
+- tráfego UDP downlink
+- cenários: low, normal, congestion, stressed, insufficient
+- scheduler atual funcional: `ns3::NrMacSchedulerOfdmaQos`
+- slicing atual aproximado: BWP-per-slice + QoS-flow routing
+
+O problema:
+A abordagem atual funciona como baseline network-only, mas ainda não é um scheduler MAC slice-aware real. Os PRBs usados por slice não são medidos a partir do MAC, e o `prb-allocation.csv` atual contém orçamento aproximado, não medição real. Quero implementar o scheduler real descrito na análise: um scheduler OFDMA QoS + slice-aware, com quota de recursos por slice, medição real de RBG/PRB por slice e uso de um único BWP compartilhado.
+
+Objetivo principal:
+Implementar um scheduler MAC slice-aware real no 5G-LENA, baseado no `NrMacSchedulerOfdmaQos`, que controle e registre recursos por slice dentro de um único pool OFDMA.
+
+Crie uma nova classe:
+- `NrMacSchedulerOfdmaSliceQos`
+
+Arquivos esperados:
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ofdma-slice-qos.h`
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ofdma-slice-qos.cc`
+
+Não modifique diretamente `NrMacSchedulerOfdmaQos`, exceto se for inevitável. Prefira herança ou extensão limpa.
+
+A nova classe deve usar como base:
+- `NrMacSchedulerOfdmaQos`
+
+Motivo:
+O `NrMacSchedulerOfdmaQos` já funciona com QoS flows e foi validado no cenário atual. A nova classe deve preservar a lógica QoS existente, mas adicionar consciência de slice, quota de recursos, medição real e controle por slice.
+
+Tarefa 1 — Investigar a API real do 5G-LENA local:
+Antes de implementar, inspecione os arquivos:
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ofdma-qos.h`
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ofdma-qos.cc`
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ofdma-rr.h`
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ofdma-rr.cc`
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ofdma.h`
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ofdma.cc`
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ns3.h`
+- `ns-3-dev/contrib/nr/model/nr-mac-scheduler-ns3.cc`
+- outros arquivos relacionados a `FTResources`, `UePtrAndBufferReq`, RBG allocation e scheduler callbacks.
+
+Procure onde são usados:
+- `GetUeCompareDlFn()`
+- `GetUeCompareUlFn()`
+- `AssignedDlResources()`
+- `NotAssignedDlResources()`
+- `AssignedUlResources()`
+- `NotAssignedUlResources()`
+- loop real de alocação OFDMA
+- estrutura `FTResources`
+- representação de RBG/PRB
+- callbacks/traces do scheduler
+- mapeamento RNTI/LCID/logical channel
+
+Não invente métodos. Use apenas a API real da versão local.
+
+Tarefa 2 — Criar a classe `NrMacSchedulerOfdmaSliceQos`:
+A nova classe deve herdar de:
+
+```cpp
+class NrMacSchedulerOfdmaSliceQos : public NrMacSchedulerOfdmaQos
+
+A classe deve ter:
+
+static TypeId GetTypeId();
+construtor e destrutor
+método para configurar share por slice
+método para configurar mapeamento RNTI -> SliceId
+método opcional para configurar mapeamento (RNTI, LCID) -> SliceId, caso a API permita
+método para limpar/resetar contadores por frame
+método para exportar contadores por slice
+trace source para alocação real de RBG/PRB por slice
+
+Use IDs:
+
+1 = eMBB
+2 = URLLC
+3 = MTC
+
+A classe deve aceitar shares:
+
+eMBB
+URLLC
+MTC
+
+Exemplo:
+
+eMBB = 0.33
+URLLC = 0.40
+MTC = 0.27
+
+A soma dos shares deve ser validada com tolerância numérica.
+
+Tarefa 3 — Mapeamento slice:
+Implemente primeiro o mapeamento simples:
+
+std::map<uint16_t, uint8_t> m_rntiToSlice;
+
+A função principal deve ser algo como:
+
+void SetRntiToSlice(uint16_t rnti, uint8_t sliceId);
+uint8_t GetSliceIdFromRnti(uint16_t rnti) const;
+
+Se o RNTI não for encontrado:
+
+usar slice default configurável, ou
+lançar erro/log de warning claro, ou
+tratar como best-effort/MTC.
+
+Para o cenário atual, cada UE pertence a somente um slice. Então RNTI -> SliceId é suficiente. Só implemente (RNTI, LCID) -> SliceId se for simples na API local.
+
+Tarefa 4 — Medição real de recursos por slice:
+Implemente medição real de recursos atribuídos pelo MAC.
+
+Use os hooks existentes herdados do scheduler, como:
+
+AssignedDlResources(...)
+AssignedUlResources(...)
+
+Dentro desses métodos:
+
+Chame primeiro ou depois o método da classe base, conforme a lógica correta.
+Obtenha o RNTI do UE.
+Mapeie RNTI -> SliceId.
+Extraia de FTResources o número real de RBGs ou recursos atribuídos.
+Atualize contadores internos por slice:
+RBGs usados no slot
+RBGs usados no frame
+RBGs usados acumulados
+PRBs aproximados, se a conversão RBG -> PRB estiver disponível
+Emita um trace source com os valores.
+
+Não estime PRB a partir de throughput. O recurso usado deve vir do scheduler.
+
+Se o scheduler trabalha internamente com RBG, então registre RBG como métrica primária. PRB pode ser derivado apenas se a relação RBG/PRB estiver disponível de forma correta.
+
+Tarefa 5 — Trace source:
+Adicione um trace source, por exemplo:
+
+TracedCallback<
+    uint64_t,   // timeNs ou timeMs
+    uint16_t,   // frame ou slot, se disponível
+    uint16_t,   // rnti
+    uint8_t,    // sliceId
+    uint32_t,   // assignedRbg
+    uint32_t,   // usedRbgThisSlot
+    uint32_t,   // usedRbgThisFrame
+    uint32_t,   // budgetRbgThisFrame
+    double      // effectiveShare
+> m_sliceResourceTrace;
+
+Registre em GetTypeId() como:
+
+"SliceResourceAllocation"
+ou
+"SlicePrbAllocation"
+
+O nome deve ser claro e documentado.
+
+O trace deve permitir gerar prb-allocation.csv ou rbg-allocation.csv com dados reais do scheduler.
+
+Tarefa 6 — Orçamento por slice:
+Implemente orçamento por slice por janela de frame.
+
+A lógica desejada:
+
+o MAC opera por slot/TTI;
+o controle de slice deve considerar janela de 10 ms;
+para numerologia 0, 1 slot = 1 ms;
+10 slots = 1 frame de 10 ms.
+
+Implemente contadores:
+
+slot atual
+frame atual
+recursos usados por slice no frame
+orçamento por slice no frame
+
+Exemplo conceitual:
+
+m_dlBudgetRbgThisFrame[SLICE_EMBB] = round(totalRbgFrame * embbShare);
+m_dlBudgetRbgThisFrame[SLICE_URLLC] = round(totalRbgFrame * urllcShare);
+m_dlBudgetRbgThisFrame[SLICE_MTC] = totalRbgFrame - embbBudget - urllcBudget;
+
+Se a API só conhece os RBGs por slot, use:
+
+orçamento por slot, ou
+orçamento acumulado por frame com atualização a cada slot.
+
+Prefira orçamento por frame se for simples; caso contrário, implemente orçamento por slot e documente.
+
+Tarefa 7 — Implementar primeiro uma versão “measurement-only”:
+Antes da hard quota, implemente uma versão que:
+
+usa a lógica original do NrMacSchedulerOfdmaQos;
+não altera a seleção de UEs;
+apenas mede recursos reais por slice;
+exporta trace por slice.
+
+Essa etapa é obrigatória. Ela deve compilar e rodar.
+
+Critério de sucesso:
+
+a simulação roda com NrMacSchedulerOfdmaSliceQos;
+os três slices recebem tráfego;
+o CSV mostra RBG/PRB real por slice;
+prbUsedMeasured deixa de ser -1.
+
+Tarefa 8 — Implementar soft slice-aware scheduling:
+Depois da versão measurement-only, implemente priorização soft por slice.
+
+Sobrescreva GetUeCompareDlFn() e, se possível, GetUeCompareUlFn().
+
+A ordenação deve considerar:
+
+déficit do slice em relação ao orçamento;
+lógica QoS original do NrMacSchedulerOfdmaQos.
+
+Exemplo conceitual:
+
+double GetSliceDebt(uint8_t sliceId) const
+{
+    double budget = m_dlBudgetRbgThisFrame.at(sliceId);
+    double used = m_dlUsedRbgThisFrame.at(sliceId);
+
+    if (budget <= 0.0)
+    {
+        return -1.0;
+    }
+
+    return (budget - used) / budget;
+}
+
+Comparador:
+
+se dois UEs pertencem a slices diferentes, priorizar o slice com maior déficit;
+se pertencem ao mesmo slice, usar a comparação QoS original:
+NrMacSchedulerUeInfoQos::CompareUeWeightsDl(...)
+ou função equivalente real da API local.
+
+Não quebre a lógica QoS existente. O scheduler deve continuar funcionando com QoS flows.
+
+Tarefa 9 — Implementar hard quota real:
+Depois que measurement-only e soft quota funcionarem, implemente hard quota real no loop OFDMA.
+
+Para isso, talvez seja necessário:
+
+herdar de outra classe mais baixa;
+copiar/adaptar parte do loop de NrMacSchedulerOfdmaRR;
+ou modificar minimamente o ponto onde o próximo UE/RBG é escolhido.
+
+A hard quota deve:
+
+Identificar slices ativos com UEs que possuem buffer.
+Escolher um slice elegível para cada RBG/recurso.
+Selecionar UE dentro do slice usando QoS/RR.
+Impedir que um slice ultrapasse seu orçamento quando há slices concorrentes ainda abaixo do orçamento.
+Permitir reaproveitamento de recursos ociosos:
+se um slice não tem demanda/buffer, seus recursos podem ser redistribuídos;
+se todos os outros slices estão sem demanda, não forçar alocação artificial.
+
+Use uma política determinística inicial:
+
+escolher o slice com maior déficit normalizado:
+(budget - used) / budget.
+
+Depois, se for simples, adicionar modo probabilístico:
+
+sortear slice com probabilidades iguais aos shares:
+[p_eMBB, p_URLLC, p_MTC].
+
+Parâmetro sugerido:
+
+SliceSelectionMode = DEFICIT | PROBABILISTIC
+
+A versão inicial deve usar:
+
+DEFICIT
+
+Tarefa 10 — Intra-slice scheduler:
+Dentro de cada slice, implemente inicialmente:
+
+QoS original do NrMacSchedulerOfdmaQos, ou
+RR se for mais simples.
+
+Ideal:
+
+se o slice tem vários UEs candidatos, ordenar usando a lógica QoS original;
+preservar prioridade de QoS flows;
+não quebrar HARQ/retransmissões.
+
+Não implemente PF/BCQI se isso exigir reescrever grande parte do 5G-LENA. Documente que a primeira versão usa QoS/RR intra-slice.
+
+Tarefa 11 — HARQ e retransmissões:
+Não desative HARQ.
+
+Verifique como o scheduler pai trata retransmissões. A quota por slice não deve quebrar retransmissões.
+
+Se retransmissões são priorizadas antes da nova alocação, preserve esse comportamento.
+
+Documente:
+
+se retransmissões contam para o orçamento do slice;
+ou se retransmissões são tratadas fora da quota.
+
+Preferência:
+
+contar retransmissões no uso real do slice;
+mas não bloquear retransmissões críticas por quota, se isso comprometer funcionamento básico.
+
+Tarefa 12 — Atualizar o script principal:
+Atualize o script da simulação, atualmente algo como:
+
+scratch/rslaq-network-only-ready.cc
+
+Crie ou modifique para:
+
+usar um único BWP compartilhado de 10 MHz;
+não usar mais BWP-per-slice como modo principal;
+todos os UEs devem compartilhar o mesmo BWP;
+configurar o scheduler:
+ns3::NrMacSchedulerOfdmaSliceQos;
+manter QoS flows/bearers por slice, se possível;
+manter tráfego UDP DL por slice;
+manter mapeamento de portas por slice:
+eMBB: 1000+
+URLLC: 2000+
+MTC: 3000+
+após associação/attach dos UEs, obter RNTI de cada UE;
+configurar RNTI -> SliceId no scheduler.
+
+Parâmetros de linha de comando:
+
+--schedulerType=ns3::NrMacSchedulerOfdmaSliceQos
+--embbShare=0.33
+--urllcShare=0.40
+--mtcShare=0.27
+--sliceMode=singleBwpMacSlice
+--sliceSelectionMode=DEFICIT
+--enableSliceTrace=true
+
+Mantenha compatibilidade com:
+
+--scenario=low|normal|congestion|stressed|insufficient
+--simTime
+--warmup
+--statsPeriod
+--ratesPerUe
+--rngRun
+--outputDir
+
+Tarefa 13 — Atualizar outputs:
+Atualize os arquivos gerados:
+
+run-config.txt
+Deve indicar:
+slicingMode=singleBwpMacSlice
+scheduler real usado
+shares configurados
+se quota é measurement-only, soft quota ou hard quota
+se PRB/RBG usado é medido de trace real
+prbUsedMeasured=1 quando estiver usando trace real
+prb-allocation.csv ou rbg-allocation.csv
+Deve conter medição real do scheduler:
+timeMs
+frame
+slot
+rnti
+sliceId
+sliceName
+assignedRbg
+usedRbgThisSlot
+usedRbgThisFrame
+budgetRbgThisFrame
+effectiveShare
+quotaMode
+slice-stats.csv
+Manter:
+timeMs
+scenario
+sliceId
+sliceName
+numUes
+offeredRateMbps
+rxThroughputMbps
+avgDelayMs
+avgJitterMs
+packetLossRate
+rbgUsed
+prbUsedApprox, se disponível
+effectiveResourceShare
+slaCompliant
+summary.json
+Adicionar:
+resourceShareMeasured
+rbgUsedTotal
+effectiveResourceShare
+quotaMode
+schedulerName
+
+Tarefa 14 — SLA compliance:
+Continue usando SLAs apenas para avaliação, não para otimização dentro do scheduler.
+
+SLAs:
+
+eMBB:
+low/normal/congestion: mínimo 10 Mbps
+stressed/insufficient: mínimo 20 Mbps
+soft max:
+low/normal/congestion: 15 Mbps
+stressed/insufficient: 25 Mbps
+URLLC:
+usar delay/loss como proxy se buffer real não estiver disponível
+ideal: buffer/RLC queue se a API permitir
+MTC:
+sem SLA rígido
+
+Regra importante para low:
+
+se offeredRate_eMBB < SLA_min_eMBB, não marcar outage apenas porque rxThroughput < SLA_min;
+nesse caso marcar como demandLimited.
+
+Tarefa 15 — Preparar interface para DDQN/SAC:
+O scheduler deve expor método para atualizar shares dinamicamente:
+
+void SetSliceShares(double embbShare, double urllcShare, double mtcShare);
+
+O script deve permitir passar shares por linha de comando.
+
+Não implemente DDQN/SAC agora dentro do C++, mas deixe o scheduler pronto para ser controlado externamente por:
+
+runner Python;
+xApp-like controller;
+futuro agente DDQN/SAC.
+
+Tarefa 16 — Build system:
+Atualize o build do ns-3/5G-LENA:
+
+CMakeLists.txt correspondente ao módulo NR;
+incluir os novos .cc e .h;
+garantir que a classe aparece para TypeId;
+garantir que SetSchedulerTypeId("ns3::NrMacSchedulerOfdmaSliceQos") funciona.
+
+Critérios obrigatórios de aceitação:
+
+./ns3 build compila sem erros.
+O script roda com:
+--schedulerType=ns3::NrMacSchedulerOfdmaSliceQos
+O script roda nos cinco cenários:
+low
+normal
+congestion
+stressed
+insufficient
+Os três slices recebem tráfego com o novo scheduler.
+prb-allocation.csv ou rbg-allocation.csv contém recurso real vindo do scheduler.
+O run-config mostra:
+slicingMode=singleBwpMacSlice
+prbUsedMeasured=1
+A versão measurement-only funciona antes da soft/hard quota.
+A versão soft quota funciona preservando QoS flows.
+A versão hard quota, se implementada, não quebra HARQ nem deixa slices com tráfego zerado indevidamente.
+Não deixar TODOs, pseudocódigo ou chamadas a métodos inexistentes.
+Comentar claramente:
+mapeamento RNTI -> SliceId;
+cálculo de orçamento por slice;
+medição de RBG/PRB real;
+lógica de seleção do slice;
+lógica intra-slice;
+limitações da versão.
+
+Formato da entrega:
+Primeiro, entregue um diagnóstico:
+
+onde o loop real de alocação OFDMA está localizado;
+quais hooks foram usados;
+qual estrutura representa RBG/PRB;
+como RNTI foi obtido e mapeado;
+o que foi possível implementar: measurement-only, soft quota e/ou hard quota.
+
+Depois, entregue a implementação:
+
+lista de arquivos criados;
+lista de arquivos modificados;
+código completo dos novos arquivos;
+patches necessários nos arquivos existentes;
+alterações no CMake;
+comandos de build;
+comandos para rodar os cinco cenários;
+exemplo de saída esperada dos CSVs.
+
+Comandos mínimos esperados:
+
+./ns3 build
+
+./ns3 run "scratch/rslaq-network-only-ready --scenario=low --schedulerType=ns3::NrMacSchedulerOfdmaSliceQos --sliceMode=singleBwpMacSlice"
+./ns3 run "scratch/rslaq-network-only-ready --scenario=normal --schedulerType=ns3::NrMacSchedulerOfdmaSliceQos --sliceMode=singleBwpMacSlice"
+./ns3 run "scratch/rslaq-network-only-ready --scenario=congestion --schedulerType=ns3::NrMacSchedulerOfdmaSliceQos --sliceMode=singleBwpMacSlice"
+./ns3 run "scratch/rslaq-network-only-ready --scenario=stressed --schedulerType=ns3::NrMacSchedulerOfdmaSliceQos --sliceMode=singleBwpMacSlice"
+./ns3 run "scratch/rslaq-network-only-ready --scenario=insufficient --schedulerType=ns3::NrMacSchedulerOfdmaSliceQos --sliceMode=singleBwpMacSlice"
+
+Observação metodológica:
+A implementação final desejada deve substituir a aproximação BWP-per-slice por um scheduler MAC slice-aware real em um único BWP. A versão BWP-per-slice pode permanecer como fallback ou baseline, mas não deve ser o modo principal para a reprodução do artigo.

@@ -1,0 +1,7 @@
+{
+    "simTime": [4],
+    "appStart": [0.5],
+    "scenario": ["normal"],
+    "seed": [1],
+    "indicationPeriodicity": [10]
+}

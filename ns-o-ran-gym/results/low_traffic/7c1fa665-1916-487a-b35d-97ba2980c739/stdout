@@ -1,0 +1,3 @@
+RSLAQ: SetSlicingParameters slice 0: dedicated=26%, min=26%, max=100%
+RSLAQ: SetSlicingParameters slice 1: dedicated=50%, min=50%, max=100%
+RSLAQ: SetSlicingParameters slice 2: dedicated=23%, min=23%, max=100%
