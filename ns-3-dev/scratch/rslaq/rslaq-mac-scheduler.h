@@ -12,6 +12,9 @@
 
 #include "ns3/nr-mac-scheduler-ofdma-rr.h"
 
+#include <fstream>
+#include <vector>
+
 namespace ns3
 {
 
@@ -79,6 +82,11 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      */
     int32_t GetSliceIndexForRnti(uint16_t rnti) const;
 
+    /**
+     * @brief Print the current slice configuration to the log
+     */
+    void DumpSliceConfiguration() const;
+
   protected:
     std::shared_ptr<NrMacSchedulerUeInfo> CreateUeRepresentation(
         const NrMacCschedSapProvider::CschedUeConfigReqParameters& params) const override;
@@ -112,7 +120,9 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      * @brief Sort UEs within a slice by the selected intra-slice algorithm
      */
     void SortUeVectorByAlgorithm(std::vector<UePtrAndBufferReq>& ueVector,
-                                 IntraSliceAlgorithm algo) const;
+                                  IntraSliceAlgorithm algo) const;
+
+    void OpenCsvFiles() const;
 
     uint32_t m_numSlices{0};
     std::vector<double> m_prbWeights;                     // per-slice PRB proportion
@@ -121,6 +131,12 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
 
     double m_timeWindow{99.0}; //!< PF averaging time window
     double m_alpha{0.0};       //!< PF fairness index (0 = full fairness)
+
+    bool m_fallbackUnmappedToSlice0{false}; //!< If true, unmapped UEs are forced into slice 0
+    mutable bool m_firstRun{true};          //!< Used to trigger one-time debug dump
+
+    mutable std::ofstream m_sliceAllocCsv;   //!< Slice allocation metrics
+    mutable std::ofstream m_unmappedRntiCsv; //!< Unmapped RNTI log
 };
 
 } // namespace ns3

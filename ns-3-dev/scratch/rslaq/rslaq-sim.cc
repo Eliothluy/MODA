@@ -2,9 +2,12 @@
 /*
  * RSLAQ Simulation — ns-3 / 5G-LENA
  *
- * Topologia: 1 gNB, 20 UEs (5 eMBB + 5 URLLC + 10 MTC)
+ * Protótipo de scheduler slice-aware inspirado no artigo RSLAQ.
+ * NÃO é o RSLAQ completo com DRL — nesta fase validamos apenas o
+ * particionamento de RBGs por slice e o mapeamento RNTI → slice.
+ *
+ * Topologia: 1 gNB, N UEs (eMBB + URLLC + MTC configuráveis)
  * PHY: 2.59 GHz (n38), 10 MHz, numerologia mu=0 (SCS 15 kHz)
- * Scheduler: RslaqMacScheduler (meta-scheduler com particionamento de PRBs por slice)
  *
  * Cenários de tráfego (DL):
  *   1 = Low traffic:  eMBB 50 Kbps  | URLLC 1 Mbps  | MTC 2 Mbps
@@ -12,8 +15,6 @@
  *   3 = Congestion:   eMBB 100 Mbps | URLLC 1 Mbps  | MTC 100 Mbps
  *   4 = Stressed:     eMBB 100 Mbps | URLLC 1 Mbps  | MTC 100 Mbps (SLA targets differ)
  *   5 = Insufficient: eMBB 100 Mbps | URLLC 2 Mbps  | MTC 100 Mbps
- *
- * Estatísticas por UE e por slice extraídas a cada 10 ms via FlowMonitor.
  */
 
 #include "rslaq-mac-scheduler.h"
@@ -54,10 +55,11 @@ enum class SliceType : uint8_t
 };
 
 static const uint32_t NUM_SLICES = 3;
-static const uint32_t NUM_UE_EMBB = 5;
-static const uint32_t NUM_UE_URLLC = 5;
-static const uint32_t NUM_UE_MTC = 10;
-static const uint32_t NUM_UE_TOTAL = NUM_UE_EMBB + NUM_UE_URLLC + NUM_UE_MTC;
+
+// Número de UEs por slice — podem ser sobrescritos via CommandLine
+static uint32_t g_numUeEmbb = 5;
+static uint32_t g_numUeUrllc = 5;
+static uint32_t g_numUeMtc = 10;
 
 struct ScenarioConfig
 {
@@ -120,6 +122,7 @@ struct SimState
 };
 
 static SimState g_sim;
+static std::vector<double> g_sliceWeights;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -128,11 +131,11 @@ static SimState g_sim;
 static SliceType
 GetSliceForUe(uint16_t ueId)
 {
-    if (ueId >= 1 && ueId <= NUM_UE_EMBB)
+    if (ueId >= 1 && ueId <= g_numUeEmbb)
     {
         return SliceType::EMBB;
     }
-    else if (ueId > NUM_UE_EMBB && ueId <= NUM_UE_EMBB + NUM_UE_URLLC)
+    else if (ueId > g_numUeEmbb && ueId <= g_numUeEmbb + g_numUeUrllc)
     {
         return SliceType::URLLC;
     }
@@ -148,11 +151,11 @@ NumUesPerSlice(SliceType s)
     switch (s)
     {
     case SliceType::EMBB:
-        return NUM_UE_EMBB;
+        return g_numUeEmbb;
     case SliceType::URLLC:
-        return NUM_UE_URLLC;
+        return g_numUeUrllc;
     case SliceType::MTC:
-        return NUM_UE_MTC;
+        return g_numUeMtc;
     default:
         return 0;
     }
@@ -316,6 +319,62 @@ StatsCallback()
 // ---------------------------------------------------------------------------
 
 static void
+ConfigureSliceMapping(Ptr<RslaqMacScheduler> scheduler, NetDeviceContainer ueNetDev)
+{
+    std::vector<std::vector<uint32_t>> sliceRntis(NUM_SLICES);
+    std::cout << "\n=== UE Mapping (RNTI real após attach) ===\n"
+              << std::setw(4) << "Idx" << " | "
+              << std::setw(6) << "IMSI" << " | "
+              << std::setw(6) << "RNTI" << " | "
+              << std::setw(8) << "SliceId" << " | "
+              << std::setw(8) << "SliceType" << "\n"
+              << "-------------------------------------------\n";
+
+    for (uint32_t i = 0; i < ueNetDev.GetN(); ++i)
+    {
+        uint16_t ueId = static_cast<uint16_t>(i + 1);
+        SliceType slice = GetSliceForUe(ueId);
+        uint32_t sliceIdx = static_cast<uint32_t>(slice);
+
+        Ptr<NrUeNetDevice> ueDev = DynamicCast<NrUeNetDevice>(ueNetDev.Get(i));
+        uint16_t rnti = UINT16_MAX;
+        uint64_t imsi = 0;
+        if (ueDev)
+        {
+            if (ueDev->GetRrc())
+            {
+                rnti = ueDev->GetRrc()->GetRnti();
+            }
+            imsi = ueDev->GetImsi();
+        }
+
+        if (rnti == UINT16_MAX || rnti == 0)
+        {
+            std::cerr << "WARNING: UE " << ueId
+                      << " ainda não possui RNTI válido no momento do mapeamento!\n";
+        }
+
+        sliceRntis[sliceIdx].push_back(rnti);
+        g_sim.ueToSlice[ueId] = slice;
+
+        std::cout << std::setw(4) << ueId << " | "
+                  << std::setw(6) << imsi << " | "
+                  << std::setw(6) << rnti << " | "
+                  << std::setw(8) << sliceIdx << " | "
+                  << std::setw(8) << SliceName(slice) << "\n";
+    }
+    std::cout << "==========================================\n\n";
+
+    scheduler->SetSliceUeMapping(NUM_SLICES, sliceRntis);
+
+    std::vector<RslaqMacScheduler::IntraSliceAlgorithm> defaultAlgos = {
+        RslaqMacScheduler::IntraSliceAlgorithm::PF,
+        RslaqMacScheduler::IntraSliceAlgorithm::PF,
+        RslaqMacScheduler::IntraSliceAlgorithm::PF};
+    scheduler->SetSliceConfiguration(g_sliceWeights, defaultAlgos);
+}
+
+static void
 WriteFinalCsv(const std::string& prefix)
 {
     {
@@ -366,6 +425,23 @@ WriteFinalCsv(const std::string& prefix)
 }
 
 // ---------------------------------------------------------------------------
+// Parse weights string "w0,w1,w2"
+// ---------------------------------------------------------------------------
+
+static std::vector<double>
+ParseWeights(const std::string& str)
+{
+    std::vector<double> w;
+    std::stringstream ss(str);
+    std::string token;
+    while (std::getline(ss, token, ','))
+    {
+        w.push_back(std::stod(token));
+    }
+    return w;
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -382,6 +458,7 @@ main(int argc, char* argv[])
     uint32_t indicationPeriodMs = 10;
     std::string tddPattern = "D|D|D|D|D|D|D|D|D|D";
     double txPowerDbm = 43.0;
+    std::string weightsStr = "0.3333,0.4000,0.2667";
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("scenario", "1-5 or name", scenarioName);
@@ -392,6 +469,10 @@ main(int argc, char* argv[])
     cmd.AddValue("periodMs", "Stats indication period (ms)", indicationPeriodMs);
     cmd.AddValue("tddPattern", "TDD slot pattern string", tddPattern);
     cmd.AddValue("txPower", "gNB TX power (dBm)", txPowerDbm);
+    cmd.AddValue("embbUes", "Number of eMBB UEs", g_numUeEmbb);
+    cmd.AddValue("urllcUes", "Number of URLLC UEs", g_numUeUrllc);
+    cmd.AddValue("mtcUes", "Number of MTC UEs", g_numUeMtc);
+    cmd.AddValue("weights", "Slice weights as comma-separated list (eMBB,URLLC,MTC)", weightsStr);
     cmd.Parse(argc, argv);
 
     if (scenarioName.size() == 1 && std::isdigit(scenarioName[0]))
@@ -412,6 +493,24 @@ main(int argc, char* argv[])
     }
 
     const ScenarioConfig scenario = scenarios.at(scenarioName);
+    const uint32_t numUeTotal = g_numUeEmbb + g_numUeUrllc + g_numUeMtc;
+
+    std::vector<double> sliceWeights = ParseWeights(weightsStr);
+    if (sliceWeights.size() != NUM_SLICES)
+    {
+        NS_FATAL_ERROR("Weights must have exactly " << NUM_SLICES << " elements");
+    }
+    double wsum = 0.0;
+    for (double w : sliceWeights)
+        wsum += w;
+    if (std::abs(wsum - 1.0) > 1e-3)
+    {
+        NS_FATAL_ERROR("Weights must sum to 1.0 (got " << wsum << ")");
+    }
+
+    // Neste protótipo, p_j (proporção aplicada ao scheduler) = omega (peso político).
+    // No RSLAQ completo, p_j seria ajustado pelo agente DRL a cada frame.
+    std::vector<double> p_j = sliceWeights;
 
     const double centralFrequency = 2.59e9;
     const double bandwidth = 10e6;
@@ -420,19 +519,22 @@ main(int argc, char* argv[])
     const double activeDurationSec = simTimeSec - appStartSec;
 
     std::cout << "========================================\n"
-              << "  RSLAQ Simulation (Meta-Scheduler)\n"
+              << "  RSLAQ Simulation (Slice-Aware Proto)\n"
               << "========================================\n"
               << "Scenario     : " << scenario.name << "\n"
               << "Frequency    : " << centralFrequency / 1e9 << " GHz\n"
               << "Bandwidth    : " << bandwidth / 1e6 << " MHz\n"
               << "Numerology   : " << numerology << " (SCS 15 kHz)\n"
-              << "UEs          : " << NUM_UE_TOTAL
-              << " (eMBB=" << NUM_UE_EMBB
-              << " URLLC=" << NUM_UE_URLLC
-              << " MTC=" << NUM_UE_MTC << ")\n"
+              << "UEs          : " << numUeTotal
+              << " (eMBB=" << g_numUeEmbb
+              << " URLLC=" << g_numUeUrllc
+              << " MTC=" << g_numUeMtc << ")\n"
               << "SimTime      : " << simTimeSec << " s\n"
               << "TxPower      : " << txPowerDbm << " dBm\n"
-              << "Stats period : " << indicationPeriodMs << " ms\n\n";
+              << "Stats period : " << indicationPeriodMs << " ms\n"
+              << "Weights      : eMBB=" << p_j[0]
+              << " URLLC=" << p_j[1]
+              << " MTC=" << p_j[2] << "\n\n";
 
     RngSeedManager::SetSeed(seed);
     RngSeedManager::SetRun(1);
@@ -444,7 +546,7 @@ main(int argc, char* argv[])
     NodeContainer gNbNodes;
     gNbNodes.Create(1);
     NodeContainer ueNodes;
-    ueNodes.Create(NUM_UE_TOTAL);
+    ueNodes.Create(numUeTotal);
     NodeContainer remoteHostContainer;
     remoteHostContainer.Create(1);
 
@@ -548,32 +650,15 @@ main(int argc, char* argv[])
     Ptr<RslaqMacScheduler> scheduler = DynamicCast<RslaqMacScheduler>(schedBase);
     NS_ASSERT_MSG(scheduler != nullptr, "Failed to cast to RslaqMacScheduler");
 
-    // Build per-slice RNTI lists (RNTIs are assigned sequentially starting from 1)
-    std::vector<std::vector<uint32_t>> sliceRntis(NUM_SLICES);
-    // We schedule the mapping after RRC completes (UEs get RNTIs)
-    // For simplicity, configure with placeholder RNTIs now; they will be
-    // overwritten once we discover the actual RNTIs after attachment.
-    // The first UE gets RNTI=1, second RNTI=2, etc. (standard 5G-LENA behavior
-    // when UEs attach sequentially to a single gNB).
-    for (uint32_t i = 0; i < NUM_UE_TOTAL; i++)
-    {
-        SliceType s = GetSliceForUe(static_cast<uint16_t>(i + 1));
-        sliceRntis[static_cast<uint32_t>(s)].push_back(i + 1);
-    }
+    // Capturar RNTIs reais após attach e configurar mapeamento + pesos.
+    // O tráfego de aplicação só inicia em appStartSec (default 0.4 s),
+    // então agendamos o mapeamento em 0.1 s para garantir RRC completo.
+    double mappingTime = std::min(0.1, appStartSec - 0.05);
+    if (mappingTime < 0.0)
+        mappingTime = 0.05;
 
-    scheduler->SetSliceUeMapping(NUM_SLICES, sliceRntis);
-
-    // Default slice configuration: equal PRB share, RR for all slices
-    std::vector<double> defaultWeights = {0.40, 0.20, 0.40};
-    std::vector<RslaqMacScheduler::IntraSliceAlgorithm> defaultAlgos = {
-        RslaqMacScheduler::IntraSliceAlgorithm::PF,
-        RslaqMacScheduler::IntraSliceAlgorithm::PF,
-        RslaqMacScheduler::IntraSliceAlgorithm::PF};
-    scheduler->SetSliceConfiguration(defaultWeights, defaultAlgos);
-
-    std::cout << "Slice config: eMBB=" << defaultWeights[0] * 100 << "% (PF)"
-              << "  URLLC=" << defaultWeights[1] * 100 << "% (PF)"
-              << "  MTC=" << defaultWeights[2] * 100 << "% (PF)\n";
+    g_sliceWeights = p_j;
+    Simulator::Schedule(Seconds(mappingTime), &ConfigureSliceMapping, scheduler, ueNetDev);
 
     // ---- Applications (DL traffic) ----
     ApplicationContainer serverApps;
@@ -637,7 +722,7 @@ main(int argc, char* argv[])
     g_sim.sliceStats[SliceType::URLLC] = SliceAggStats();
     g_sim.sliceStats[SliceType::MTC] = SliceAggStats();
 
-    for (uint32_t i = 0; i < NUM_UE_TOTAL; i++)
+    for (uint32_t i = 0; i < numUeTotal; i++)
     {
         uint16_t ueId = static_cast<uint16_t>(i + 1);
         SliceType slice = GetSliceForUe(ueId);
@@ -664,6 +749,11 @@ main(int argc, char* argv[])
 
     monitor->CheckForLostPackets();
     FlowMonitor::FlowStatsContainer finalStats = monitor->GetFlowStats();
+
+    // Zerar slice stats para acumular corretamente
+    g_sim.sliceStats[SliceType::EMBB] = SliceAggStats();
+    g_sim.sliceStats[SliceType::URLLC] = SliceAggStats();
+    g_sim.sliceStats[SliceType::MTC] = SliceAggStats();
 
     for (const auto& kv : finalStats)
     {
@@ -694,6 +784,7 @@ main(int argc, char* argv[])
         ue.lostPackets = st.lostPackets;
         ue.delaySumSec = st.delaySum.GetSeconds();
 
+        // Acumular deltas corretamente (não somar totais brutos do FlowMonitor)
         sa.txBytes += st.txBytes;
         sa.rxBytes += st.rxBytes;
         sa.txPackets += st.txPackets;
@@ -727,7 +818,9 @@ main(int argc, char* argv[])
     std::cout << "CSV outputs:\n"
               << "  " << prefix << "_ue.csv\n"
               << "  " << prefix << "_slice.csv\n"
-              << "  " << outputDir << "/rslaq_stats_timeseries.csv\n";
+              << "  " << outputDir << "/rslaq_stats_timeseries.csv\n"
+              << "  rslaq_slice_allocations.csv\n"
+              << "  rslaq_unmapped_rntis.csv\n";
 
     Simulator::Destroy();
     return 0;
