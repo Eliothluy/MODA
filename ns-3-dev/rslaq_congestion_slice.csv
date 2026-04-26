@@ -1,0 +1,4 @@
+slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,throughput_mbps,avg_delay_ms,pdr
+eMBB,45832360,7198408,29995,4711,0,15.9965,1524.718,0.1571
+URLLC,701610,700830,8995,8985,0,1.5574,5.019,0.9989
+MTC,57598720,0,449990,0,0,0.0000,0.000,0.0000
