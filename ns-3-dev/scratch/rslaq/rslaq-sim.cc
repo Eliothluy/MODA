@@ -1,20 +1,12 @@
 /* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
 /*
- * RSLAQ Simulation — ns-3 / 5G-LENA
+ * RSLAQ Simulation — ns-3 / 5G-LENA com IPC para ns-o-ran-gym
  *
- * Protótipo de scheduler slice-aware inspirado no artigo RSLAQ.
- * NÃO é o RSLAQ completo com DRL — nesta fase validamos apenas o
- * particionamento de RBGs por slice e o mapeamento RNTI → slice.
+ * Protótipo de scheduler slice-aware com controle DRL via semáforos POSIX
+ * e troca de arquivos CSV (rslaq-kpms.txt, rslaq_actions_for_ns3.csv).
  *
  * Topologia: 1 gNB, N UEs (eMBB + URLLC + MTC configuráveis)
  * PHY: 2.59 GHz (n38), 10 MHz, numerologia mu=0 (SCS 15 kHz)
- *
- * Cenários de tráfego (DL):
- *   1 = Low traffic:  eMBB 50 Kbps  | URLLC 1 Mbps  | MTC 2 Mbps
- *   2 = Normal:       eMBB 70 Mbps  | URLLC 1 Mbps  | MTC 2 Mbps
- *   3 = Congestion:   eMBB 100 Mbps | URLLC 1 Mbps  | MTC 100 Mbps
- *   4 = Stressed:     eMBB 100 Mbps | URLLC 1 Mbps  | MTC 100 Mbps (SLA targets differ)
- *   5 = Insufficient: eMBB 100 Mbps | URLLC 2 Mbps  | MTC 100 Mbps
  */
 
 #include "rslaq-mac-scheduler.h"
@@ -31,10 +23,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <semaphore.h>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,7 +39,7 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE("RslaqSim");
 
 // ---------------------------------------------------------------------------
-// Tipos e constantes
+// Tipos e constantes (declarados ANTES das variáveis globais)
 // ---------------------------------------------------------------------------
 
 enum class SliceType : uint8_t
@@ -54,9 +49,26 @@ enum class SliceType : uint8_t
     MTC = 2
 };
 
+// ---------------------------------------------------------------------------
+// Constantes IPC
+// ---------------------------------------------------------------------------
+
+static std::string g_simUuid;           // UUID passado via --simId
+static sem_t* g_semMetricsReady = nullptr;
+static sem_t* g_semControl = nullptr;
+static Ptr<RslaqMacScheduler> g_schedulerPtr = nullptr;
+static Ptr<FlowMonitor> g_monitorPtr = nullptr;
+static Ptr<Ipv4FlowClassifier> g_classifierPtr = nullptr;
+static std::map<uint16_t, uint16_t> g_portToUeId;
+static std::map<uint16_t, SliceType> g_ueToSlice;
+static uint32_t g_indicationPeriodMs = 10;
+static bool g_ipcEnabled = false;
+
+// P_STA decomposition: 50% estático + 50% dinâmico do agente
+static const std::vector<double> P_STA_WEIGHTS = {0.33, 0.40, 0.27};
+
 static const uint32_t NUM_SLICES = 3;
 
-// Número de UEs por slice — podem ser sobrescritos via CommandLine
 static uint32_t g_numUeEmbb = 5;
 static uint32_t g_numUeUrllc = 5;
 static uint32_t g_numUeMtc = 10;
@@ -71,62 +83,6 @@ struct ScenarioConfig
     uint32_t urllcPktSize;
     uint32_t mtcPktSize;
 };
-
-struct UeStats
-{
-    uint16_t ueId = 0;
-    SliceType slice = SliceType::EMBB;
-    uint64_t txBytes = 0;
-    uint64_t rxBytes = 0;
-    uint64_t prevTxBytes = 0;
-    uint64_t prevRxBytes = 0;
-    uint32_t txPackets = 0;
-    uint32_t rxPackets = 0;
-    uint32_t lostPackets = 0;
-    uint32_t prevTxPackets = 0;
-    uint32_t prevRxPackets = 0;
-    uint32_t prevLostPackets = 0;
-    double delaySumSec = 0.0;
-    double prevDelaySumSec = 0.0;
-};
-
-struct SliceAggStats
-{
-    uint64_t txBytes = 0;
-    uint64_t rxBytes = 0;
-    uint32_t txPackets = 0;
-    uint32_t rxPackets = 0;
-    uint32_t lostPackets = 0;
-    double delaySumSec = 0.0;
-    double jitterSumSec = 0.0;
-};
-
-// ---------------------------------------------------------------------------
-// Estado global para o callback de estatísticas
-// ---------------------------------------------------------------------------
-
-struct SimState
-{
-    Ptr<FlowMonitor> monitor;
-    Ptr<Ipv4FlowClassifier> classifier;
-    std::map<uint16_t, UeStats> ueStats;
-    std::map<SliceType, SliceAggStats> sliceStats;
-    std::map<uint16_t, uint16_t> portToUeId;
-    std::map<uint16_t, SliceType> ueToSlice;
-    Ptr<RslaqMacScheduler> scheduler;
-    double activeDurationSec;
-    uint32_t indicationPeriodMs;
-    std::string outputDir;
-    std::ofstream statsFile;
-    uint32_t stepCount{0};
-};
-
-static SimState g_sim;
-static std::vector<double> g_sliceWeights;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 static SliceType
 GetSliceForUe(uint16_t ueId)
@@ -221,213 +177,6 @@ InitScenarios()
     return m;
 }
 
-// ---------------------------------------------------------------------------
-// Callback de estatísticas (a cada 10 ms)
-// ---------------------------------------------------------------------------
-
-static void
-StatsCallback()
-{
-    g_sim.monitor->CheckForLostPackets();
-    FlowMonitor::FlowStatsContainer stats = g_sim.monitor->GetFlowStats();
-    uint64_t nowMs = static_cast<uint64_t>(Simulator::Now().GetMilliSeconds());
-    g_sim.stepCount++;
-
-    if (!g_sim.statsFile.is_open())
-    {
-        std::string path = g_sim.outputDir + "/rslaq_stats_timeseries.csv";
-        g_sim.statsFile.open(path, std::ios::out | std::ios::trunc);
-        g_sim.statsFile << "timestamp_ms,ue_id,slice,thr_mbps,btx,bfs_pct,tdp,rsh_pct\n";
-    }
-
-    for (const auto& kv : stats)
-    {
-        FlowId flowId = kv.first;
-        const FlowMonitor::FlowStats& st = kv.second;
-        Ipv4FlowClassifier::FiveTuple tuple = g_sim.classifier->FindFlow(flowId);
-
-        if (tuple.protocol != 17)
-        {
-            continue;
-        }
-
-        auto itPort = g_sim.portToUeId.find(tuple.destinationPort);
-        if (itPort == g_sim.portToUeId.end())
-        {
-            continue;
-        }
-
-        uint16_t ueId = itPort->second;
-        SliceType slice = g_sim.ueToSlice[ueId];
-        UeStats& ue = g_sim.ueStats[ueId];
-
-        uint64_t dRxBytes = st.rxBytes - ue.prevRxBytes;
-        uint64_t dTxBytes = st.txBytes - ue.prevTxBytes;
-        uint32_t dTxPackets = st.txPackets - ue.prevTxPackets;
-        uint32_t dLostPackets = st.lostPackets - ue.prevLostPackets;
-
-        double periodSec = static_cast<double>(g_sim.indicationPeriodMs) / 1000.0;
-        double thrMbps = (periodSec > 0) ? (static_cast<double>(dRxBytes) * 8.0 / periodSec / 1e6) : 0.0;
-        double bfsPct = (dTxPackets > 0) ? (static_cast<double>(dLostPackets) / static_cast<double>(dTxPackets) * 100.0) : 0.0;
-        (void)dTxBytes;
-
-        int32_t sliceIdx = static_cast<int32_t>(slice);
-        double rshPct = 0.0;
-        if (g_sim.scheduler && sliceIdx >= 0)
-        {
-            rshPct = g_sim.scheduler->GetPrbWeight(static_cast<uint32_t>(sliceIdx)) * 100.0;
-        }
-
-        g_sim.statsFile << nowMs << "," << ueId << "," << SliceName(slice) << ","
-                        << std::fixed << std::setprecision(4) << thrMbps << ","
-                        << dTxBytes << ","
-                        << std::setprecision(2) << bfsPct << ","
-                        << dLostPackets << ","
-                        << std::setprecision(2) << rshPct << "\n";
-
-        ue.prevRxBytes = st.rxBytes;
-        ue.prevTxBytes = st.txBytes;
-        ue.prevRxPackets = st.rxPackets;
-        ue.prevTxPackets = st.txPackets;
-        ue.prevLostPackets = st.lostPackets;
-        ue.prevDelaySumSec = st.delaySum.GetSeconds();
-
-        ue.txBytes = st.txBytes;
-        ue.rxBytes = st.rxBytes;
-        ue.txPackets = st.txPackets;
-        ue.rxPackets = st.rxPackets;
-        ue.lostPackets = st.lostPackets;
-        ue.delaySumSec = st.delaySum.GetSeconds();
-
-        SliceAggStats& sa = g_sim.sliceStats[slice];
-        sa.txBytes = st.txBytes;
-        sa.rxBytes = st.rxBytes;
-        sa.txPackets = st.txPackets;
-        sa.rxPackets = st.rxPackets;
-        sa.lostPackets = st.lostPackets;
-        sa.delaySumSec = st.delaySum.GetSeconds();
-        sa.jitterSumSec = st.jitterSum.GetSeconds();
-    }
-
-    g_sim.statsFile.flush();
-
-    Simulator::Schedule(MilliSeconds(g_sim.indicationPeriodMs), &StatsCallback);
-}
-
-// ---------------------------------------------------------------------------
-// CSV final (resumo pós-simulação)
-// ---------------------------------------------------------------------------
-
-static void
-ConfigureSliceMapping(Ptr<RslaqMacScheduler> scheduler, NetDeviceContainer ueNetDev)
-{
-    std::vector<std::vector<uint32_t>> sliceRntis(NUM_SLICES);
-    std::cout << "\n=== UE Mapping (RNTI real após attach) ===\n"
-              << std::setw(4) << "Idx" << " | "
-              << std::setw(6) << "IMSI" << " | "
-              << std::setw(6) << "RNTI" << " | "
-              << std::setw(8) << "SliceId" << " | "
-              << std::setw(8) << "SliceType" << "\n"
-              << "-------------------------------------------\n";
-
-    for (uint32_t i = 0; i < ueNetDev.GetN(); ++i)
-    {
-        uint16_t ueId = static_cast<uint16_t>(i + 1);
-        SliceType slice = GetSliceForUe(ueId);
-        uint32_t sliceIdx = static_cast<uint32_t>(slice);
-
-        Ptr<NrUeNetDevice> ueDev = DynamicCast<NrUeNetDevice>(ueNetDev.Get(i));
-        uint16_t rnti = UINT16_MAX;
-        uint64_t imsi = 0;
-        if (ueDev)
-        {
-            if (ueDev->GetRrc())
-            {
-                rnti = ueDev->GetRrc()->GetRnti();
-            }
-            imsi = ueDev->GetImsi();
-        }
-
-        if (rnti == UINT16_MAX || rnti == 0)
-        {
-            std::cerr << "WARNING: UE " << ueId
-                      << " ainda não possui RNTI válido no momento do mapeamento!\n";
-        }
-
-        sliceRntis[sliceIdx].push_back(rnti);
-        g_sim.ueToSlice[ueId] = slice;
-
-        std::cout << std::setw(4) << ueId << " | "
-                  << std::setw(6) << imsi << " | "
-                  << std::setw(6) << rnti << " | "
-                  << std::setw(8) << sliceIdx << " | "
-                  << std::setw(8) << SliceName(slice) << "\n";
-    }
-    std::cout << "==========================================\n\n";
-
-    scheduler->SetSliceUeMapping(NUM_SLICES, sliceRntis);
-
-    std::vector<RslaqMacScheduler::IntraSliceAlgorithm> defaultAlgos = {
-        RslaqMacScheduler::IntraSliceAlgorithm::PF,
-        RslaqMacScheduler::IntraSliceAlgorithm::PF,
-        RslaqMacScheduler::IntraSliceAlgorithm::PF};
-    scheduler->SetSliceConfiguration(g_sliceWeights, defaultAlgos);
-}
-
-static void
-WriteFinalCsv(const std::string& prefix)
-{
-    {
-        std::ofstream out(prefix + "_ue.csv", std::ios::out | std::ios::trunc);
-        out << "ue_id,slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,"
-            << "throughput_mbps,avg_delay_ms,pdr\n";
-        for (const auto& kv : g_sim.ueStats)
-        {
-            const UeStats& m = kv.second;
-            double thr = (g_sim.activeDurationSec > 0)
-                             ? static_cast<double>(m.rxBytes) * 8.0 / g_sim.activeDurationSec / 1e6
-                             : 0.0;
-            double avgDelay = (m.rxPackets > 0) ? m.delaySumSec / m.rxPackets * 1000.0 : 0.0;
-            double pdr = (m.txPackets > 0)
-                             ? static_cast<double>(m.rxPackets) / m.txPackets
-                             : 0.0;
-            out << m.ueId << "," << SliceName(m.slice) << ","
-                << m.txBytes << "," << m.rxBytes << ","
-                << m.txPackets << "," << m.rxPackets << "," << m.lostPackets << ","
-                << std::fixed << std::setprecision(4) << thr << ","
-                << std::setprecision(3) << avgDelay << ","
-                << std::setprecision(4) << pdr << "\n";
-        }
-    }
-
-    {
-        std::ofstream out(prefix + "_slice.csv", std::ios::out | std::ios::trunc);
-        out << "slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,"
-            << "throughput_mbps,avg_delay_ms,pdr\n";
-        for (const auto& kv : g_sim.sliceStats)
-        {
-            const SliceAggStats& m = kv.second;
-            double thr = (g_sim.activeDurationSec > 0)
-                             ? static_cast<double>(m.rxBytes) * 8.0 / g_sim.activeDurationSec / 1e6
-                             : 0.0;
-            double avgDelay = (m.rxPackets > 0) ? m.delaySumSec / m.rxPackets * 1000.0 : 0.0;
-            double pdr = (m.txPackets > 0)
-                             ? static_cast<double>(m.rxPackets) / m.txPackets
-                             : 0.0;
-            out << SliceName(kv.first) << ","
-                << m.txBytes << "," << m.rxBytes << ","
-                << m.txPackets << "," << m.rxPackets << "," << m.lostPackets << ","
-                << std::fixed << std::setprecision(4) << thr << ","
-                << std::setprecision(3) << avgDelay << ","
-                << std::setprecision(4) << pdr << "\n";
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Parse weights string "w0,w1,w2"
-// ---------------------------------------------------------------------------
-
 static std::vector<double>
 ParseWeights(const std::string& str)
 {
@@ -439,6 +188,199 @@ ParseWeights(const std::string& str)
         w.push_back(std::stod(token));
     }
     return w;
+}
+
+// ---------------------------------------------------------------------------
+// IPC: KPM e Action callback
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief Escreve rslaq-kpms.txt e sinaliza o gym via semáforo.
+ *        Depois espera ação do agente, lê o CSV e atualiza o scheduler.
+ *
+ * Formato KPM:
+ *   timestamp,ueImsi,sliceId,txBytes,plr,resourceSharePct,lostPackets,throughputMbps
+ */
+static void
+KpmAndControlCallback()
+{
+    if (!g_ipcEnabled || !g_monitorPtr || !g_classifierPtr || !g_schedulerPtr)
+    {
+        Simulator::Schedule(MilliSeconds(g_indicationPeriodMs), &KpmAndControlCallback);
+        return;
+    }
+
+    uint64_t nowMs = static_cast<uint64_t>(Simulator::Now().GetMilliSeconds());
+
+    // Coletar métricas do FlowMonitor
+    g_monitorPtr->CheckForLostPackets();
+    FlowMonitor::FlowStatsContainer stats = g_monitorPtr->GetFlowStats();
+
+    struct UeKpm
+    {
+        uint64_t txBytes = 0;
+        uint64_t rxBytes = 0;
+        uint32_t txPackets = 0;
+        uint32_t rxPackets = 0;
+        uint32_t lostPackets = 0;
+        double delaySumSec = 0.0;
+        uint32_t count = 0;
+    };
+
+    std::map<uint16_t, UeKpm> ueKpms; // key = ueId
+
+    for (const auto& kv : stats)
+    {
+        FlowId flowId = kv.first;
+        const FlowMonitor::FlowStats& st = kv.second;
+        Ipv4FlowClassifier::FiveTuple tuple = g_classifierPtr->FindFlow(flowId);
+
+        if (tuple.protocol != 17)
+            continue;
+
+        auto itPort = g_portToUeId.find(tuple.destinationPort);
+        if (itPort == g_portToUeId.end())
+            continue;
+
+        uint16_t ueId = itPort->second;
+        UeKpm& k = ueKpms[ueId];
+        k.txBytes += st.txBytes;
+        k.rxBytes += st.rxBytes;
+        k.txPackets += st.txPackets;
+        k.rxPackets += st.rxPackets;
+        k.lostPackets += st.lostPackets;
+        k.delaySumSec += st.delaySum.GetSeconds();
+        k.count++;
+    }
+
+    // Escrever rslaq-kpms.txt
+    {
+        std::ofstream kpmFile("rslaq-kpms.txt", std::ios::out | std::ios::trunc);
+        kpmFile << "timestamp,ueImsi,sliceId,txBytes,plr,resourceSharePct,lostPackets,throughputMbps\n";
+
+        for (const auto& kv : ueKpms)
+        {
+            uint16_t ueId = kv.first;
+            const UeKpm& k = kv.second;
+            SliceType slice = g_ueToSlice[ueId];
+            uint32_t sliceIdx = static_cast<uint32_t>(slice);
+
+            double plr = (k.txPackets > 0)
+                             ? (static_cast<double>(k.lostPackets) / k.txPackets * 100.0)
+                             : 0.0;
+            double rsh = (g_schedulerPtr)
+                             ? g_schedulerPtr->GetPrbWeight(sliceIdx) * 100.0
+                             : 0.0;
+            double periodSec = static_cast<double>(g_indicationPeriodMs) / 1000.0;
+            double thrMbps = (periodSec > 0)
+                                 ? (static_cast<double>(k.rxBytes) * 8.0 / periodSec / 1e6)
+                                 : 0.0;
+
+            kpmFile << nowMs << "," << ueId << "," << sliceIdx << ","
+                    << k.txBytes << "," << std::fixed << std::setprecision(2) << plr << ","
+                    << std::setprecision(2) << rsh << ","
+                    << k.lostPackets << ","
+                    << std::setprecision(4) << thrMbps << "\n";
+        }
+        kpmFile.flush();
+    }
+
+    // Sinalizar ao Python: métricas prontas
+    if (g_semMetricsReady)
+    {
+        sem_post(g_semMetricsReady);
+    }
+
+    // Esperar ação do agente (timeout curto de 50ms para não bloquear a simulação)
+    if (g_semControl)
+    {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_nsec += 50 * 1000 * 1000; // 50ms
+        if (ts.tv_nsec >= 1000000000)
+        {
+            ts.tv_sec += 1;
+            ts.tv_nsec -= 1000000000;
+        }
+        int ret = sem_timedwait(g_semControl, &ts);
+        if (ret == 0)
+        {
+            // Ler ação do agente
+            std::ifstream actionFile("rslaq_actions_for_ns3.csv");
+            if (actionFile.is_open())
+            {
+                std::string line;
+                std::vector<double> dedicatedPrb(NUM_SLICES, 33.33);
+                std::getline(actionFile, line); // skip header
+                while (std::getline(actionFile, line))
+                {
+                    std::stringstream ss(line);
+                    std::string token;
+                    std::vector<std::string> cols;
+                    while (std::getline(ss, token, ','))
+                    {
+                        cols.push_back(token);
+                    }
+                    if (cols.size() >= 4)
+                    {
+                        uint32_t sliceId = static_cast<uint32_t>(std::stoi(cols[1]));
+                        double ded = std::stod(cols[2]);
+                        if (sliceId < NUM_SLICES)
+                        {
+                            dedicatedPrb[sliceId] = ded;
+                        }
+                    }
+                }
+                actionFile.close();
+
+                // P_STA decomposition: 50% estático + 50% dinâmico
+                // O agente envia dedicatedPRB como % do total.
+                // Convertemos para pesos normalizados.
+                double totalDed = dedicatedPrb[0] + dedicatedPrb[1] + dedicatedPrb[2];
+                if (totalDed > 0.0)
+                {
+                    std::vector<double> p_dyn(NUM_SLICES);
+                    for (uint32_t s = 0; s < NUM_SLICES; s++)
+                    {
+                        p_dyn[s] = (dedicatedPrb[s] / totalDed) * 0.5;
+                    }
+
+                    std::vector<double> p_final(NUM_SLICES);
+                    for (uint32_t s = 0; s < NUM_SLICES; s++)
+                    {
+                        p_final[s] = P_STA_WEIGHTS[s] * 0.5 + p_dyn[s];
+                    }
+
+                    // Renormalizar para somar 1.0
+                    double sum = p_final[0] + p_final[1] + p_final[2];
+                    if (sum > 0.0)
+                    {
+                        for (uint32_t s = 0; s < NUM_SLICES; s++)
+                        {
+                            p_final[s] /= sum;
+                        }
+                    }
+
+                    std::vector<RslaqMacScheduler::IntraSliceAlgorithm> algos = {
+                        RslaqMacScheduler::IntraSliceAlgorithm::PF,
+                        RslaqMacScheduler::IntraSliceAlgorithm::PF,
+                        RslaqMacScheduler::IntraSliceAlgorithm::PF};
+                    g_schedulerPtr->SetSliceConfiguration(p_final, algos);
+
+                    NS_LOG_INFO("[RslaqSim] IPC action applied at t=" << nowMs
+                                << "ms: weights=[" << p_final[0] << ", "
+                                << p_final[1] << ", " << p_final[2] << "]");
+                }
+            }
+        }
+        else
+        {
+            NS_LOG_WARN("[RslaqSim] sem_timedwait timeout — no action from agent");
+        }
+    }
+
+    // Agendar próximo callback
+    Simulator::Schedule(MilliSeconds(g_indicationPeriodMs), &KpmAndControlCallback);
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +401,7 @@ main(int argc, char* argv[])
     std::string tddPattern = "D|D|D|D|D|D|D|D|D|D";
     double txPowerDbm = 43.0;
     std::string weightsStr = "0.3333,0.4000,0.2667";
+    std::string simId = "";
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("scenario", "1-5 or name", scenarioName);
@@ -473,6 +416,7 @@ main(int argc, char* argv[])
     cmd.AddValue("urllcUes", "Number of URLLC UEs", g_numUeUrllc);
     cmd.AddValue("mtcUes", "Number of MTC UEs", g_numUeMtc);
     cmd.AddValue("weights", "Slice weights as comma-separated list (eMBB,URLLC,MTC)", weightsStr);
+    cmd.AddValue("simId", "Simulation UUID for IPC semaphores", simId);
     cmd.Parse(argc, argv);
 
     if (scenarioName.size() == 1 && std::isdigit(scenarioName[0]))
@@ -508,18 +452,16 @@ main(int argc, char* argv[])
         NS_FATAL_ERROR("Weights must sum to 1.0 (got " << wsum << ")");
     }
 
-    // Neste protótipo, p_j (proporção aplicada ao scheduler) = omega (peso político).
-    // No RSLAQ completo, p_j seria ajustado pelo agente DRL a cada frame.
     std::vector<double> p_j = sliceWeights;
+    g_indicationPeriodMs = indicationPeriodMs;
 
     const double centralFrequency = 2.59e9;
     const double bandwidth = 10e6;
     const uint16_t numerology = 0;
     const uint16_t baseDlPort = 12000;
-    const double activeDurationSec = simTimeSec - appStartSec;
 
     std::cout << "========================================\n"
-              << "  RSLAQ Simulation (Slice-Aware Proto)\n"
+              << "  RSLAQ Simulation (Slice-Aware + IPC)\n"
               << "========================================\n"
               << "Scenario     : " << scenario.name << "\n"
               << "Frequency    : " << centralFrequency / 1e9 << " GHz\n"
@@ -532,9 +474,40 @@ main(int argc, char* argv[])
               << "SimTime      : " << simTimeSec << " s\n"
               << "TxPower      : " << txPowerDbm << " dBm\n"
               << "Stats period : " << indicationPeriodMs << " ms\n"
+              << "IPC enabled  : " << (simId.empty() ? "NO (standalone)" : "YES") << "\n"
               << "Weights      : eMBB=" << p_j[0]
               << " URLLC=" << p_j[1]
               << " MTC=" << p_j[2] << "\n\n";
+
+    // Setup IPC semaphores if simId provided
+    if (!simId.empty())
+    {
+        g_simUuid = simId;
+        g_ipcEnabled = true;
+
+        std::string semMetricsName = "/sem_metrics_" + simId;
+        std::string semControlName = "/sem_control_" + simId;
+
+        g_semMetricsReady = sem_open(semMetricsName.c_str(), O_CREAT, 0660, 0);
+        g_semControl = sem_open(semControlName.c_str(), O_CREAT, 0660, 0);
+
+        if (g_semMetricsReady == SEM_FAILED || g_semControl == SEM_FAILED)
+        {
+            std::cerr << "WARNING: Failed to create POSIX semaphores. Running standalone.\n";
+            g_ipcEnabled = false;
+            if (g_semMetricsReady != SEM_FAILED)
+                sem_close(g_semMetricsReady);
+            if (g_semControl != SEM_FAILED)
+                sem_close(g_semControl);
+            g_semMetricsReady = nullptr;
+            g_semControl = nullptr;
+        }
+        else
+        {
+            std::cout << "[RslaqSim] IPC semaphores created: "
+                      << semMetricsName << " and " << semControlName << "\n";
+        }
+    }
 
     RngSeedManager::SetSeed(seed);
     RngSeedManager::SetRun(1);
@@ -649,16 +622,66 @@ main(int argc, char* argv[])
     Ptr<NrMacScheduler> schedBase = NrHelper::GetScheduler(gnbNetDev.Get(0), 0);
     Ptr<RslaqMacScheduler> scheduler = DynamicCast<RslaqMacScheduler>(schedBase);
     NS_ASSERT_MSG(scheduler != nullptr, "Failed to cast to RslaqMacScheduler");
+    g_schedulerPtr = scheduler;
 
-    // Capturar RNTIs reais após attach e configurar mapeamento + pesos.
-    // O tráfego de aplicação só inicia em appStartSec (default 0.4 s),
-    // então agendamos o mapeamento em 0.1 s para garantir RRC completo.
+    // Mapeamento RNTI real pós-attach
     double mappingTime = std::min(0.1, appStartSec - 0.05);
     if (mappingTime < 0.0)
         mappingTime = 0.05;
 
-    g_sliceWeights = p_j;
-    Simulator::Schedule(Seconds(mappingTime), &ConfigureSliceMapping, scheduler, ueNetDev);
+    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &p_j]() {
+        std::vector<std::vector<uint32_t>> sliceRntis(NUM_SLICES);
+        std::cout << "\n=== UE Mapping (RNTI real após attach) ===\n"
+                  << std::setw(4) << "Idx" << " | "
+                  << std::setw(6) << "IMSI" << " | "
+                  << std::setw(6) << "RNTI" << " | "
+                  << std::setw(8) << "SliceId" << " | "
+                  << std::setw(8) << "SliceType" << "\n"
+                  << "-------------------------------------------\n";
+
+        for (uint32_t i = 0; i < ueNetDev.GetN(); ++i)
+        {
+            uint16_t ueId = static_cast<uint16_t>(i + 1);
+            SliceType slice = GetSliceForUe(ueId);
+            uint32_t sliceIdx = static_cast<uint32_t>(slice);
+
+            Ptr<NrUeNetDevice> ueDev = DynamicCast<NrUeNetDevice>(ueNetDev.Get(i));
+            uint16_t rnti = UINT16_MAX;
+            uint64_t imsi = 0;
+            if (ueDev)
+            {
+                if (ueDev->GetRrc())
+                {
+                    rnti = ueDev->GetRrc()->GetRnti();
+                }
+                imsi = ueDev->GetImsi();
+            }
+
+            if (rnti == UINT16_MAX || rnti == 0)
+            {
+                std::cerr << "WARNING: UE " << ueId
+                          << " ainda não possui RNTI válido no momento do mapeamento!\n";
+            }
+
+            sliceRntis[sliceIdx].push_back(rnti);
+            g_ueToSlice[ueId] = slice;
+
+            std::cout << std::setw(4) << ueId << " | "
+                      << std::setw(6) << imsi << " | "
+                      << std::setw(6) << rnti << " | "
+                      << std::setw(8) << sliceIdx << " | "
+                      << std::setw(8) << SliceName(slice) << "\n";
+        }
+        std::cout << "==========================================\n\n";
+
+        scheduler->SetSliceUeMapping(NUM_SLICES, sliceRntis);
+
+        std::vector<RslaqMacScheduler::IntraSliceAlgorithm> defaultAlgos = {
+            RslaqMacScheduler::IntraSliceAlgorithm::PF,
+            RslaqMacScheduler::IntraSliceAlgorithm::PF,
+            RslaqMacScheduler::IntraSliceAlgorithm::PF};
+        scheduler->SetSliceConfiguration(p_j, defaultAlgos);
+    });
 
     // ---- Applications (DL traffic) ----
     ApplicationContainer serverApps;
@@ -691,6 +714,7 @@ main(int argc, char* argv[])
                   << static_cast<double>(sliceRateBps) / 1e6 << " Mbps"
                   << " pkt=" << pktSize << " B\n";
     }
+    g_portToUeId = portToUeId;
 
     serverApps.Start(Seconds(appStartSec));
     clientApps.Start(Seconds(appStartSec));
@@ -709,118 +733,38 @@ main(int argc, char* argv[])
     Ptr<Ipv4FlowClassifier> classifier =
         DynamicCast<Ipv4FlowClassifier>(flowmonHelper.GetClassifier());
 
-    // ---- Populate global state ----
-    g_sim.monitor = monitor;
-    g_sim.classifier = classifier;
-    g_sim.scheduler = scheduler;
-    g_sim.activeDurationSec = activeDurationSec;
-    g_sim.indicationPeriodMs = indicationPeriodMs;
-    g_sim.outputDir = outputDir;
-    g_sim.portToUeId = portToUeId;
+    g_monitorPtr = monitor;
+    g_classifierPtr = classifier;
 
-    g_sim.sliceStats[SliceType::EMBB] = SliceAggStats();
-    g_sim.sliceStats[SliceType::URLLC] = SliceAggStats();
-    g_sim.sliceStats[SliceType::MTC] = SliceAggStats();
-
-    for (uint32_t i = 0; i < numUeTotal; i++)
+    // ---- Schedule IPC callback ----
+    if (g_ipcEnabled)
     {
-        uint16_t ueId = static_cast<uint16_t>(i + 1);
-        SliceType slice = GetSliceForUe(ueId);
-        g_sim.ueToSlice[ueId] = slice;
-        UeStats us;
-        us.ueId = ueId;
-        us.slice = slice;
-        g_sim.ueStats[ueId] = us;
+        Time firstIpc = Seconds(appStartSec) + MilliSeconds(indicationPeriodMs);
+        Simulator::Schedule(firstIpc, &KpmAndControlCallback);
+        std::cout << "[RslaqSim] IPC callback scheduled at t=" << firstIpc.GetMilliSeconds() << " ms\n";
     }
-
-    // ---- Schedule stats callback ----
-    Time firstCallback = Seconds(appStartSec) + MilliSeconds(indicationPeriodMs);
-    Simulator::Schedule(firstCallback, &StatsCallback);
 
     // ---- Run ----
     Simulator::Stop(Seconds(simTimeSec));
     Simulator::Run();
 
-    // ---- Final stats ----
-    if (g_sim.statsFile.is_open())
+    // ---- Cleanup IPC ----
+    if (g_ipcEnabled)
     {
-        g_sim.statsFile.close();
-    }
-
-    monitor->CheckForLostPackets();
-    FlowMonitor::FlowStatsContainer finalStats = monitor->GetFlowStats();
-
-    // Zerar slice stats para acumular corretamente
-    g_sim.sliceStats[SliceType::EMBB] = SliceAggStats();
-    g_sim.sliceStats[SliceType::URLLC] = SliceAggStats();
-    g_sim.sliceStats[SliceType::MTC] = SliceAggStats();
-
-    for (const auto& kv : finalStats)
-    {
-        FlowId flowId = kv.first;
-        const FlowMonitor::FlowStats& st = kv.second;
-        Ipv4FlowClassifier::FiveTuple tuple = classifier->FindFlow(flowId);
-
-        if (tuple.protocol != 17)
+        if (g_semMetricsReady)
         {
-            continue;
+            sem_close(g_semMetricsReady);
+            std::string name = "/sem_metrics_" + g_simUuid;
+            sem_unlink(name.c_str());
         }
-
-        auto itPort = portToUeId.find(tuple.destinationPort);
-        if (itPort == portToUeId.end())
+        if (g_semControl)
         {
-            continue;
+            sem_close(g_semControl);
+            std::string name = "/sem_control_" + g_simUuid;
+            sem_unlink(name.c_str());
         }
-
-        uint16_t ueId = itPort->second;
-        SliceType slice = g_sim.ueToSlice[ueId];
-        UeStats& ue = g_sim.ueStats[ueId];
-        SliceAggStats& sa = g_sim.sliceStats[slice];
-
-        ue.txBytes = st.txBytes;
-        ue.rxBytes = st.rxBytes;
-        ue.txPackets = st.txPackets;
-        ue.rxPackets = st.rxPackets;
-        ue.lostPackets = st.lostPackets;
-        ue.delaySumSec = st.delaySum.GetSeconds();
-
-        // Acumular deltas corretamente (não somar totais brutos do FlowMonitor)
-        sa.txBytes += st.txBytes;
-        sa.rxBytes += st.rxBytes;
-        sa.txPackets += st.txPackets;
-        sa.rxPackets += st.rxPackets;
-        sa.lostPackets += st.lostPackets;
-        sa.delaySumSec += st.delaySum.GetSeconds();
-        sa.jitterSumSec += st.jitterSum.GetSeconds();
+        std::cout << "[RslaqSim] IPC semaphores cleaned up.\n";
     }
-
-    std::cout << "\n========================================\n"
-              << "  RESULTS (" << scenario.name << ")\n"
-              << "========================================\n";
-
-    for (const auto& kv : g_sim.sliceStats)
-    {
-        const SliceAggStats& m = kv.second;
-        double thr = (activeDurationSec > 0) ? static_cast<double>(m.rxBytes) * 8.0 / activeDurationSec / 1e6 : 0.0;
-        double avgDelay = (m.rxPackets > 0) ? m.delaySumSec / m.rxPackets * 1000.0 : 0.0;
-        double pdr = (m.txPackets > 0) ? static_cast<double>(m.rxPackets) / m.txPackets : 0.0;
-
-        std::cout << SliceName(kv.first) << ":\n"
-                  << "  Throughput : " << std::fixed << std::setprecision(4) << thr << " Mbps\n"
-                  << "  Avg delay  : " << std::setprecision(3) << avgDelay << " ms\n"
-                  << "  PDR        : " << std::setprecision(4) << pdr << "\n"
-                  << "  TX/RX pkts : " << m.txPackets << " / " << m.rxPackets << "\n\n";
-    }
-
-    std::string prefix = outputDir + "/rslaq_" + scenario.name;
-    WriteFinalCsv(prefix);
-
-    std::cout << "CSV outputs:\n"
-              << "  " << prefix << "_ue.csv\n"
-              << "  " << prefix << "_slice.csv\n"
-              << "  " << outputDir << "/rslaq_stats_timeseries.csv\n"
-              << "  rslaq_slice_allocations.csv\n"
-              << "  rslaq_unmapped_rntis.csv\n";
 
     Simulator::Destroy();
     return 0;

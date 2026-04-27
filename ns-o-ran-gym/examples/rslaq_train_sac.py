@@ -31,7 +31,9 @@ P_STA = P_STA_WEIGHTS * 0.5
 
 
 class SACActor(nn.Module):
-    def __init__(self, state_shape, action_dim=9):
+    """SAC Actor com entrada (3,5) e saída 3-dim contínua (pesos das slices)."""
+
+    def __init__(self, state_shape, action_dim=3):
         super().__init__()
         h, w = state_shape
         self.conv1 = nn.Conv2d(1, 16, 2, padding=1)
@@ -58,16 +60,18 @@ class SACActor(nn.Module):
         std = log_std.exp()
         normal = torch.distributions.Normal(mean, std)
         z = normal.rsample()
-        action = torch.sigmoid(z)
+        action = torch.tanh(z)  # [-1, 1]
         log_prob = (
-            normal.log_prob(z) - torch.log(action + 1e-8) - torch.log(1 - action + 1e-8)
+            normal.log_prob(z) - torch.log(1 - action.pow(2) + 1e-6)
         )
         log_prob = log_prob.sum(dim=-1, keepdim=True)
         return action, log_prob
 
 
 class SACCritic(nn.Module):
-    def __init__(self, state_shape, action_dim=9):
+    """SAC Critic: estima Q(s,a) concatenando estado e ação."""
+
+    def __init__(self, state_shape, action_dim=3):
         super().__init__()
         h, w = state_shape
         self.conv1 = nn.Conv2d(1, 16, 2, padding=1)
@@ -90,10 +94,12 @@ class SACCritic(nn.Module):
 
 
 class SACAgent:
+    """Agente SAC com P_STA decomposition (50% estático + 50% dinâmico)."""
+
     def __init__(
         self,
         state_shape,
-        action_dim=9,
+        action_dim=3,
         lr=1e-3,
         gamma=0.99,
         tau=0.005,
@@ -123,10 +129,21 @@ class SACAgent:
         self.step_count = 0
 
     def continuous_to_prb(self, continuous_action):
+        """
+        Converte ação contínua [-1, 1] em PRB allocation via Softmax + P_STA.
+
+        P_final = P_STA + softmax(action) * 0.5
+        """
         a = continuous_action.cpu().numpy().flatten()
-        p_opt = a[:3]
-        p_opt = (p_opt / (p_opt.sum() + 1e-8)) * 0.5
+
+        # Softmax com estabilidade numérica
+        exp_a = np.exp(a - np.max(a))
+        p_opt = exp_a / exp_a.sum()
+        p_opt *= 0.5  # agente controla 50%
+
         p_final = P_STA + p_opt
+        p_final /= p_final.sum()  # renormalizar
+
         action = np.array(
             [
                 [p_final[0] * 100.0, 0.0, 100.0],
@@ -227,7 +244,7 @@ def train_scenario(scenario, output_dir, num_episodes=50, max_steps=50):
         "appStart": [0.5],
         "scenario": [scenario],
         "seed": [1],
-        "indicationPeriodicity": [10],
+        "periodMs": [10],
     }
 
     env = RslaqEnv(
@@ -240,7 +257,7 @@ def train_scenario(scenario, output_dir, num_episodes=50, max_steps=50):
     state_shape = env.observation_space.shape
     agent = SACAgent(
         state_shape,
-        action_dim=9,
+        action_dim=3,  # 3 pesos contínuos (eMBB, URLLC, MTC)
         lr=1e-3,
         gamma=0.99,
         tau=0.005,
@@ -259,7 +276,8 @@ def train_scenario(scenario, output_dir, num_episodes=50, max_steps=50):
 
         for step in range(max_steps):
             prb_action, action_cont = agent.act(state)
-            next_obs, reward, terminated, truncated, info = env.step(prb_action)
+            # Enviar ação contínua (3 valores) para o env; o env faz pós-processamento
+            next_obs, reward, terminated, truncated, info = env.step(action_cont)
             next_state = next_obs.copy()
             done = terminated or truncated
 

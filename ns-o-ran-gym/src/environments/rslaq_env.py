@@ -16,32 +16,42 @@ from gymnasium import spaces
 
 SLICE_NAMES = {1: "eMBB", 2: "URLLC", 3: "MTC"}
 
+# SLA Targets para a função de recompensa
 SLA_TARGETS = {
-    1: {
-        "outage_kpis": {"min_throughput_mbps": 10.0},
-        "soft_kpis": {"max_throughput_mbps": 15.0},
-    },
-    2: {
-        "outage_kpis": {"max_bfs_pct": 3.0},
-    },
-    3: {},
+    1: {"min_throughput_mbps": 100.0},   # eMBB: foco em throughput
+    2: {"max_delay_ms": 5.0},             # URLLC: foco em latência ultra-baixa
+    3: {"max_buffer_pct": 1.0},           # MTC: foco em entrega (proxy via lostPackets)
 }
 
-SLA_WEIGHTS = {1: 0.33, 2: 0.40, 3: 0.27}
-P_STA_WEIGHTS = np.array([0.33, 0.40, 0.27])
+# Pesos de importância para a recompensa total
+ALPHA = 1.0 / 3.0
+BETA = 1.0 / 3.0
+GAMMA = 1.0 / 3.0
 
-MAX_BTX = 200000.0
-MAX_TDP = 1000.0
+# P_STA decomposition: 50% estático + 50% dinâmico do agente
+P_STA_WEIGHTS = np.array([0.33, 0.40, 0.27])
+P_STA = P_STA_WEIGHTS * 0.5  # [0.165, 0.200, 0.135]
+
+# Constantes de normalização do observation space
+MAX_THR = 150.0       # Mbps
+MAX_BTX = 200000.0    # bytes
+MAX_PLR = 100.0       # %
+MAX_TDP = 1000.0      # packets
+MAX_RSH = 100.0       # %
+
 SCHEDULER_COST = 1
+CRITICAL_OVERFLOW_THRESHOLD = 5000  # penalidade severa se total_dropped > threshold
 
 
 class RslaqEnv(NsOranEnv):
     """
     RSLAQ DRL Environment for O-RAN QoS xApp.
 
-    State (Eq. 1): per-slice [btx, bfs, rsh, tdp] -> 3 slices x 4 features, normalized to [0,1]
-    Action: per-slice PRB allocation (dedicated%, min%, max%) -> 3 slices x 3 params
-    Reward (Eq. 8-19): SLA-aware with outage/soft KPI violations and r_opt optimization
+    State: per-slice [throughput_mbps, txBytes, plr, resourceSharePct, lostPackets]
+           -> 3 slices x 5 features, normalized to [0,1]
+    Action: 3 continuous values in [-1, 1] -> softmax -> p_opt (50% dinâmico)
+            -> p_final = P_STA + p_opt * 0.5
+    Reward: SLA-aware com R_eMBB (throughput), R_URLLC (delay), R_MTC (buffer)
     """
 
     def __init__(
@@ -53,7 +63,7 @@ class RslaqEnv(NsOranEnv):
         sla_weights: dict | None = None,
     ):
         scenario_configuration.setdefault("simId", [""])
-        scenario_configuration.setdefault("indicationPeriodicity", [10])
+        scenario_configuration.setdefault("periodMs", [10])
         scenario_configuration.setdefault("scenario", ["normal"])
         scenario_configuration.setdefault("seed", [1])
         scenario_configuration.setdefault("appStart", [0.5])
@@ -61,7 +71,7 @@ class RslaqEnv(NsOranEnv):
 
         super().__init__(
             ns3_path=ns3_path,
-            scenario="rslaq-simulation-mac-slicing",
+            scenario="rslaq-sim",  # <-- nome correto do executável
             scenario_configuration=scenario_configuration,
             output_folder=output_folder,
             optimized=optimized,
@@ -74,27 +84,25 @@ class RslaqEnv(NsOranEnv):
         self.num_slices = 3
         self.num_ues = scenario_configuration.get("ues", [3])[0]
 
-        if sla_weights is not None:
-            global SLA_WEIGHTS
-            SLA_WEIGHTS = sla_weights
-
+        # Observation space: 3 slices x 5 features
         self.observation_space = spaces.Box(
             low=0.0,
             high=1.0,
-            shape=(self.num_slices, 4),
+            shape=(self.num_slices, 5),
             dtype=np.float64,
         )
 
+        # Action space: 3 continuous values [-1, 1] -> softmax -> p_opt
         self.action_space = spaces.Box(
-            low=0.0,
-            high=100.0,
-            shape=(self.num_slices, 3),
+            low=-1.0,
+            high=1.0,
+            shape=(3,),
             dtype=np.float64,
         )
 
         self.kpm_data = {}
         self.prev_kpm_data = {}
-        self.observations = np.zeros((self.num_slices, 4))
+        self.observations = np.zeros((self.num_slices, 5))
         self.slice_ue_data: dict[int, list[dict]] = {}
         self.num_steps = 0
 
@@ -165,15 +173,28 @@ class RslaqEnv(NsOranEnv):
 
     @override
     def _compute_action(self, action) -> list[tuple]:
+        """
+        Converte ação contínua do agente (3 valores em [-1,1]) para
+        dedicatedPRB por slice usando Softmax + P_STA decomposition.
+
+        P_final = P_STA + softmax(action) * 0.5
+        """
+        raw = np.array(action[:3], dtype=np.float64).flatten()
+
+        # Softmax com estabilidade numérica
+        exp_a = np.exp(raw - np.max(raw))
+        p_opt = exp_a / exp_a.sum()
+        p_opt *= 0.5  # agente controla 50%
+
+        p_final = P_STA + p_opt
+
+        # Renormalizar para somar 1.0
+        p_final /= p_final.sum()
+
         actions = []
         for slice_idx in range(self.num_slices):
-            dedicated = float(action[slice_idx][0])
+            dedicated = float(p_final[slice_idx] * 100.0)
             actions.append((slice_idx, dedicated, dedicated, 100.0))
-
-        total_ded = sum(a[1] for a in actions)
-        if total_ded > 100.0:
-            scale = 100.0 / total_ded
-            actions = [(s, d * scale, d * scale, x) for s, d, _, x in actions]
 
         return actions
 
@@ -183,16 +204,28 @@ class RslaqEnv(NsOranEnv):
 
     @override
     def _compute_reward(self) -> float:
+        """
+        Reward function conforme especificação RSLAQ:
+
+        R_eMBB = max(0, throughput_eMBB / SLA_eMBB)
+        R_URLLC = 1.0 se delay <= SLA; exp(-(delay - SLA)) caso contrário
+        R_MTC   = 1.0 - (buffer / max_buffer)
+
+        R_total = alpha*R_eMBB + beta*R_URLLC + gamma*R_MTC
+
+        Penalidade -10 se buffer overflow maciço.
+        """
+        # Coletar métricas por slice
         slice_metrics: dict[int, dict] = {}
         for slice_idx in range(self.num_slices):
             slice_id = slice_idx + 1
             ues = self.slice_ue_data.get(slice_id, [])
             if ues:
                 thr_values = [ue["throughputMbps"] for ue in ues]
-                bfs_values = [ue["plr"] for ue in ues]
+                plr_values = [ue["plr"] for ue in ues]
                 slice_metrics[slice_id] = {
                     "mean_thr": float(np.mean(thr_values)),
-                    "max_plr": float(max(bfs_values)),
+                    "max_plr": float(max(plr_values)),
                     "num_ues": len(ues),
                 }
             else:
@@ -202,60 +235,38 @@ class RslaqEnv(NsOranEnv):
                     "num_ues": 0,
                 }
 
-        ues_embb = self.slice_ue_data.get(1, [])
-        n_embb = max(len(ues_embb), 1)
-        h1 = sum(ue["throughputMbps"] for ue in ues_embb) / n_embb / 15.0
+        # R_eMBB: throughput normalizado pelo SLA (clipagem em 0)
+        embb_thr = slice_metrics[1]["mean_thr"]
+        r_embb = max(0.0, embb_thr / SLA_TARGETS[1]["min_throughput_mbps"])
 
-        h2 = np.exp(-slice_metrics[2]["max_plr"] / 100.0)
+        # R_URLLC: penalização exponencial de delay (proxy: max_plr como proxy de congestionamento)
+        # Nota: o KPM não tem delay direto; usamos max_plr como proxy de qualidade de serviço
+        urllc_plr = slice_metrics[2]["max_plr"]
+        # Mapeamos PLR para um "delay virtual": PLR alto = delay alto
+        virtual_delay = urllc_plr * 0.5  # heurística: 3% PLR ~ 1.5ms delay virtual
+        if virtual_delay <= SLA_TARGETS[2]["max_delay_ms"]:
+            r_urllc = 1.0
+        else:
+            r_urllc = np.exp(-(virtual_delay - SLA_TARGETS[2]["max_delay_ms"]))
 
+        # R_MTC: penalização por acúmulo de pacotes (proxy: lostPackets / max_buffer)
         ues_mtc = self.slice_ue_data.get(3, [])
-        n_mtc = max(len(ues_mtc), 1)
-        h3 = sum(ue["throughputMbps"] for ue in ues_mtc) / n_mtc / 10.0
+        total_mtc_dropped = sum(ue.get("lostPackets", 0) for ue in ues_mtc)
+        r_mtc = 1.0 - min(total_mtc_dropped / MAX_TDP, 1.0)
 
-        r_opt = (
-            SLA_WEIGHTS[1] * h1
-            + SLA_WEIGHTS[2] * h2
-            + SLA_WEIGHTS[3] * h3
-            + 1.0 / SCHEDULER_COST
+        # Recompensa total ponderada
+        reward = ALPHA * r_embb + BETA * r_urllc + GAMMA * r_mtc
+
+        # Penalidade severa por buffer overflow maciço
+        total_dropped = sum(
+            ue.get("lostPackets", 0)
+            for slice_id in self.slice_ue_data
+            for ue in self.slice_ue_data[slice_id]
         )
+        if total_dropped > CRITICAL_OVERFLOW_THRESHOLD:
+            reward -= 10.0
 
-        phi: dict[int, float] = {}
-        if slice_metrics[1]["num_ues"] > 0 and (
-            slice_metrics[1]["mean_thr"]
-            < SLA_TARGETS[1]["outage_kpis"]["min_throughput_mbps"]
-        ):
-            phi[1] = 1.0
-        if (
-            slice_metrics[2]["num_ues"] > 0
-            and slice_metrics[2]["max_plr"]
-            > SLA_TARGETS[2]["outage_kpis"]["max_bfs_pct"]
-        ):
-            any_received = any(
-                ue["plr"] < 100.0 for ue in self.slice_ue_data.get(2, [])
-            )
-            if any_received:
-                phi[2] = 1.0
-
-        rho: dict[int, float] = {}
-        if slice_metrics[1]["num_ues"] > 0 and (
-            slice_metrics[1]["mean_thr"]
-            > SLA_TARGETS[1]["soft_kpis"]["max_throughput_mbps"]
-        ):
-            rho[1] = 1.0
-
-        sum_phi = sum(phi.values())
-        sum_rho = sum(rho.values())
-
-        if sum_phi > 0:
-            outage_penalty = -sum(
-                phi.get(j, 0.0) * SLA_WEIGHTS[j] for j in range(1, self.num_slices + 1)
-            )
-            return outage_penalty
-
-        if sum_rho > 0:
-            return float(r_opt) * 0.5
-
-        return float(r_opt)
+        return float(reward)
 
     @override
     def _init_datalake_usecase(self):
@@ -263,6 +274,12 @@ class RslaqEnv(NsOranEnv):
 
     @override
     def _fill_datalake_usecase(self):
+        """
+        Lê rslaq-kpms.txt e agrega métricas por slice em observations[3][5].
+
+        Features: [throughput_mbps/MAX_THR, txBytes/MAX_BTX, plr/MAX_PLR,
+                   resourceSharePct/MAX_RSH, lostPackets/MAX_TDP]
+        """
         kpm_files = glob.glob(os.path.join(self.sim_path, "rslaq-kpms.txt"))
         if not kpm_files:
             return
@@ -284,6 +301,7 @@ class RslaqEnv(NsOranEnv):
             slice_id = int(row["sliceId"])
             if slice_id not in slice_agg:
                 slice_agg[slice_id] = {
+                    "thr_sum": 0.0,
                     "btx": 0,
                     "plr_sum": 0.0,
                     "rsh_sum": 0.0,
@@ -293,20 +311,25 @@ class RslaqEnv(NsOranEnv):
             if slice_id not in slice_ue:
                 slice_ue[slice_id] = []
 
-            btx = float(row["txBytes"])
-            plr = float(row["plr"])
-            rsh = float(row["resourceSharePct"])
-            tdp = float(row["lostPackets"])
-            thr = float(row["throughputMbps"])
+            thr = float(row.get("throughputMbps", 0.0))
+            btx = float(row.get("txBytes", 0.0))
+            plr = float(row.get("plr", 0.0))
+            rsh = float(row.get("resourceSharePct", 0.0))
+            tdp = float(row.get("lostPackets", 0.0))
 
             sd = slice_agg[slice_id]
+            sd["thr_sum"] += thr
             sd["btx"] += btx
             sd["plr_sum"] += plr
             sd["rsh_sum"] += rsh
             sd["tdp"] += tdp
             sd["count"] += 1
 
-            slice_ue[slice_id].append({"throughputMbps": thr, "plr": plr})
+            slice_ue[slice_id].append({
+                "throughputMbps": thr,
+                "plr": plr,
+                "lostPackets": tdp,
+            })
 
         self.slice_ue_data = slice_ue
 
@@ -316,10 +339,11 @@ class RslaqEnv(NsOranEnv):
                 sd = slice_agg[slice_id]
                 n = sd["count"]
                 self.observations[slice_idx] = [
+                    min(sd["thr_sum"] / n / MAX_THR, 1.0),
                     min(sd["btx"] / MAX_BTX, 1.0),
-                    sd["plr_sum"] / n / 100.0,
-                    sd["rsh_sum"] / n / 100.0,
+                    sd["plr_sum"] / n / MAX_PLR,
+                    sd["rsh_sum"] / n / MAX_RSH,
                     min(sd["tdp"] / MAX_TDP, 1.0),
                 ]
             else:
-                self.observations[slice_idx] = [0.0, 0.0, 0.0, 0.0]
+                self.observations[slice_idx] = [0.0, 0.0, 0.0, 0.0, 0.0]
