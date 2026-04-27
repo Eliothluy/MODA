@@ -191,6 +191,191 @@ ParseWeights(const std::string& str)
 }
 
 // ---------------------------------------------------------------------------
+// Estruturas para estatísticas baseline (standalone mode)
+// ---------------------------------------------------------------------------
+
+struct UeStats
+{
+    uint16_t ueId = 0;
+    SliceType slice = SliceType::EMBB;
+    uint64_t txBytes = 0;
+    uint64_t rxBytes = 0;
+    uint64_t prevTxBytes = 0;
+    uint64_t prevRxBytes = 0;
+    uint32_t txPackets = 0;
+    uint32_t rxPackets = 0;
+    uint32_t lostPackets = 0;
+    uint32_t prevTxPackets = 0;
+    uint32_t prevRxPackets = 0;
+    uint32_t prevLostPackets = 0;
+    double delaySumSec = 0.0;
+    double prevDelaySumSec = 0.0;
+};
+
+struct SliceAggStats
+{
+    uint64_t txBytes = 0;
+    uint64_t rxBytes = 0;
+    uint32_t txPackets = 0;
+    uint32_t rxPackets = 0;
+    uint32_t lostPackets = 0;
+    double delaySumSec = 0.0;
+    double jitterSumSec = 0.0;
+};
+
+struct SimState
+{
+    std::map<uint16_t, UeStats> ueStats;
+    std::map<SliceType, SliceAggStats> sliceStats;
+    std::ofstream statsFile;
+    uint32_t stepCount{0};
+    std::string outputDir;
+    uint32_t indicationPeriodMs{10};
+    double activeDurationSec{0.0};
+};
+
+static SimState g_baseline;
+
+// ---------------------------------------------------------------------------
+// Callback de estatísticas baseline (standalone)
+// ---------------------------------------------------------------------------
+
+static void
+StatsCallback()
+{
+    if (!g_monitorPtr || !g_classifierPtr)
+    {
+        Simulator::Schedule(MilliSeconds(g_baseline.indicationPeriodMs), &StatsCallback);
+        return;
+    }
+
+    g_monitorPtr->CheckForLostPackets();
+    FlowMonitor::FlowStatsContainer stats = g_monitorPtr->GetFlowStats();
+    uint64_t nowMs = static_cast<uint64_t>(Simulator::Now().GetMilliSeconds());
+    g_baseline.stepCount++;
+
+    if (!g_baseline.statsFile.is_open())
+    {
+        std::string path = g_baseline.outputDir + "/rslaq_stats_timeseries.csv";
+        g_baseline.statsFile.open(path, std::ios::out | std::ios::trunc);
+        g_baseline.statsFile << "timestamp_ms,ue_id,slice,thr_mbps,btx,bfs_pct,tdp,rsh_pct\n";
+    }
+
+    for (const auto& kv : stats)
+    {
+        FlowId flowId = kv.first;
+        const FlowMonitor::FlowStats& st = kv.second;
+        Ipv4FlowClassifier::FiveTuple tuple = g_classifierPtr->FindFlow(flowId);
+
+        if (tuple.protocol != 17)
+            continue;
+
+        auto itPort = g_portToUeId.find(tuple.destinationPort);
+        if (itPort == g_portToUeId.end())
+            continue;
+
+        uint16_t ueId = itPort->second;
+        SliceType slice = g_ueToSlice[ueId];
+        UeStats& ue = g_baseline.ueStats[ueId];
+
+        uint64_t dRxBytes = st.rxBytes - ue.prevRxBytes;
+        uint64_t dTxBytes = st.txBytes - ue.prevTxBytes;
+        uint32_t dTxPackets = st.txPackets - ue.prevTxPackets;
+        uint32_t dLostPackets = st.lostPackets - ue.prevLostPackets;
+
+        double periodSec = static_cast<double>(g_baseline.indicationPeriodMs) / 1000.0;
+        double thrMbps = (periodSec > 0) ? (static_cast<double>(dRxBytes) * 8.0 / periodSec / 1e6) : 0.0;
+        double bfsPct = (dTxPackets > 0) ? (static_cast<double>(dLostPackets) / static_cast<double>(dTxPackets) * 100.0) : 0.0;
+        (void)dTxBytes;
+
+        int32_t sliceIdx = static_cast<int32_t>(slice);
+        double rshPct = 0.0;
+        if (g_schedulerPtr && sliceIdx >= 0)
+        {
+            rshPct = g_schedulerPtr->GetPrbWeight(static_cast<uint32_t>(sliceIdx)) * 100.0;
+        }
+
+        g_baseline.statsFile << nowMs << "," << ueId << "," << SliceName(slice) << ","
+                             << std::fixed << std::setprecision(4) << thrMbps << ","
+                             << dTxBytes << ","
+                             << std::setprecision(2) << bfsPct << ","
+                             << dLostPackets << ","
+                             << std::setprecision(2) << rshPct << "\n";
+
+        ue.prevRxBytes = st.rxBytes;
+        ue.prevTxBytes = st.txBytes;
+        ue.prevRxPackets = st.rxPackets;
+        ue.prevTxPackets = st.txPackets;
+        ue.prevLostPackets = st.lostPackets;
+        ue.prevDelaySumSec = st.delaySum.GetSeconds();
+
+        ue.txBytes = st.txBytes;
+        ue.rxBytes = st.rxBytes;
+        ue.txPackets = st.txPackets;
+        ue.rxPackets = st.rxPackets;
+        ue.lostPackets = st.lostPackets;
+        ue.delaySumSec = st.delaySum.GetSeconds();
+    }
+
+    g_baseline.statsFile.flush();
+    Simulator::Schedule(MilliSeconds(g_baseline.indicationPeriodMs), &StatsCallback);
+}
+
+// ---------------------------------------------------------------------------
+// CSV final (resumo pós-simulação)
+// ---------------------------------------------------------------------------
+
+static void
+WriteFinalCsv(const std::string& prefix)
+{
+    {
+        std::ofstream out(prefix + "_ue.csv", std::ios::out | std::ios::trunc);
+        out << "ue_id,slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,"
+            << "throughput_mbps,avg_delay_ms,pdr\n";
+        for (const auto& kv : g_baseline.ueStats)
+        {
+            const UeStats& m = kv.second;
+            double thr = (g_baseline.activeDurationSec > 0)
+                             ? static_cast<double>(m.rxBytes) * 8.0 / g_baseline.activeDurationSec / 1e6
+                             : 0.0;
+            double avgDelay = (m.rxPackets > 0) ? m.delaySumSec / m.rxPackets * 1000.0 : 0.0;
+            double pdr = (m.txPackets > 0)
+                             ? static_cast<double>(m.rxPackets) / m.txPackets
+                             : 0.0;
+            out << m.ueId << "," << SliceName(m.slice) << ","
+                << m.txBytes << "," << m.rxBytes << ","
+                << m.txPackets << "," << m.rxPackets << "," << m.lostPackets << ","
+                << std::fixed << std::setprecision(4) << thr << ","
+                << std::setprecision(3) << avgDelay << ","
+                << std::setprecision(4) << pdr << "\n";
+        }
+    }
+
+    {
+        std::ofstream out(prefix + "_slice.csv", std::ios::out | std::ios::trunc);
+        out << "slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,"
+            << "throughput_mbps,avg_delay_ms,pdr\n";
+        for (const auto& kv : g_baseline.sliceStats)
+        {
+            const SliceAggStats& m = kv.second;
+            double thr = (g_baseline.activeDurationSec > 0)
+                             ? static_cast<double>(m.rxBytes) * 8.0 / g_baseline.activeDurationSec / 1e6
+                             : 0.0;
+            double avgDelay = (m.rxPackets > 0) ? m.delaySumSec / m.rxPackets * 1000.0 : 0.0;
+            double pdr = (m.txPackets > 0)
+                             ? static_cast<double>(m.rxPackets) / m.txPackets
+                             : 0.0;
+            out << SliceName(kv.first) << ","
+                << m.txBytes << "," << m.rxBytes << ","
+                << m.txPackets << "," << m.rxPackets << "," << m.lostPackets << ","
+                << std::fixed << std::setprecision(4) << thr << ","
+                << std::setprecision(3) << avgDelay << ","
+                << std::setprecision(4) << pdr << "\n";
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // IPC: KPM e Action callback
 // ---------------------------------------------------------------------------
 
@@ -736,17 +921,112 @@ main(int argc, char* argv[])
     g_monitorPtr = monitor;
     g_classifierPtr = classifier;
 
-    // ---- Schedule IPC callback ----
+    // ---- Initialize baseline stats ----
+    g_baseline.outputDir = outputDir;
+    g_baseline.indicationPeriodMs = indicationPeriodMs;
+    g_baseline.activeDurationSec = simTimeSec - appStartSec;
+    g_baseline.sliceStats[SliceType::EMBB] = SliceAggStats();
+    g_baseline.sliceStats[SliceType::URLLC] = SliceAggStats();
+    g_baseline.sliceStats[SliceType::MTC] = SliceAggStats();
+    for (uint32_t i = 0; i < numUeTotal; i++)
+    {
+        uint16_t ueId = static_cast<uint16_t>(i + 1);
+        SliceType slice = GetSliceForUe(ueId);
+        g_baseline.ueStats[ueId].ueId = ueId;
+        g_baseline.ueStats[ueId].slice = slice;
+    }
+
+    // ---- Schedule callbacks ----
+    Time firstCallback = Seconds(appStartSec) + MilliSeconds(indicationPeriodMs);
+    Simulator::Schedule(firstCallback, &StatsCallback);
+
     if (g_ipcEnabled)
     {
-        Time firstIpc = Seconds(appStartSec) + MilliSeconds(indicationPeriodMs);
-        Simulator::Schedule(firstIpc, &KpmAndControlCallback);
-        std::cout << "[RslaqSim] IPC callback scheduled at t=" << firstIpc.GetMilliSeconds() << " ms\n";
+        Simulator::Schedule(firstCallback, &KpmAndControlCallback);
+        std::cout << "[RslaqSim] IPC callback scheduled at t=" << firstCallback.GetMilliSeconds() << " ms\n";
     }
 
     // ---- Run ----
     Simulator::Stop(Seconds(simTimeSec));
     Simulator::Run();
+
+    // ---- Final stats ----
+    if (g_baseline.statsFile.is_open())
+    {
+        g_baseline.statsFile.close();
+    }
+
+    monitor->CheckForLostPackets();
+    FlowMonitor::FlowStatsContainer finalStats = monitor->GetFlowStats();
+
+    // Zerar slice stats para acumular corretamente
+    g_baseline.sliceStats[SliceType::EMBB] = SliceAggStats();
+    g_baseline.sliceStats[SliceType::URLLC] = SliceAggStats();
+    g_baseline.sliceStats[SliceType::MTC] = SliceAggStats();
+
+    for (const auto& kv : finalStats)
+    {
+        FlowId flowId = kv.first;
+        const FlowMonitor::FlowStats& st = kv.second;
+        Ipv4FlowClassifier::FiveTuple tuple = classifier->FindFlow(flowId);
+
+        if (tuple.protocol != 17)
+            continue;
+
+        auto itPort = portToUeId.find(tuple.destinationPort);
+        if (itPort == portToUeId.end())
+            continue;
+
+        uint16_t ueId = itPort->second;
+        SliceType slice = g_ueToSlice[ueId];
+        UeStats& ue = g_baseline.ueStats[ueId];
+        SliceAggStats& sa = g_baseline.sliceStats[slice];
+
+        ue.txBytes = st.txBytes;
+        ue.rxBytes = st.rxBytes;
+        ue.txPackets = st.txPackets;
+        ue.rxPackets = st.rxPackets;
+        ue.lostPackets = st.lostPackets;
+        ue.delaySumSec = st.delaySum.GetSeconds();
+
+        sa.txBytes += st.txBytes;
+        sa.rxBytes += st.rxBytes;
+        sa.txPackets += st.txPackets;
+        sa.rxPackets += st.rxPackets;
+        sa.lostPackets += st.lostPackets;
+        sa.delaySumSec += st.delaySum.GetSeconds();
+        sa.jitterSumSec += st.jitterSum.GetSeconds();
+    }
+
+    std::cout << "\n========================================\n"
+              << "  RESULTS (" << scenario.name << ")\n"
+              << "========================================\n";
+
+    for (const auto& kv : g_baseline.sliceStats)
+    {
+        const SliceAggStats& m = kv.second;
+        double thr = (g_baseline.activeDurationSec > 0)
+                         ? static_cast<double>(m.rxBytes) * 8.0 / g_baseline.activeDurationSec / 1e6
+                         : 0.0;
+        double avgDelay = (m.rxPackets > 0) ? m.delaySumSec / m.rxPackets * 1000.0 : 0.0;
+        double pdr = (m.txPackets > 0)
+                         ? static_cast<double>(m.rxPackets) / m.txPackets
+                         : 0.0;
+
+        std::cout << SliceName(kv.first) << ":\n"
+                  << "  Throughput : " << std::fixed << std::setprecision(4) << thr << " Mbps\n"
+                  << "  Avg delay  : " << std::setprecision(3) << avgDelay << " ms\n"
+                  << "  PDR        : " << std::setprecision(4) << pdr << "\n"
+                  << "  TX/RX pkts : " << m.txPackets << " / " << m.rxPackets << "\n\n";
+    }
+
+    std::string prefix = outputDir + "/rslaq_" + scenario.name;
+    WriteFinalCsv(prefix);
+
+    std::cout << "CSV outputs:\n"
+              << "  " << prefix << "_ue.csv\n"
+              << "  " << prefix << "_slice.csv\n"
+              << "  " << outputDir << "/rslaq_stats_timeseries.csv\n";
 
     // ---- Cleanup IPC ----
     if (g_ipcEnabled)
