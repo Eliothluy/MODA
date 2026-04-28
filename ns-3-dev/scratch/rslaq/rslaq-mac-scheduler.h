@@ -12,7 +12,9 @@
 
 #include "ns3/nr-mac-scheduler-ofdma-rr.h"
 
+#include <cstdint>
 #include <fstream>
+#include <string>
 #include <vector>
 
 namespace ns3
@@ -87,6 +89,18 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     void SetScenarioName(const std::string& name);
     void SetOutputDir(const std::string& dir);
 
+    /**
+     * @brief Set current slot number for logging
+     * @param slot Current slot number
+     */
+    void SetCurrentSlot(uint32_t slot);
+
+    /**
+     * @brief Set current BWP ID for logging
+     * @param bwpId Current BWP ID
+     */
+    void SetBwpId(uint32_t bwpId);
+
   protected:
     std::shared_ptr<NrMacSchedulerUeInfo> CreateUeRepresentation(
         const NrMacCschedSapProvider::CschedUeConfigReqParameters& params) const override;
@@ -124,6 +138,31 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
 
     void OpenCsvFiles() const;
 
+    /**
+     * @brief Determine if current slot should be logged
+     * @param timeMs Current time in milliseconds
+     * @return true if this slot should be logged
+     */
+    bool ShouldLogSlot(uint64_t timeMs) const;
+
+    /**
+     * @brief Get current slot number for logging
+     * @return current slot number
+     */
+    uint32_t GetCurrentSlot() const;
+
+    /**
+     * @brief Get current BWP ID for logging
+     * @return current BWP ID
+     */
+    uint32_t GetBwpId() const;
+
+    /**
+     * @brief Increment and get next DL scheduling call ID
+     * @return next call ID
+     */
+    uint64_t GetNextCallId() const;
+
     uint32_t m_numSlices{0};
     std::vector<double> m_prbWeights;                     // per-slice PRB proportion
     std::vector<IntraSliceAlgorithm> m_intraAlgorithms;    // per-slice algorithm
@@ -141,6 +180,17 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     mutable std::ofstream m_sliceAllocCsv;
     mutable std::ofstream m_unmappedRntiCsv;
     mutable std::ofstream m_ueAllocCsv;
+
+    // Instrumentation: call counter and tracking
+    mutable uint64_t m_dlSchedCallSeq{0};
+    mutable uint32_t m_currentSlot{0};
+    mutable uint32_t m_bwpId{0};
+
+    // Logging control attributes
+    bool m_logAllMacSlots{false};
+    uint32_t m_macLoggingPeriodMs{100};
+    bool m_enableDetailedMacLogging{false};
+    mutable uint64_t m_lastLoggedMs{0};
 };
 
 } // namespace ns3

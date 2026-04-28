@@ -50,6 +50,21 @@ RslaqMacScheduler::GetTypeId()
                           "If true, unmapped UEs are forced into slice 0 (debug only)",
                           BooleanValue(false),
                           MakeBooleanAccessor(&RslaqMacScheduler::m_fallbackUnmappedToSlice0),
+                          MakeBooleanChecker())
+            .AddAttribute("LogAllMacSlots",
+                          "If true, log every MAC scheduling call (use with caution, produces large files)",
+                          BooleanValue(false),
+                          MakeBooleanAccessor(&RslaqMacScheduler::m_logAllMacSlots),
+                          MakeBooleanChecker())
+            .AddAttribute("MacLoggingPeriodMs",
+                          "Period of MAC logging in milliseconds when LogAllMacSlots is false",
+                          UintegerValue(100),
+                          MakeUintegerAccessor(&RslaqMacScheduler::m_macLoggingPeriodMs),
+                          MakeUintegerChecker<uint32_t>(1))
+            .AddAttribute("EnableDetailedMacLogging",
+                          "If true, enable detailed MAC-level logging with call IDs and slot info",
+                          BooleanValue(false),
+                          MakeBooleanAccessor(&RslaqMacScheduler::m_enableDetailedMacLogging),
                           MakeBooleanChecker());
     return tid;
 }
@@ -62,6 +77,57 @@ RslaqMacScheduler::RslaqMacScheduler()
 
 RslaqMacScheduler::~RslaqMacScheduler()
 {
+}
+
+bool
+RslaqMacScheduler::ShouldLogSlot(uint64_t timeMs) const
+{
+    if (m_logAllMacSlots)
+    {
+        return true;
+    }
+    if (m_enableDetailedMacLogging)
+    {
+        // Log based on period, but also ensure we log at least once
+        if (timeMs - m_lastLoggedMs >= m_macLoggingPeriodMs)
+        {
+            m_lastLoggedMs = timeMs;
+            return true;
+        }
+        return false;
+    }
+    // Legacy behavior: log first 200ms and every 100ms
+    return (timeMs <= 200) || (timeMs % 100 == 0);
+}
+
+uint32_t
+RslaqMacScheduler::GetCurrentSlot() const
+{
+    return m_currentSlot;
+}
+
+uint32_t
+RslaqMacScheduler::GetBwpId() const
+{
+    return m_bwpId;
+}
+
+uint64_t
+RslaqMacScheduler::GetNextCallId() const
+{
+    return ++m_dlSchedCallSeq;
+}
+
+void
+RslaqMacScheduler::SetCurrentSlot(uint32_t slot)
+{
+    m_currentSlot = slot;
+}
+
+void
+RslaqMacScheduler::SetBwpId(uint32_t bwpId)
+{
+    m_bwpId = bwpId;
 }
 
 void
@@ -221,23 +287,28 @@ RslaqMacScheduler::OpenCsvFiles() const
     {
         std::string path = prefix + "slice_alloc.csv";
         m_sliceAllocCsv.open(path, std::ios::out | std::ios::trunc);
-        m_sliceAllocCsv << "timeMs,scenario,sliceId,configuredWeight,effectiveWeight,activeUes,"
-                           "beamSym,hasDemand,budgetRbg,allocatedRbg,reason,rntis\n";
+        // Header with new fields: callId, slot, bwpId, beamId
+        m_sliceAllocCsv << "callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,"
+                           "effectiveWeight,activeUes,beamSym,hasDemand,budgetRbg,allocatedRbg,"
+                           "reason,rntis\n";
         m_sliceAllocCsv.flush();
     }
     if (!m_unmappedRntiCsv.is_open())
     {
         std::string path = prefix + "unmapped_rntis.csv";
         m_unmappedRntiCsv.open(path, std::ios::out | std::ios::trunc);
-        m_unmappedRntiCsv << "timeMs,rnti,reason\n";
+        // Header with scenario field
+        m_unmappedRntiCsv << "callId,timeMs,scenario,rnti,reason\n";
         m_unmappedRntiCsv.flush();
     }
     if (!m_ueAllocCsv.is_open())
     {
         std::string path = prefix + "ue_detail.csv";
         m_ueAllocCsv.open(path, std::ios::out | std::ios::trunc);
-        m_ueAllocCsv << "timeMs,scenario,sliceId,rnti,bufQueueSize,m_dlTbSize,"
-                           "demandPassed,rbgAllocated,uniqueRbgs,mcs,rank,numRbPerRbg\n";
+        // Header with new fields: callId, slot, bwpId, beamId, tbSizeBytes, reason
+        m_ueAllocCsv << "callId,timeMs,scenario,slot,bwpId,beamId,sliceId,rnti,bufQueueSize,"
+                           "dlTbSizeBefore,hasDemand,demandPassed,rbgAllocated,uniqueRbgs,"
+                           "tbSizeBytes,mcs,rank,numRbPerRbg,reason\n";
         m_ueAllocCsv.flush();
     }
 }
@@ -293,13 +364,22 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
     BeamSymbolMap symPerBeam = GetSymPerBeam(symAvail, activeDl);
 
     uint64_t timeMs = Simulator::Now().GetMilliSeconds();
-    bool logThisSlot = (timeMs <= 200) || (timeMs % 100 == 0);
+    uint64_t callId = GetNextCallId();
+    bool logThisSlot = ShouldLogSlot(timeMs);
+
+    // Helper to serialize BeamId to string
+    auto beamIdToStr = [](const BeamId& bid) -> std::string {
+        std::ostringstream oss;
+        oss << bid.GetSector() << "_" << bid.GetElevation();
+        return oss.str();
+    };
 
     for (const auto& el : activeDl)
     {
         BeamId beamId = GetBeamId(el);
         uint32_t beamSym = symPerBeam.at(beamId);
         const std::vector<bool> dlNotchedMask = GetDlNotchedRbgMask();
+        std::string beamIdStr = beamIdToStr(beamId);
 
         std::vector<uint32_t> availableRbgIds;
         if (!dlNotchedMask.empty())
@@ -355,7 +435,8 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                 unmappedRntis.push_back(rnti);
                 if (m_unmappedRntiCsv.is_open())
                 {
-                    m_unmappedRntiCsv << timeMs << "," << rnti << ",not_in_any_slice\n";
+                    m_unmappedRntiCsv << callId << "," << timeMs << "," << m_scenarioName << ","
+                                     << rnti << ",not_in_any_slice\n";
                 }
                 if (m_fallbackUnmappedToSlice0 && m_numSlices > 0)
                 {
@@ -480,14 +561,15 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                                                         ue.first->m_dlRBG.end());
                                 curUnique = static_cast<uint32_t>(uniq.size());
                             }
-                            m_ueAllocCsv << timeMs << "," << m_scenarioName << ","
+                            m_ueAllocCsv << callId << "," << timeMs << "," << m_scenarioName << ","
+                                         << m_currentSlot << "," << m_bwpId << "," << beamIdStr << ","
                                          << s << "," << ue.first->m_rnti << ","
                                          << bufQueueSize << "," << prevTbSize << ","
-                                         << (demandPassed ? 1 : 0) << ","
-                                         << 0 << "," << curUnique << ","
+                                         << 0 << "," << (demandPassed ? 1 : 0) << ","
+                                         << 0 << "," << curUnique << "," << 0 << ","
                                          << static_cast<uint32_t>(ue.first->GetDlMcs()) << ","
                                          << static_cast<uint32_t>(ue.first->m_dlRank) << ","
-                                         << GetNumRbPerRbg() << "\n";
+                                         << GetNumRbPerRbg() << ",pre_allocation\n";
                         }
 
                         if (!demandPassed)
@@ -542,14 +624,16 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                         {
                             std::set<uint16_t> uniq(ue.first->m_dlRBG.begin(),
                                                     ue.first->m_dlRBG.end());
-                            m_ueAllocCsv << timeMs << "," << m_scenarioName << ","
+                            uint32_t tbSize = ue.first->m_dlTbSize;
+                            m_ueAllocCsv << callId << "," << timeMs << "," << m_scenarioName << ","
+                                         << m_currentSlot << "," << m_bwpId << "," << beamIdStr << ","
                                          << s << "," << ue.first->m_rnti << ","
                                          << bufQueueSize << "," << ue.first->m_dlTbSize << ","
-                                         << 1 << "," << 1 << ","
-                                         << static_cast<uint32_t>(uniq.size()) << ","
+                                         << 1 << "," << 1 << "," << 1 << ","
+                                         << static_cast<uint32_t>(uniq.size()) << "," << tbSize << ","
                                          << static_cast<uint32_t>(ue.first->GetDlMcs()) << ","
                                          << static_cast<uint32_t>(ue.first->m_dlRank) << ","
-                                         << GetNumRbPerRbg() << "\n";
+                                         << GetNumRbPerRbg() << ",allocated\n";
                         }
                     }
 
@@ -582,7 +666,8 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                         rntiList << ";";
                     rntiList << sliceUeVec[s][i].first->m_rnti;
                 }
-                m_sliceAllocCsv << timeMs << "," << m_scenarioName << ","
+                m_sliceAllocCsv << callId << "," << timeMs << "," << m_scenarioName << ","
+                                << m_currentSlot << "," << m_bwpId << "," << beamIdStr << ","
                                 << s << ","
                                 << std::fixed << std::setprecision(4) << m_prbWeights[s] << ","
                                 << std::setprecision(4) << effectiveWeight[s] << ","
@@ -602,13 +687,14 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                 {
                     uint32_t bufQueueSize = ue.second;
                     uint32_t prevTbSize = ue.first->m_dlTbSize;
-                    m_ueAllocCsv << timeMs << "," << m_scenarioName << ","
+                    m_ueAllocCsv << callId << "," << timeMs << "," << m_scenarioName << ","
+                                 << m_currentSlot << "," << m_bwpId << "," << beamIdStr << ","
                                  << s << "," << ue.first->m_rnti << ","
                                  << bufQueueSize << "," << prevTbSize << ","
-                                 << 0 << "," << 0 << "," << 0 << ","
+                                 << 0 << "," << 0 << "," << 0 << "," << 0 << ",0,"
                                  << static_cast<uint32_t>(ue.first->GetDlMcs()) << ","
                                  << static_cast<uint32_t>(ue.first->m_dlRank) << ","
-                                 << GetNumRbPerRbg() << "\n";
+                                 << GetNumRbPerRbg() << ",no_demand\n";
                 }
             }
         }

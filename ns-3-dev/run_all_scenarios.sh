@@ -2,8 +2,8 @@
 # Run all 5 RSLAQ traffic scenarios (standalone mode)
 set -e
 
-NS3_DIR="/home/eliothluy/Documentos/artigo_jussi/ns-3-dev"
-RESULTS_DIR="/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/results_rslaq"
+NS3_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev"
+RESULTS_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev/results_rslaq"
 SCENARIOS=("low_traffic" "normal" "congestion" "stressed" "insufficient_resources")
 
 # Simulation parameters

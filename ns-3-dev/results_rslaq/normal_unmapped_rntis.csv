@@ -1,1 +1,1 @@
-timeMs,rnti,reason
+callId,timeMs,scenario,rnti,reason

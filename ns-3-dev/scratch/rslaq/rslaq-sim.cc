@@ -64,6 +64,17 @@ static std::map<uint16_t, SliceType> g_ueToSlice;
 static uint32_t g_indicationPeriodMs = 10;
 static bool g_ipcEnabled = false;
 
+// Previous KPM values for delta calculation (IPC mode)
+struct KpmPrevValues
+{
+    uint64_t txBytes = 0;
+    uint64_t rxBytes = 0;
+    uint32_t txPackets = 0;
+    uint32_t rxPackets = 0;
+    uint32_t lostPackets = 0;
+};
+static std::map<uint16_t, KpmPrevValues> g_kpmPrevValues;
+
 // P_STA decomposition: 50% estático + 50% dinâmico do agente
 static const std::vector<double> P_STA_WEIGHTS = {0.33, 0.40, 0.27};
 
@@ -258,7 +269,8 @@ StatsCallback()
     {
         std::string path = g_baseline.outputDir + "/rslaq_stats_timeseries.csv";
         g_baseline.statsFile.open(path, std::ios::out | std::ios::trunc);
-        g_baseline.statsFile << "timestamp_ms,ue_id,slice,thr_mbps,btx,bfs_pct,tdp,rsh_pct\n";
+        // Added effective loss metrics (based on tx - rx, more reliable than FlowMonitor lostPackets)
+        g_baseline.statsFile << "timestamp_ms,ue_id,slice,thr_mbps,btx,bfs_pct,tdp,effective_lost_pcts,rsh_pct\n";
     }
 
     for (const auto& kv : stats)
@@ -281,7 +293,12 @@ StatsCallback()
         uint64_t dRxBytes = st.rxBytes - ue.prevRxBytes;
         uint64_t dTxBytes = st.txBytes - ue.prevTxBytes;
         uint32_t dTxPackets = st.txPackets - ue.prevTxPackets;
+        uint32_t dRxPackets = st.rxPackets - ue.prevRxPackets;
         uint32_t dLostPackets = st.lostPackets - ue.prevLostPackets;
+
+        // Calculate effective loss based on tx - rx (more reliable than FlowMonitor lostPackets)
+        uint32_t effectiveLost = (dTxPackets >= dRxPackets) ? (dTxPackets - dRxPackets) : 0;
+        double effectiveLostPct = (dTxPackets > 0) ? (static_cast<double>(effectiveLost) / dTxPackets * 100.0) : 0.0;
 
         double periodSec = static_cast<double>(g_baseline.indicationPeriodMs) / 1000.0;
         double thrMbps = (periodSec > 0) ? (static_cast<double>(dRxBytes) * 8.0 / periodSec / 1e6) : 0.0;
@@ -300,6 +317,7 @@ StatsCallback()
                              << dTxBytes << ","
                              << std::setprecision(2) << bfsPct << ","
                              << dLostPackets << ","
+                             << effectiveLostPct << ","
                              << std::setprecision(2) << rshPct << "\n";
 
         ue.prevRxBytes = st.rxBytes;
@@ -330,8 +348,9 @@ WriteFinalCsv(const std::string& prefix)
 {
     {
         std::ofstream out(prefix + "_ue.csv", std::ios::out | std::ios::trunc);
+        // Added effective_lost_packets and effective_pdr
         out << "ue_id,slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,"
-            << "throughput_mbps,avg_delay_ms,pdr\n";
+            << "effective_lost_packets,throughput_mbps,avg_delay_ms,pdr,effective_pdr\n";
         for (const auto& kv : g_baseline.ueStats)
         {
             const UeStats& m = kv.second;
@@ -342,19 +361,28 @@ WriteFinalCsv(const std::string& prefix)
             double pdr = (m.txPackets > 0)
                              ? static_cast<double>(m.rxPackets) / m.txPackets
                              : 0.0;
+            // Calculate effective loss based on tx - rx (more reliable than FlowMonitor lostPackets)
+            uint32_t effectiveLost = (m.txPackets >= m.rxPackets) ? (m.txPackets - m.rxPackets) : 0;
+            double effectivePdr = (m.txPackets > 0)
+                                    ? static_cast<double>(m.rxPackets) / m.txPackets
+                                    : 0.0;
+
             out << m.ueId << "," << SliceName(m.slice) << ","
                 << m.txBytes << "," << m.rxBytes << ","
                 << m.txPackets << "," << m.rxPackets << "," << m.lostPackets << ","
+                << effectiveLost << ","
                 << std::fixed << std::setprecision(4) << thr << ","
                 << std::setprecision(3) << avgDelay << ","
-                << std::setprecision(4) << pdr << "\n";
+                << std::setprecision(4) << pdr << ","
+                << std::setprecision(4) << effectivePdr << "\n";
         }
     }
 
     {
         std::ofstream out(prefix + "_slice.csv", std::ios::out | std::ios::trunc);
+        // Added effective_lost_packets and effective_pdr
         out << "slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,"
-            << "throughput_mbps,avg_delay_ms,pdr\n";
+            << "effective_lost_packets,throughput_mbps,avg_delay_ms,pdr,effective_pdr\n";
         for (const auto& kv : g_baseline.sliceStats)
         {
             const SliceAggStats& m = kv.second;
@@ -365,12 +393,20 @@ WriteFinalCsv(const std::string& prefix)
             double pdr = (m.txPackets > 0)
                              ? static_cast<double>(m.rxPackets) / m.txPackets
                              : 0.0;
+            // Calculate effective loss based on tx - rx
+            uint32_t effectiveLost = (m.txPackets >= m.rxPackets) ? (m.txPackets - m.rxPackets) : 0;
+            double effectivePdr = (m.txPackets > 0)
+                                    ? static_cast<double>(m.rxPackets) / m.txPackets
+                                    : 0.0;
+
             out << SliceName(kv.first) << ","
                 << m.txBytes << "," << m.rxBytes << ","
                 << m.txPackets << "," << m.rxPackets << "," << m.lostPackets << ","
+                << effectiveLost << ","
                 << std::fixed << std::setprecision(4) << thr << ","
                 << std::setprecision(3) << avgDelay << ","
-                << std::setprecision(4) << pdr << "\n";
+                << std::setprecision(4) << pdr << ","
+                << std::setprecision(4) << effectivePdr << "\n";
         }
     }
 }
@@ -438,10 +474,10 @@ KpmAndControlCallback()
         k.count++;
     }
 
-    // Escrever rslaq-kpms.txt
+    // Escrever rslaq-kpms.txt (now using delta-based metrics)
     {
         std::ofstream kpmFile("rslaq-kpms.txt", std::ios::out | std::ios::trunc);
-        kpmFile << "timestamp,ueImsi,sliceId,txBytes,plr,resourceSharePct,lostPackets,throughputMbps\n";
+        kpmFile << "timestamp,ueImsi,sliceId,dTxBytes,dRxBytes,plr,resourceSharePct,dLostPackets,throughputMbps\n";
 
         for (const auto& kv : ueKpms)
         {
@@ -450,21 +486,39 @@ KpmAndControlCallback()
             SliceType slice = g_ueToSlice[ueId];
             uint32_t sliceIdx = static_cast<uint32_t>(slice);
 
-            double plr = (k.txPackets > 0)
-                             ? (static_cast<double>(k.lostPackets) / k.txPackets * 100.0)
+            // Get previous values and calculate deltas
+            KpmPrevValues& prev = g_kpmPrevValues[ueId];
+            uint64_t dTxBytes = (k.txBytes >= prev.txBytes) ? (k.txBytes - prev.txBytes) : 0;
+            uint64_t dRxBytes = (k.rxBytes >= prev.rxBytes) ? (k.rxBytes - prev.rxBytes) : 0;
+            uint32_t dTxPackets = (k.txPackets >= prev.txPackets) ? (k.txPackets - prev.txPackets) : 0;
+            uint32_t dRxPackets = (k.rxPackets >= prev.rxPackets) ? (k.rxPackets - prev.rxPackets) : 0;
+
+            // Update previous values for next iteration
+            prev.txBytes = k.txBytes;
+            prev.rxBytes = k.rxBytes;
+            prev.txPackets = k.txPackets;
+            prev.rxPackets = k.rxPackets;
+            prev.lostPackets = k.lostPackets;
+
+            // Calculate effective loss (more reliable than FlowMonitor lostPackets)
+            uint32_t effectiveLost = (dTxPackets >= dRxPackets) ? (dTxPackets - dRxPackets) : 0;
+
+            double plr = (dTxPackets > 0)
+                             ? (static_cast<double>(effectiveLost) / dTxPackets * 100.0)
                              : 0.0;
             double rsh = (g_schedulerPtr)
                              ? g_schedulerPtr->GetPrbWeight(sliceIdx) * 100.0
                              : 0.0;
             double periodSec = static_cast<double>(g_indicationPeriodMs) / 1000.0;
             double thrMbps = (periodSec > 0)
-                                 ? (static_cast<double>(k.rxBytes) * 8.0 / periodSec / 1e6)
+                                 ? (static_cast<double>(dRxBytes) * 8.0 / periodSec / 1e6)
                                  : 0.0;
 
             kpmFile << nowMs << "," << ueId << "," << sliceIdx << ","
-                    << k.txBytes << "," << std::fixed << std::setprecision(2) << plr << ","
+                    << dTxBytes << "," << dRxBytes << ","
+                    << std::fixed << std::setprecision(2) << plr << ","
                     << std::setprecision(2) << rsh << ","
-                    << k.lostPackets << ","
+                    << effectiveLost << ","
                     << std::setprecision(4) << thrMbps << "\n";
         }
         kpmFile.flush();
@@ -587,6 +641,8 @@ main(int argc, char* argv[])
     double txPowerDbm = 43.0;
     std::string weightsStr = "0.3333,0.4000,0.2667";
     std::string simId = "";
+    bool logAllMacSlots = false;
+    uint32_t macLoggingPeriodMs = 100;
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("scenario", "1-5 or name", scenarioName);
@@ -595,13 +651,15 @@ main(int argc, char* argv[])
     cmd.AddValue("seed", "RNG seed", seed);
     cmd.AddValue("outputDir", "Output directory", outputDir);
     cmd.AddValue("periodMs", "Stats indication period (ms)", indicationPeriodMs);
-    cmd.AddValue("tddPattern", "TDD slot pattern string", tddPattern);
+    cmd.AddValue("tddPattern", "TDD slot pattern string (NOTE: currently NOT applied in this NR version)", tddPattern);
     cmd.AddValue("txPower", "gNB TX power (dBm)", txPowerDbm);
     cmd.AddValue("embbUes", "Number of eMBB UEs", g_numUeEmbb);
     cmd.AddValue("urllcUes", "Number of URLLC UEs", g_numUeUrllc);
     cmd.AddValue("mtcUes", "Number of MTC UEs", g_numUeMtc);
     cmd.AddValue("weights", "Slice weights as comma-separated list (eMBB,URLLC,MTC)", weightsStr);
     cmd.AddValue("simId", "Simulation UUID for IPC semaphores", simId);
+    cmd.AddValue("LogAllMacSlots", "Log every MAC scheduling call (large files)", logAllMacSlots);
+    cmd.AddValue("MacLoggingPeriodMs", "MAC logging period in ms (when LogAllMacSlots=false)", macLoggingPeriodMs);
     cmd.Parse(argc, argv);
 
     if (scenarioName.size() == 1 && std::isdigit(scenarioName[0]))
@@ -812,12 +870,17 @@ main(int argc, char* argv[])
     scheduler->SetScenarioName(scenarioName);
     scheduler->SetOutputDir(outputDir);
 
+    // Configure MAC logging attributes
+    scheduler->SetAttribute("LogAllMacSlots", BooleanValue(logAllMacSlots));
+    scheduler->SetAttribute("MacLoggingPeriodMs", UintegerValue(macLoggingPeriodMs));
+    scheduler->SetAttribute("EnableDetailedMacLogging", BooleanValue(true)); // Enable detailed logging
+
     // Mapeamento RNTI real pós-attach
     double mappingTime = std::min(0.1, appStartSec - 0.05);
     if (mappingTime < 0.0)
         mappingTime = 0.05;
 
-    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &p_j]() {
+    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &p_j, &scenarioName, &outputDir, &ueIpIfaces]() {
         std::vector<std::vector<uint32_t>> sliceRntis(NUM_SLICES);
         std::cout << "\n=== UE Mapping (RNTI real após attach) ===\n"
                   << std::setw(4) << "Idx" << " | "
@@ -827,11 +890,22 @@ main(int argc, char* argv[])
                   << std::setw(8) << "SliceType" << "\n"
                   << "-------------------------------------------\n";
 
+        // Write UE/RNTI mapping CSV
+        std::string mappingPrefix = outputDir;
+        if (!mappingPrefix.empty() && mappingPrefix.back() != '/')
+        {
+            mappingPrefix += '/';
+        }
+        std::string mappingPath = mappingPrefix + scenarioName + "_ue_rnti_mapping.csv";
+        std::ofstream mappingFile(mappingPath, std::ios::out | std::ios::trunc);
+        mappingFile << "scenario,ueId,imsi,rnti,sliceId,sliceName,ip,port\n";
+
         for (uint32_t i = 0; i < ueNetDev.GetN(); ++i)
         {
             uint16_t ueId = static_cast<uint16_t>(i + 1);
             SliceType slice = GetSliceForUe(ueId);
             uint32_t sliceIdx = static_cast<uint32_t>(slice);
+            uint16_t port = 12000 + ueId; // baseDlPort + ueId
 
             Ptr<NrUeNetDevice> ueDev = DynamicCast<NrUeNetDevice>(ueNetDev.Get(i));
             uint16_t rnti = UINT16_MAX;
@@ -859,8 +933,15 @@ main(int argc, char* argv[])
                       << std::setw(6) << rnti << " | "
                       << std::setw(8) << sliceIdx << " | "
                       << std::setw(8) << SliceName(slice) << "\n";
+
+            // Write to mapping CSV
+            Ipv4Address ueAddr = ueIpIfaces.GetAddress(i);
+            mappingFile << scenarioName << "," << ueId << "," << imsi << "," << rnti << ","
+                       << sliceIdx << "," << SliceName(slice) << "," << ueAddr << "," << port << "\n";
         }
-        std::cout << "==========================================\n\n";
+        mappingFile.close();
+        std::cout << "==========================================\n";
+        std::cout << "UE/RNTI mapping written to: " << mappingPath << "\n\n";
 
         scheduler->SetSliceUeMapping(NUM_SLICES, sliceRntis);
 
