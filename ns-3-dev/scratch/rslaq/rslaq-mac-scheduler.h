@@ -82,10 +82,10 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      */
     int32_t GetSliceIndexForRnti(uint16_t rnti) const;
 
-    /**
-     * @brief Print the current slice configuration to the log
-     */
     void DumpSliceConfiguration() const;
+
+    void SetScenarioName(const std::string& name);
+    void SetOutputDir(const std::string& dir);
 
   protected:
     std::shared_ptr<NrMacSchedulerUeInfo> CreateUeRepresentation(
@@ -132,11 +132,15 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     double m_timeWindow{99.0}; //!< PF averaging time window
     double m_alpha{0.0};       //!< PF fairness index (0 = full fairness)
 
-    bool m_fallbackUnmappedToSlice0{false}; //!< If true, unmapped UEs are forced into slice 0
-    mutable bool m_firstRun{true};          //!< Used to trigger one-time debug dump
+    bool m_fallbackUnmappedToSlice0{false};
+    mutable bool m_firstRun{true};
 
-    mutable std::ofstream m_sliceAllocCsv;   //!< Slice allocation metrics
-    mutable std::ofstream m_unmappedRntiCsv; //!< Unmapped RNTI log
+    std::string m_scenarioName;
+    std::string m_outputDir;
+
+    mutable std::ofstream m_sliceAllocCsv;
+    mutable std::ofstream m_unmappedRntiCsv;
+    mutable std::ofstream m_ueAllocCsv;
 };
 
 } // namespace ns3

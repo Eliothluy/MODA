@@ -809,6 +809,9 @@ main(int argc, char* argv[])
     NS_ASSERT_MSG(scheduler != nullptr, "Failed to cast to RslaqMacScheduler");
     g_schedulerPtr = scheduler;
 
+    scheduler->SetScenarioName(scenarioName);
+    scheduler->SetOutputDir(outputDir);
+
     // Mapeamento RNTI real pós-attach
     double mappingTime = std::min(0.1, appStartSec - 0.05);
     if (mappingTime < 0.0)

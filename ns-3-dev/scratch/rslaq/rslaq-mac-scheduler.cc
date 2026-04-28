@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iomanip>
 #include <numeric>
+#include <set>
 #include <sstream>
 
 namespace ns3
@@ -192,22 +193,52 @@ RslaqMacScheduler::DumpSliceConfiguration() const
 }
 
 void
+RslaqMacScheduler::SetScenarioName(const std::string& name)
+{
+    m_scenarioName = name;
+}
+
+void
+RslaqMacScheduler::SetOutputDir(const std::string& dir)
+{
+    m_outputDir = dir;
+}
+
+void
 RslaqMacScheduler::OpenCsvFiles() const
 {
+    std::string prefix = m_outputDir;
+    if (!prefix.empty() && prefix.back() != '/')
+    {
+        prefix += '/';
+    }
+    if (!m_scenarioName.empty())
+    {
+        prefix += m_scenarioName + "_";
+    }
+
     if (!m_sliceAllocCsv.is_open())
     {
-        m_sliceAllocCsv.open("rslaq_slice_allocations.csv",
-                             std::ios::out | std::ios::trunc);
-        m_sliceAllocCsv << "timeMs,sliceId,configuredWeight,effectiveWeight,activeUes,"
-                           "budgetRbg,allocatedRbg,rntis\n";
+        std::string path = prefix + "slice_alloc.csv";
+        m_sliceAllocCsv.open(path, std::ios::out | std::ios::trunc);
+        m_sliceAllocCsv << "timeMs,scenario,sliceId,configuredWeight,effectiveWeight,activeUes,"
+                           "beamSym,hasDemand,budgetRbg,allocatedRbg,reason,rntis\n";
         m_sliceAllocCsv.flush();
     }
     if (!m_unmappedRntiCsv.is_open())
     {
-        m_unmappedRntiCsv.open("rslaq_unmapped_rntis.csv",
-                               std::ios::out | std::ios::trunc);
+        std::string path = prefix + "unmapped_rntis.csv";
+        m_unmappedRntiCsv.open(path, std::ios::out | std::ios::trunc);
         m_unmappedRntiCsv << "timeMs,rnti,reason\n";
         m_unmappedRntiCsv.flush();
+    }
+    if (!m_ueAllocCsv.is_open())
+    {
+        std::string path = prefix + "ue_detail.csv";
+        m_ueAllocCsv.open(path, std::ios::out | std::ios::trunc);
+        m_ueAllocCsv << "timeMs,scenario,sliceId,rnti,bufQueueSize,m_dlTbSize,"
+                           "demandPassed,rbgAllocated,uniqueRbgs,mcs,rank,numRbPerRbg\n";
+        m_ueAllocCsv.flush();
     }
 }
 
@@ -262,6 +293,7 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
     BeamSymbolMap symPerBeam = GetSymPerBeam(symAvail, activeDl);
 
     uint64_t timeMs = Simulator::Now().GetMilliSeconds();
+    bool logThisSlot = (timeMs <= 200) || (timeMs % 100 == 0);
 
     for (const auto& el : activeDl)
     {
@@ -269,7 +301,6 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
         uint32_t beamSym = symPerBeam.at(beamId);
         const std::vector<bool> dlNotchedMask = GetDlNotchedRbgMask();
 
-        // --- Build explicit list of real available RBG IDs ---
         std::vector<uint32_t> availableRbgIds;
         if (!dlNotchedMask.empty())
         {
@@ -294,7 +325,6 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
         uint32_t totalRbgs = static_cast<uint32_t>(availableRbgIds.size());
         NS_ASSERT(totalRbgs > 0);
 
-        // Track which real RBG IDs are still free
         std::vector<bool> rbgRealUsed(GetBandwidthInRbg(), false);
         if (!dlNotchedMask.empty())
         {
@@ -302,22 +332,18 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
             {
                 if (!dlNotchedMask[i])
                 {
-                    rbgRealUsed[i] = true; // mark notched as already used
+                    rbgRealUsed[i] = true;
                 }
             }
         }
 
         FTResources assigned(0, 0);
 
-        // --- Log all active RNTIs and classify into slices ---
         std::vector<std::vector<UePtrAndBufferReq>> sliceUeVec(m_numSlices);
         std::vector<uint16_t> unmappedRntis;
-        std::ostringstream activeRntiOss;
-        activeRntiOss << "[RslaqScheduler] Active RNTIs seen: ";
         for (const auto& ue : GetUeVector(el))
         {
             uint16_t rnti = ue.first->m_rnti;
-            activeRntiOss << rnti << " ";
             int32_t sIdx = GetSliceIndexForRnti(rnti);
             if (sIdx >= 0)
             {
@@ -333,23 +359,11 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                 }
                 if (m_fallbackUnmappedToSlice0 && m_numSlices > 0)
                 {
-                    NS_LOG_WARN("[RslaqScheduler] Fallback: forcing RNTI " << rnti << " into slice 0");
                     sliceUeVec[0].emplace_back(ue);
                 }
             }
         }
-        NS_LOG_DEBUG(activeRntiOss.str());
 
-        // Log per-slice active UE counts
-        std::ostringstream sliceCountOss;
-        sliceCountOss << "[RslaqScheduler] Active UEs per slice: ";
-        for (uint32_t s = 0; s < m_numSlices; s++)
-        {
-            sliceCountOss << "Slice" << s << "=" << sliceUeVec[s].size() << " ";
-        }
-        NS_LOG_DEBUG(sliceCountOss.str());
-
-        // --- Compute effective weights and budgets among active/demanding slices ---
         std::vector<bool> sliceHasDemand(m_numSlices, false);
         double activeWeightSum = 0.0;
         for (uint32_t s = 0; s < m_numSlices; s++)
@@ -358,13 +372,11 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
             {
                 continue;
             }
-            // Determine if any UE in this slice has real demand
             bool demand = false;
             for (const auto& ue : sliceUeVec[s])
             {
-                GetFirst GetUe;
                 uint32_t bufQueueSize = ue.second;
-                if (GetUe(ue)->m_dlTbSize < std::max(bufQueueSize, 10U))
+                if (ue.first->m_dlTbSize < std::max(bufQueueSize, 10U))
                 {
                     demand = true;
                     break;
@@ -410,18 +422,6 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
             }
         }
 
-        // Log budget
-        std::ostringstream budgetOss;
-        budgetOss << "[RslaqScheduler] RBG budgets: total=" << totalRbgs;
-        for (uint32_t s = 0; s < m_numSlices; s++)
-        {
-            budgetOss << " Slice" << s << "(w=" << m_prbWeights[s]
-                      << ",ew=" << effectiveWeight[s]
-                      << ",budget=" << sliceRbgBudget[s] << ")";
-        }
-        NS_LOG_DEBUG(budgetOss.str());
-
-        // --- Pre-scheduling PF metric update ---
         for (uint32_t s = 0; s < m_numSlices; s++)
         {
             for (auto& ue : sliceUeVec[s])
@@ -430,112 +430,186 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
             }
         }
 
-        // --- Slice-by-slice allocation ---
+        // --- Slice-by-slice allocation with diagnostic logging ---
         for (uint32_t s = 0; s < m_numSlices; s++)
         {
-            if (sliceUeVec[s].empty() || sliceRbgBudget[s] == 0)
-            {
-                continue;
-            }
-
-            SortUeVectorByAlgorithm(sliceUeVec[s], m_intraAlgorithms[s]);
-
+            std::string reason;
             uint32_t sliceAllocated = 0;
-            uint32_t iteration = 0;
-            const uint32_t maxIterations = sliceRbgBudget[s] * sliceUeVec[s].size() + sliceUeVec[s].size();
 
-            while (sliceAllocated < sliceRbgBudget[s] && iteration < maxIterations)
+            if (sliceUeVec[s].empty())
             {
-                iteration++;
-                bool anyUeNeeded = false;
+                reason = "no_active_ues";
+            }
+            else if (!sliceHasDemand[s])
+            {
+                reason = "no_demand";
+            }
+            else if (sliceRbgBudget[s] == 0)
+            {
+                reason = "zero_budget";
+            }
+            else
+            {
+                SortUeVectorByAlgorithm(sliceUeVec[s], m_intraAlgorithms[s]);
 
-                for (auto& ue : sliceUeVec[s])
+                uint32_t iteration = 0;
+                const uint32_t maxIterations = sliceRbgBudget[s] * sliceUeVec[s].size() + sliceUeVec[s].size();
+
+                while (sliceAllocated < sliceRbgBudget[s] && iteration < maxIterations)
                 {
-                    if (sliceAllocated >= sliceRbgBudget[s])
-                    {
-                        break;
-                    }
+                    iteration++;
+                    bool anyUeNeeded = false;
 
-                    GetFirst GetUe;
-                    uint32_t bufQueueSize = ue.second;
-                    if (GetUe(ue)->m_dlTbSize >= std::max(bufQueueSize, 10U))
+                    for (auto& ue : sliceUeVec[s])
                     {
-                        continue;
-                    }
-                    anyUeNeeded = true;
-
-                    // Find next free real RBG ID
-                    uint32_t logicalIdx = 0;
-                    for (; logicalIdx < totalRbgs; ++logicalIdx)
-                    {
-                        uint32_t realId = availableRbgIds[logicalIdx];
-                        if (!rbgRealUsed[realId])
+                        if (sliceAllocated >= sliceRbgBudget[s])
                         {
                             break;
                         }
-                    }
-                    if (logicalIdx >= totalRbgs)
-                    {
-                        break; // no more RBGs available at all
-                    }
 
-                    uint32_t actualRbgId = availableRbgIds[logicalIdx];
-                    rbgRealUsed[actualRbgId] = true;
+                        uint32_t bufQueueSize = ue.second;
+                        uint32_t prevTbSize = ue.first->m_dlTbSize;
+                        bool demandPassed = (prevTbSize < std::max(bufQueueSize, 10U));
 
-                    auto& dlRbg = GetUe(ue)->m_dlRBG;
-                    auto existingRbgs = dlRbg.size();
-                    dlRbg.resize(dlRbg.size() + beamSym);
-                    std::fill(dlRbg.begin() + existingRbgs, dlRbg.end(), actualRbgId);
-
-                    auto& dlSym = GetUe(ue)->m_dlSym;
-                    auto existingSyms = dlSym.size();
-                    dlSym.resize(dlSym.size() + beamSym);
-                    std::iota(dlSym.begin() + existingSyms, dlSym.end(), 0);
-
-                    assigned.m_rbg += 1;
-                    assigned.m_sym = beamSym;
-
-                    sliceAllocated++;
-
-                    AssignedDlResources(ue, FTResources(1, beamSym), assigned);
-
-                    for (auto& otherUe : sliceUeVec[s])
-                    {
-                        if (GetUe(otherUe)->m_rnti != GetUe(ue)->m_rnti)
+                        if (logThisSlot && m_ueAllocCsv.is_open())
                         {
-                            NotAssignedDlResources(otherUe, FTResources(1, beamSym), assigned);
+                            uint32_t curUnique = 0;
+                            if (!ue.first->m_dlRBG.empty())
+                            {
+                                std::set<uint16_t> uniq(ue.first->m_dlRBG.begin(),
+                                                        ue.first->m_dlRBG.end());
+                                curUnique = static_cast<uint32_t>(uniq.size());
+                            }
+                            m_ueAllocCsv << timeMs << "," << m_scenarioName << ","
+                                         << s << "," << ue.first->m_rnti << ","
+                                         << bufQueueSize << "," << prevTbSize << ","
+                                         << (demandPassed ? 1 : 0) << ","
+                                         << 0 << "," << curUnique << ","
+                                         << static_cast<uint32_t>(ue.first->GetDlMcs()) << ","
+                                         << static_cast<uint32_t>(ue.first->m_dlRank) << ","
+                                         << GetNumRbPerRbg() << "\n";
                         }
+
+                        if (!demandPassed)
+                        {
+                            continue;
+                        }
+                        anyUeNeeded = true;
+
+                        uint32_t logicalIdx = 0;
+                        for (; logicalIdx < totalRbgs; ++logicalIdx)
+                        {
+                            uint32_t realId = availableRbgIds[logicalIdx];
+                            if (!rbgRealUsed[realId])
+                            {
+                                break;
+                            }
+                        }
+                        if (logicalIdx >= totalRbgs)
+                        {
+                            break;
+                        }
+
+                        uint32_t actualRbgId = availableRbgIds[logicalIdx];
+                        rbgRealUsed[actualRbgId] = true;
+
+                        auto& dlRbg = ue.first->m_dlRBG;
+                        auto existingRbgs = dlRbg.size();
+                        dlRbg.resize(dlRbg.size() + beamSym);
+                        std::fill(dlRbg.begin() + existingRbgs, dlRbg.end(), actualRbgId);
+
+                        auto& dlSym = ue.first->m_dlSym;
+                        auto existingSyms = dlSym.size();
+                        dlSym.resize(dlSym.size() + beamSym);
+                        std::iota(dlSym.begin() + existingSyms, dlSym.end(), 0);
+
+                        assigned.m_rbg += 1;
+                        assigned.m_sym = beamSym;
+
+                        sliceAllocated++;
+
+                        AssignedDlResources(ue, FTResources(1, beamSym), assigned);
+
+                        for (auto& otherUe : sliceUeVec[s])
+                        {
+                            if (ue.first->m_rnti != otherUe.first->m_rnti)
+                            {
+                                NotAssignedDlResources(otherUe, FTResources(1, beamSym), assigned);
+                            }
+                        }
+
+                        if (logThisSlot && m_ueAllocCsv.is_open())
+                        {
+                            std::set<uint16_t> uniq(ue.first->m_dlRBG.begin(),
+                                                    ue.first->m_dlRBG.end());
+                            m_ueAllocCsv << timeMs << "," << m_scenarioName << ","
+                                         << s << "," << ue.first->m_rnti << ","
+                                         << bufQueueSize << "," << ue.first->m_dlTbSize << ","
+                                         << 1 << "," << 1 << ","
+                                         << static_cast<uint32_t>(uniq.size()) << ","
+                                         << static_cast<uint32_t>(ue.first->GetDlMcs()) << ","
+                                         << static_cast<uint32_t>(ue.first->m_dlRank) << ","
+                                         << GetNumRbPerRbg() << "\n";
+                        }
+                    }
+
+                    if (!anyUeNeeded)
+                    {
+                        break;
                     }
                 }
 
-                if (!anyUeNeeded)
+                if (sliceAllocated == 0)
                 {
-                    break;
+                    reason = "all_ue_demand_satisfied";
+                }
+                else if (sliceAllocated < sliceRbgBudget[s])
+                {
+                    reason = "partial_alloc";
+                }
+                else
+                {
+                    reason = "full_alloc";
                 }
             }
 
-            NS_LOG_DEBUG("[RslaqScheduler] Slice " << s << ": allocated " << sliceAllocated
-                                                      << "/" << sliceRbgBudget[s] << " RBGs for "
-                                                      << sliceUeVec[s].size() << " UEs");
-
-            // --- Write slice allocation metrics to CSV ---
-            if (m_sliceAllocCsv.is_open())
+            if (logThisSlot && m_sliceAllocCsv.is_open())
             {
                 std::ostringstream rntiList;
                 for (size_t i = 0; i < sliceUeVec[s].size(); ++i)
                 {
-                    GetFirst GetUe;
                     if (i)
                         rntiList << ";";
-                    rntiList << GetUe(sliceUeVec[s][i])->m_rnti;
+                    rntiList << sliceUeVec[s][i].first->m_rnti;
                 }
-                m_sliceAllocCsv << timeMs << "," << s << ","
+                m_sliceAllocCsv << timeMs << "," << m_scenarioName << ","
+                                << s << ","
                                 << std::fixed << std::setprecision(4) << m_prbWeights[s] << ","
                                 << std::setprecision(4) << effectiveWeight[s] << ","
                                 << sliceUeVec[s].size() << ","
+                                << beamSym << ","
+                                << (sliceHasDemand[s] ? 1 : 0) << ","
                                 << sliceRbgBudget[s] << ","
                                 << sliceAllocated << ","
+                                << reason << ","
                                 << "\"" << rntiList.str() << "\"\n";
+            }
+
+            // Log per-UE demand details for no_demand slices
+            if (logThisSlot && reason == "no_demand" && m_ueAllocCsv.is_open())
+            {
+                for (const auto& ue : sliceUeVec[s])
+                {
+                    uint32_t bufQueueSize = ue.second;
+                    uint32_t prevTbSize = ue.first->m_dlTbSize;
+                    m_ueAllocCsv << timeMs << "," << m_scenarioName << ","
+                                 << s << "," << ue.first->m_rnti << ","
+                                 << bufQueueSize << "," << prevTbSize << ","
+                                 << 0 << "," << 0 << "," << 0 << ","
+                                 << static_cast<uint32_t>(ue.first->GetDlMcs()) << ","
+                                 << static_cast<uint32_t>(ue.first->m_dlRank) << ","
+                                 << GetNumRbPerRbg() << "\n";
+                }
             }
         }
     }
@@ -547,6 +621,10 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
     if (m_unmappedRntiCsv.is_open())
     {
         m_unmappedRntiCsv.flush();
+    }
+    if (m_ueAllocCsv.is_open())
+    {
+        m_ueAllocCsv.flush();
     }
 
     return symPerBeam;
@@ -602,10 +680,14 @@ RslaqMacScheduler::NotAssignedUlResources(const UePtrAndBufferReq& ue,
 
 void
 RslaqMacScheduler::BeforeDlSched(const UePtrAndBufferReq& ue,
-                                  const FTResources& assignableInIteration) const
+                                   const FTResources& assignableInIteration) const
 {
     NS_LOG_FUNCTION(this);
     GetFirst GetUe;
+    if (GetUe(ue)->m_dlMcs == 0)
+    {
+        GetUe(ue)->m_dlMcs = 15;
+    }
     auto uePtr = dynamic_cast<NrMacSchedulerUeInfoPF*>(GetUe(ue).get());
     NS_ASSERT(uePtr != nullptr);
     uePtr->CalculatePotentialTPutDl(assignableInIteration);
