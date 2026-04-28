@@ -5,53 +5,44 @@ import time
 import subprocess
 import selectors
 import fcntl
-import csv
 import os
 import glob
+import warnings
 from posix_ipc import Semaphore, O_CREAT
 from nsoran.ns_env import NsOranEnv
 from nsoran.action_controller import ActionController
 from nsoran.datalake import SQLiteDatabaseAPI
 from gymnasium import spaces
 
-SLICE_NAMES = {1: "eMBB", 2: "URLLC", 3: "MTC"}
-
-# SLA Targets para a função de recompensa
-SLA_TARGETS = {
-    1: {"min_throughput_mbps": 100.0},   # eMBB: foco em throughput
-    2: {"max_delay_ms": 5.0},             # URLLC: foco em latência ultra-baixa
-    3: {"max_buffer_pct": 1.0},           # MTC: foco em entrega (proxy via lostPackets)
-}
-
-# Pesos de importância para a recompensa total
-ALPHA = 1.0 / 3.0
-BETA = 1.0 / 3.0
-GAMMA = 1.0 / 3.0
-
-# P_STA decomposition: 50% estático + 50% dinâmico do agente
-P_STA_WEIGHTS = np.array([0.33, 0.40, 0.27])
-P_STA = P_STA_WEIGHTS * 0.5  # [0.165, 0.200, 0.135]
-
-# Constantes de normalização do observation space
-MAX_THR = 150.0       # Mbps
-MAX_BTX = 200000.0    # bytes
-MAX_PLR = 100.0       # %
-MAX_TDP = 1000.0      # packets
-MAX_RSH = 100.0       # %
-
-SCHEDULER_COST = 1
-CRITICAL_OVERFLOW_THRESHOLD = 5000  # penalidade severa se total_dropped > threshold
+from .rslaq_slice_ids import (
+    get_num_slices,
+    normalize_slice_id,
+    slice_name,
+)
+from .rslaq_action_spaces import (
+    build_discrete_action_table,
+    continuous_action_to_prb,
+    discrete_action_to_prb,
+    DEFAULT_WEIGHTS,
+)
+from .rslaq_kpis import parse_kpm_file, build_observation
+from .rslaq_reward import compute_rslaq_reward
 
 
 class RslaqEnv(NsOranEnv):
     """
     RSLAQ DRL Environment for O-RAN QoS xApp.
 
-    State: per-slice [throughput_mbps, txBytes, plr, resourceSharePct, lostPackets]
-           -> 3 slices x 5 features, normalized to [0,1]
-    Action: 3 continuous values in [-1, 1] -> softmax -> p_opt (50% dinâmico)
-            -> p_final = P_STA + p_opt * 0.5
-    Reward: SLA-aware com R_eMBB (throughput), R_URLLC (delay), R_MTC (buffer)
+    Supports two action modes:
+        - "continuous" (SAC): action is a 3-dim vector in [-1, 1]
+        - "discrete" (DDQN): action is an integer index into the action table
+
+    Supports two observation modes:
+        - "paper": 4x4 matrix [btx, bfs, rsh, tdp] x [eMBB, URLLC, MTC, cell]
+        - "debug": legacy 3x5 matrix for backward compatibility
+
+    Important: bfs and tdp are currently proxies using plr and lostPackets.
+    See rslaq_kpis.py for TODOs on replacing them with real metrics.
     """
 
     def __init__(
@@ -60,51 +51,96 @@ class RslaqEnv(NsOranEnv):
         scenario_configuration: dict,
         output_folder: str,
         optimized: bool = False,
-        sla_weights: dict | None = None,
+        action_mode: str = "continuous",
+        observation_mode: str = "paper",
+        max_steps: int | None = None,
+        include_scheduler: bool = False,
+        sla_config: dict | None = None,
+        terminal_outage: bool = False,
     ):
+        # Ensure required keys exist
         scenario_configuration.setdefault("simId", [""])
         scenario_configuration.setdefault("periodMs", [10])
         scenario_configuration.setdefault("scenario", ["normal"])
         scenario_configuration.setdefault("seed", [1])
         scenario_configuration.setdefault("appStart", [0.5])
-        scenario_configuration.setdefault("simTime", [4])
+        scenario_configuration.setdefault("simTime", [4.0])
+
+        # Compute max_steps automatically if not provided
+        sim_time = float(scenario_configuration.get("simTime", [4.0])[0])
+        app_start = float(scenario_configuration.get("appStart", [0.5])[0])
+        period_ms = int(scenario_configuration.get("periodMs", [10])[0])
+        if max_steps is None:
+            max_steps = int((sim_time - app_start) * 1000 / period_ms)
+            if max_steps <= 0:
+                max_steps = 50  # fallback safety
+        elif isinstance(max_steps, str):
+            max_steps = int(max_steps)
+        self.max_steps = max_steps
+
+        self.action_mode = action_mode
+        self.observation_mode = observation_mode
+        self.include_scheduler = include_scheduler
+        self.sla_config = sla_config or {}
+        self.terminal_outage = terminal_outage
+        self.scenario_name = scenario_configuration.get("scenario", ["normal"])[0]
+
+        # Action table for discrete mode
+        if self.action_mode == "discrete":
+            self.action_table = build_discrete_action_table(
+                step=0.1, include_scheduler=self.include_scheduler
+            )
+            action_space = spaces.Discrete(len(self.action_table))
+        elif self.action_mode == "continuous":
+            self.action_table = None
+            action_space = spaces.Box(
+                low=-1.0, high=1.0, shape=(3,), dtype=np.float32
+            )
+        else:
+            raise ValueError(f"Unknown action_mode: {action_mode}")
+
+        # Observation space
+        if self.observation_mode == "paper":
+            obs_shape = (4, 4)
+        elif self.observation_mode == "debug":
+            obs_shape = (3, 5)
+        else:
+            raise ValueError(f"Unknown observation_mode: {observation_mode}")
+
+        observation_space = spaces.Box(
+            low=0.0, high=1.0, shape=obs_shape, dtype=np.float32
+        )
+
+        # Control header depends on scheduler inclusion
+        control_header = [
+            "timestamp", "sliceId", "dedicatedPRB", "minPRB", "maxPRB"
+        ]
+        if self.include_scheduler:
+            control_header.append("algorithm")
 
         super().__init__(
             ns3_path=ns3_path,
-            scenario="rslaq-sim",  # <-- nome correto do executável
+            scenario="rslaq-sim",
             scenario_configuration=scenario_configuration,
             output_folder=output_folder,
             optimized=optimized,
             skip_configuration=True,
-            control_header=["timestamp", "sliceId", "dedicatedPRB", "minPRB", "maxPRB"],
+            control_header=control_header,
             log_file="RslaqActions.txt",
             control_file="rslaq_actions_for_ns3.csv",
         )
 
-        self.num_slices = 3
-        self.num_ues = scenario_configuration.get("ues", [3])[0]
+        # Override spaces set by base class (if any) with our own
+        self.observation_space = observation_space
+        self.action_space = action_space
 
-        # Observation space: 3 slices x 5 features
-        self.observation_space = spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(self.num_slices, 5),
-            dtype=np.float64,
-        )
+        self.num_slices = get_num_slices()
+        self.num_ues = scenario_configuration.get("ues", [20])[0]
 
-        # Action space: 3 continuous values [-1, 1] -> softmax -> p_opt
-        self.action_space = spaces.Box(
-            low=-1.0,
-            high=1.0,
-            shape=(3,),
-            dtype=np.float64,
-        )
-
-        self.kpm_data = {}
-        self.prev_kpm_data = {}
-        self.observations = np.zeros((self.num_slices, 5))
-        self.slice_ue_data: dict[int, list[dict]] = {}
+        self.observations = np.zeros(obs_shape, dtype=np.float32)
+        self.kpi_dict: dict = {}
         self.num_steps = 0
+        self.latest_action_info: dict = {}
 
     def start_sim(self):
         if self.is_open:
@@ -174,28 +210,51 @@ class RslaqEnv(NsOranEnv):
     @override
     def _compute_action(self, action) -> list[tuple]:
         """
-        Converte ação contínua do agente (3 valores em [-1,1]) para
-        dedicatedPRB por slice usando Softmax + P_STA decomposition.
+        Convert agent action into ns-3 control tuples.
 
-        P_final = P_STA + softmax(action) * 0.5
+        For continuous mode: action is np.ndarray shape (3,).
+        For discrete mode: action is int (index into action_table).
         """
-        raw = np.array(action[:3], dtype=np.float64).flatten()
-
-        # Softmax com estabilidade numérica
-        exp_a = np.exp(raw - np.max(raw))
-        p_opt = exp_a / exp_a.sum()
-        p_opt *= 0.5  # agente controla 50%
-
-        p_final = P_STA + p_opt
-
-        # Renormalizar para somar 1.0
-        p_final /= p_final.sum()
+        if self.action_mode == "continuous":
+            raw = np.asarray(action, dtype=np.float32).flatten()
+            if raw.shape[0] != 3:
+                raise ValueError(
+                    f"Continuous action must have shape (3,), got {raw.shape}"
+                )
+            prb_pct = continuous_action_to_prb(raw)
+            scheduler_id = -1
+        elif self.action_mode == "discrete":
+            if not isinstance(action, (int, np.integer)):
+                raise ValueError(
+                    f"Discrete action must be an integer, got {type(action)}"
+                )
+            action_idx = int(action)
+            if self.action_table is None:
+                raise RuntimeError(
+                    "action_table is None but action_mode is discrete. "
+                    "This should not happen."
+                )
+            prb_pct, scheduler_id = discrete_action_to_prb(
+                action_idx, self.action_table
+            )
+        else:
+            raise ValueError(f"Unknown action_mode: {self.action_mode}")
 
         actions = []
         for slice_idx in range(self.num_slices):
-            dedicated = float(p_final[slice_idx] * 100.0)
-            actions.append((slice_idx, dedicated, dedicated, 100.0))
+            dedicated = float(prb_pct[slice_idx])
+            entry = (slice_idx, dedicated, dedicated, 100.0)
+            if self.include_scheduler:
+                # scheduler_id may be -1 if action table doesn't include it
+                sch = int(scheduler_id) if scheduler_id >= 0 else 0
+                entry = entry + (sch,)
+            actions.append(entry)
 
+        self.latest_action_info = {
+            "prb_pct": prb_pct.tolist(),
+            "scheduler_id": int(scheduler_id),
+            "action_mode": self.action_mode,
+        }
         return actions
 
     @override
@@ -205,68 +264,21 @@ class RslaqEnv(NsOranEnv):
     @override
     def _compute_reward(self) -> float:
         """
-        Reward function conforme especificação RSLAQ:
-
-        R_eMBB = max(0, throughput_eMBB / SLA_eMBB)
-        R_URLLC = 1.0 se delay <= SLA; exp(-(delay - SLA)) caso contrário
-        R_MTC   = 1.0 - (buffer / max_buffer)
-
-        R_total = alpha*R_eMBB + beta*R_URLLC + gamma*R_MTC
-
-        Penalidade -10 se buffer overflow maciço.
+        Compute SLA-aware reward using the dedicated reward module.
         """
-        # Coletar métricas por slice
-        slice_metrics: dict[int, dict] = {}
-        for slice_idx in range(self.num_slices):
-            slice_id = slice_idx + 1
-            ues = self.slice_ue_data.get(slice_id, [])
-            if ues:
-                thr_values = [ue["throughputMbps"] for ue in ues]
-                plr_values = [ue["plr"] for ue in ues]
-                slice_metrics[slice_id] = {
-                    "mean_thr": float(np.mean(thr_values)),
-                    "max_plr": float(max(plr_values)),
-                    "num_ues": len(ues),
-                }
-            else:
-                slice_metrics[slice_id] = {
-                    "mean_thr": 0.0,
-                    "max_plr": 100.0,
-                    "num_ues": 0,
-                }
-
-        # R_eMBB: throughput normalizado pelo SLA (clipagem em 0)
-        embb_thr = slice_metrics[1]["mean_thr"]
-        r_embb = max(0.0, embb_thr / SLA_TARGETS[1]["min_throughput_mbps"])
-
-        # R_URLLC: penalização exponencial de delay (proxy: max_plr como proxy de congestionamento)
-        # Nota: o KPM não tem delay direto; usamos max_plr como proxy de qualidade de serviço
-        urllc_plr = slice_metrics[2]["max_plr"]
-        # Mapeamos PLR para um "delay virtual": PLR alto = delay alto
-        virtual_delay = urllc_plr * 0.5  # heurística: 3% PLR ~ 1.5ms delay virtual
-        if virtual_delay <= SLA_TARGETS[2]["max_delay_ms"]:
-            r_urllc = 1.0
-        else:
-            r_urllc = np.exp(-(virtual_delay - SLA_TARGETS[2]["max_delay_ms"]))
-
-        # R_MTC: penalização por acúmulo de pacotes (proxy: lostPackets / max_buffer)
-        ues_mtc = self.slice_ue_data.get(3, [])
-        total_mtc_dropped = sum(ue.get("lostPackets", 0) for ue in ues_mtc)
-        r_mtc = 1.0 - min(total_mtc_dropped / MAX_TDP, 1.0)
-
-        # Recompensa total ponderada
-        reward = ALPHA * r_embb + BETA * r_urllc + GAMMA * r_mtc
-
-        # Penalidade severa por buffer overflow maciço
-        total_dropped = sum(
-            ue.get("lostPackets", 0)
-            for slice_id in self.slice_ue_data
-            for ue in self.slice_ue_data[slice_id]
+        reward_result = compute_rslaq_reward(
+            metrics=self.kpi_dict,
+            scenario=self.scenario_name,
+            action_info=self.latest_action_info,
+            config={
+                **self.sla_config,
+                "terminal_outage": self.terminal_outage,
+            },
         )
-        if total_dropped > CRITICAL_OVERFLOW_THRESHOLD:
-            reward -= 10.0
-
-        return float(reward)
+        self._last_reward_result = reward_result
+        if reward_result.terminated:
+            self.terminated = True
+        return float(reward_result.reward)
 
     @override
     def _init_datalake_usecase(self):
@@ -275,75 +287,74 @@ class RslaqEnv(NsOranEnv):
     @override
     def _fill_datalake_usecase(self):
         """
-        Lê rslaq-kpms.txt e agrega métricas por slice em observations[3][5].
-
-        Features: [throughput_mbps/MAX_THR, txBytes/MAX_BTX, plr/MAX_PLR,
-                   resourceSharePct/MAX_RSH, lostPackets/MAX_TDP]
+        Read rslaq-kpms.txt, parse per-slice metrics, and build observation.
         """
         kpm_files = glob.glob(os.path.join(self.sim_path, "rslaq-kpms.txt"))
         if not kpm_files:
             return
 
-        latest_rows = {}
-        with open(kpm_files[0], "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                ts = int(row["timestamp"])
-                ue_imsi = int(row["ueImsi"])
-                if ts >= self.last_timestamp:
-                    latest_rows[ue_imsi] = row
-                    self.last_timestamp = ts
+        self.kpi_dict = parse_kpm_file(
+            kpm_files[0], last_timestamp=self.last_timestamp
+        )
+        # Update last_timestamp from parser
+        if "_latest_timestamp" in self.kpi_dict:
+            self.last_timestamp = self.kpi_dict.pop("_latest_timestamp")
 
-        slice_agg: dict[int, dict] = {}
-        slice_ue: dict[int, list[dict]] = {}
+        self.observations = build_observation(
+            self.kpi_dict,
+            mode=self.observation_mode,
+        )
 
-        for ue_imsi, row in latest_rows.items():
-            slice_id = int(row["sliceId"])
-            if slice_id not in slice_agg:
-                slice_agg[slice_id] = {
-                    "thr_sum": 0.0,
-                    "btx": 0,
-                    "plr_sum": 0.0,
-                    "rsh_sum": 0.0,
-                    "tdp": 0,
-                    "count": 0,
-                }
-            if slice_id not in slice_ue:
-                slice_ue[slice_id] = []
+    @override
+    def step(self, action) -> tuple:
+        # Base class handles simulation lifecycle (wait, fill datalake, etc.)
+        # We call the base logic manually to inject max_steps and info
+        if not self.is_simulation_over():
+            actions = self._compute_action(action)
+            self.action_controller.create_control_action(self.last_timestamp, actions)
+            self.controlSemaphore.release()
+            self._wait_data_availability()
+            self._fill_datalake()
 
-            thr = float(row.get("throughputMbps", 0.0))
-            btx = float(row.get("txBytes", 0.0))
-            plr = float(row.get("plr", 0.0))
-            rsh = float(row.get("resourceSharePct", 0.0))
-            tdp = float(row.get("lostPackets", 0.0))
+        self.num_steps += 1
+        if self.num_steps >= self.max_steps:
+            self.truncated = True
 
-            sd = slice_agg[slice_id]
-            sd["thr_sum"] += thr
-            sd["btx"] += btx
-            sd["plr_sum"] += plr
-            sd["rsh_sum"] += rsh
-            sd["tdp"] += tdp
-            sd["count"] += 1
+        obs = self._get_obs()
+        reward_val = self._compute_reward()
 
-            slice_ue[slice_id].append({
-                "throughputMbps": thr,
-                "plr": plr,
-                "lostPackets": tdp,
-            })
+        info = self._build_info(action)
+        return obs, reward_val, self.terminated, self.truncated, info
 
-        self.slice_ue_data = slice_ue
+    def _build_info(self, raw_action) -> dict:
+        """Build the info dict returned by step()."""
+        info = {
+            "is_open": self.is_open,
+            "results": self.sim_result,
+            "num_steps": self.num_steps,
+            "max_steps": self.max_steps,
+            "scenario": self.scenario_name,
+            "action_info": self.latest_action_info.copy(),
+            "raw_action": raw_action,
+        }
 
-        for slice_idx in range(self.num_slices):
-            slice_id = slice_idx + 1
-            if slice_id in slice_agg and slice_agg[slice_id]["count"] > 0:
-                sd = slice_agg[slice_id]
-                n = sd["count"]
-                self.observations[slice_idx] = [
-                    min(sd["thr_sum"] / n / MAX_THR, 1.0),
-                    min(sd["btx"] / MAX_BTX, 1.0),
-                    sd["plr_sum"] / n / MAX_PLR,
-                    sd["rsh_sum"] / n / MAX_RSH,
-                    min(sd["tdp"] / MAX_TDP, 1.0),
-                ]
-            else:
-                self.observations[slice_idx] = [0.0, 0.0, 0.0, 0.0, 0.0]
+        # Add per-slice KPIs if available
+        for sid in range(self.num_slices):
+            metrics = self.kpi_dict.get(sid, {})
+            info[f"slice_{sid}_{slice_name(sid)}"] = {
+                "throughput_mbps": metrics.get("throughputMbps_sum", 0.0),
+                "plr_mean": metrics.get("plr_mean", 0.0),
+                "dLostPackets_sum": metrics.get("dLostPackets_sum", 0.0),
+                "resourceSharePct_mean": metrics.get("resourceSharePct_mean", 0.0),
+                "dTxBytes_sum": metrics.get("dTxBytes_sum", 0.0),
+            }
+
+        # Reward debug info if available
+        if hasattr(self, "_last_reward_result"):
+            info["reward_debug"] = self._last_reward_result.debug_info
+            info["outage_flags"] = self._last_reward_result.outage_flags
+            info["soft_flags"] = self._last_reward_result.soft_flags
+
+        return info
+
+

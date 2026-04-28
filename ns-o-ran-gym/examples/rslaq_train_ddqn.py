@@ -1,21 +1,41 @@
-import sys
+"""
+DDQN Training for RSLAQ (Resource-Only).
 
-sys.path.insert(0, "/home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym/src")
+Usage:
+    python rslaq_train_ddqn.py \
+        --scenario normal \
+        --episodes 10 \
+        --simTime 4.0 \
+        --periodMs 10 \
+        --observation_mode paper \
+        --action_mode discrete \
+        --output results
+"""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import argparse
+import csv
 import json
-import os
-import time
+import random
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
-import random
 
 from environments.rslaq_env import RslaqEnv
+from environments.rslaq_action_spaces import build_discrete_action_table
 
-NS3_PATH = "/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/"
+# Default paths
+DEFAULT_NS3_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "ns-3-dev"
+)
+DEFAULT_OUTPUT = os.path.join(os.path.dirname(__file__), "..", "results")
+
 SCENARIOS = [
     "low_traffic",
     "normal",
@@ -27,74 +47,45 @@ SCENARIOS = [
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def build_action_table():
-    p_values = [round(x * 0.1, 1) for x in range(11)]
-    sch_values = [0, 1, 2]
-    combos = []
-    for p1 in p_values:
-        for p2 in p_values:
-            for p3 in p_values:
-                for sch in sch_values:
-                    if abs(p1 + p2 + p3 - 1.0) < 0.01:
-                        combos.append((p1, p2, p3, sch))
-    return combos
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
-ACTION_TABLE = build_action_table()
+# Build discrete action table (resource-only, no scheduler)
+ACTION_TABLE = build_discrete_action_table(step=0.1, include_scheduler=False)
 NUM_ACTIONS = len(ACTION_TABLE)
 
 
-P_STA_WEIGHTS = np.array([0.33, 0.40, 0.27])
-P_STA = P_STA_WEIGHTS * 0.5
+class QNetwork(nn.Module):
+    """Small CNN for 4x4 observation -> Q-values."""
 
-
-def action_to_prb(action_idx):
-    p1, p2, p3, sch = ACTION_TABLE[action_idx % len(ACTION_TABLE)]
-    p_opt = np.array([p1, p2, p3]) * 0.5
-    p_final = P_STA + p_opt
-    action = np.array(
-        [
-            [p_final[0] * 100.0, 0.0, 100.0],
-            [p_final[1] * 100.0, 0.0, 100.0],
-            [p_final[2] * 100.0, 0.0, 100.0],
-        ],
-        dtype=np.float64,
-    )
-    return action, sch
-
-
-class ConvQNetwork(nn.Module):
     def __init__(self, state_shape, action_size):
         super().__init__()
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=2, padding=1)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=2, padding=1)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=2, padding=1)
-        self.bn3 = nn.BatchNorm2d(64)
-        self.conv4 = nn.Conv2d(64, 64, kernel_size=2, padding=0)
-        self.bn4 = nn.BatchNorm2d(64)
-
-        x = torch.zeros(1, 1, state_shape[0], state_shape[1])
-        x = torch.tanh(self.bn1(self.conv1(x)))
-        x = torch.tanh(self.bn2(self.conv2(x)))
-        x = torch.tanh(self.bn3(self.conv3(x)))
-        x = torch.tanh(self.bn4(self.conv4(x)))
-        fc_size = x.numel()
-
-        self.fc = nn.Linear(fc_size, action_size)
+        h, w = state_shape
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        with torch.no_grad():
+            x = torch.zeros(1, 1, h, w)
+            x = torch.relu(self.conv1(x))
+            x = torch.relu(self.conv2(x))
+            flat = x.numel()
+        self.fc1 = nn.Linear(flat, 256)
+        self.fc2 = nn.Linear(256, action_size)
 
     def forward(self, x):
         if x.dim() == 2:
             x = x.unsqueeze(0).unsqueeze(0)
         elif x.dim() == 3:
             x = x.unsqueeze(1)
-        x = torch.tanh(self.bn1(self.conv1(x)))
-        x = torch.tanh(self.bn2(self.conv2(x)))
-        x = torch.tanh(self.bn3(self.conv3(x)))
-        x = torch.tanh(self.bn4(self.conv4(x)))
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
         x = x.view(x.size(0), -1)
-        return self.fc(x)
+        x = torch.relu(self.fc1(x))
+        return self.fc2(x)
 
 
 class DDQNAgent:
@@ -102,13 +93,13 @@ class DDQNAgent:
         self,
         state_shape,
         action_size,
-        lr=0.001,
-        gamma=0.80,
+        lr=1e-3,
+        gamma=0.90,
         epsilon=1.0,
         epsilon_min=0.05,
-        epsilon_lambda=0.998,
-        buffer_size=500,
-        batch_size=350,
+        epsilon_decay=0.998,
+        buffer_size=10000,
+        batch_size=128,
         target_update=200,
     ):
         self.state_shape = state_shape
@@ -116,10 +107,10 @@ class DDQNAgent:
         self.gamma = gamma
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
-        self.epsilon_lambda = epsilon_lambda
+        self.epsilon_decay = epsilon_decay
 
-        self.online_net = ConvQNetwork(state_shape, action_size).to(device)
-        self.target_net = ConvQNetwork(state_shape, action_size).to(device)
+        self.online_net = QNetwork(state_shape, action_size).to(device)
+        self.target_net = QNetwork(state_shape, action_size).to(device)
         self.target_net.load_state_dict(self.online_net.state_dict())
         self.target_net.eval()
 
@@ -132,9 +123,12 @@ class DDQNAgent:
     def act(self, state):
         if random.random() < self.epsilon:
             return random.randrange(self.action_size)
-        s = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(device)
+        # Eval mode for inference to avoid BatchNorm issues (if any)
+        self.online_net.eval()
         with torch.no_grad():
+            s = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(device)
             q = self.online_net(s)
+        self.online_net.train()
         return q.argmax(dim=1).item()
 
     def remember(self, state, action, reward, next_state, done):
@@ -170,7 +164,7 @@ class DDQNAgent:
         if self.step_count % self.target_update == 0:
             self.target_net.load_state_dict(self.online_net.state_dict())
         if self.epsilon > self.epsilon_min:
-            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_lambda)
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
         return loss.item()
 
     def save(self, path):
@@ -192,123 +186,219 @@ class DDQNAgent:
         self.epsilon = ckpt.get("epsilon", 0.0)
 
 
-def train_scenario(scenario, output_dir, num_episodes=50, max_steps=50):
-    scenario_dir = os.path.join(output_dir, scenario)
-    os.makedirs(scenario_dir, exist_ok=True)
+def choose_scenario(episode, mode, scenarios_list):
+    if mode == "random":
+        return random.choice(scenarios_list)
+    return scenarios_list[0]
 
-    print(f"\n{'=' * 60}")
-    print(f"DDQN Training | Scenario: {scenario} | Episodes: {num_episodes}")
-    print(f"{'=' * 60}")
+
+def train_ddqn(args):
+    set_seed(args.seed)
+
+    os.makedirs(args.output, exist_ok=True)
+
+    scenario_list = (
+        args.scenarios.split(",")
+        if args.scenarios
+        else [args.scenario]
+    )
+    if args.scenario == "random":
+        mode = "random"
+        if not args.scenarios:
+            scenario_list = SCENARIOS
+    else:
+        mode = "fixed"
+        scenario_list = [args.scenario]
 
     config = {
-        "simTime": [4],
-        "appStart": [0.5],
-        "scenario": [scenario],
-        "seed": [1],
-        "indicationPeriodicity": [10],
+        "simTime": [args.simTime],
+        "appStart": [args.appStart],
+        "scenario": [scenario_list[0]],
+        "seed": [args.seed],
+        "periodMs": [args.periodMs],
     }
 
     env = RslaqEnv(
-        ns3_path=NS3_PATH,
+        ns3_path=os.path.abspath(args.ns3_path),
         scenario_configuration=config,
-        output_folder=scenario_dir,
+        output_folder=args.output,
         optimized=False,
+        action_mode=args.action_mode,
+        observation_mode=args.observation_mode,
+        max_steps=args.max_steps if args.max_steps != "auto" else None,
     )
 
     state_shape = env.observation_space.shape
     agent = DDQNAgent(
         state_shape,
         NUM_ACTIONS,
-        lr=0.001,
-        gamma=0.80,
-        epsilon=1.0,
-        epsilon_min=0.05,
-        epsilon_lambda=0.998,
-        buffer_size=500,
-        batch_size=350,
-        target_update=200,
+        lr=args.lr,
+        gamma=args.gamma,
+        epsilon=args.epsilon_start,
+        epsilon_min=args.epsilon_min,
+        epsilon_decay=args.epsilon_decay,
+        buffer_size=args.buffer_size,
+        batch_size=args.batch_size,
+        target_update=args.target_update,
     )
 
-    all_rewards = []
-    best_avg = -float("inf")
+    log_path = os.path.join(args.output, "ddqn_training_log.csv")
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "episode",
+                "scenario",
+                "total_reward",
+                "avg_reward",
+                "outage_count",
+                "soft_count",
+                "steps",
+                "loss",
+                "epsilon",
+                "final_embb_thr",
+                "final_urllc_plr",
+                "final_mtc_lost",
+                "action_embb",
+                "action_urllc",
+                "action_mtc",
+            ]
+        )
 
-    for ep in range(num_episodes):
+    best_avg = -float("inf")
+    all_rewards = []
+    avg100 = 0.0
+
+    for ep in range(args.episodes):
+        chosen_scenario = choose_scenario(ep, mode, scenario_list)
+        env.scenario_configuration["scenario"] = [chosen_scenario]
+        env.scenario_name = chosen_scenario
+
         obs, info = env.reset()
         state = obs.copy()
         ep_reward = 0.0
+        ep_outages = 0
+        ep_soft = 0
+        ep_losses = []
+        step = 0
 
-        for step in range(max_steps):
+        for step in range(env.max_steps):
             action_idx = agent.act(state)
-            prb_action, _ = action_to_prb(action_idx)  # scheduler sch ignorado (ns-3 não suporta)
-            next_obs, reward, terminated, truncated, info = env.step(prb_action)
+            next_obs, reward, terminated, truncated, info = env.step(action_idx)
             next_state = next_obs.copy()
             done = terminated or truncated
 
             agent.remember(state, action_idx, reward, next_state, float(done))
-            agent.replay()
+            loss = agent.replay()
+            if loss is not None:
+                ep_losses.append(loss)
 
             ep_reward += reward
-            state = next_state
+            if info.get("outage_flags"):
+                if any(info["outage_flags"].values()):
+                    ep_outages += 1
+            if info.get("soft_flags"):
+                if any(info["soft_flags"].values()):
+                    ep_soft += 1
 
+            state = next_state
             if done:
                 break
 
         all_rewards.append(ep_reward)
-        avg100 = np.mean(all_rewards[-100:])
+        avg100 = np.mean(all_rewards[-100:]) if len(all_rewards) >= 100 else np.mean(all_rewards)
 
-        if (ep + 1) % 5 == 0:
+        final_embb_thr = info.get("slice_0_eMBB", {}).get("throughput_mbps", 0.0)
+        final_urllc_plr = info.get("slice_1_URLLC", {}).get("plr_mean", 0.0)
+        final_mtc_lost = info.get("slice_2_MTC", {}).get("dLostPackets_sum", 0.0)
+        action_info = info.get("action_info", {})
+        prb_pct = action_info.get("prb_pct", [0.0, 0.0, 0.0])
+
+        with open(log_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    ep + 1,
+                    chosen_scenario,
+                    f"{ep_reward:.4f}",
+                    f"{avg100:.4f}",
+                    ep_outages,
+                    ep_soft,
+                    step + 1,
+                    f"{np.mean(ep_losses):.6f}" if ep_losses else "",
+                    f"{agent.epsilon:.4f}",
+                    f"{final_embb_thr:.4f}",
+                    f"{final_urllc_plr:.4f}",
+                    f"{final_mtc_lost:.4f}",
+                    f"{prb_pct[0]:.2f}",
+                    f"{prb_pct[1]:.2f}",
+                    f"{prb_pct[2]:.2f}",
+                ]
+            )
+
+        if (ep + 1) % args.log_interval == 0:
             print(
-                f"  Ep {ep + 1}/{num_episodes} | Reward: {ep_reward:.4f} | "
-                f"Avg100: {avg100:.4f} | Eps: {agent.epsilon:.4f}"
+                f"Ep {ep + 1}/{args.episodes} | Scenario: {chosen_scenario} | "
+                f"Reward: {ep_reward:.4f} | Avg100: {avg100:.4f} | "
+                f"Outages: {ep_outages} | Soft: {ep_soft} | Eps: {agent.epsilon:.4f}"
             )
 
         if avg100 > best_avg:
             best_avg = avg100
-            agent.save(os.path.join(scenario_dir, "ddqn_best.pth"))
+            agent.save(os.path.join(args.output, "ddqn_best.pt"))
 
-    agent.save(os.path.join(scenario_dir, "ddqn_final.pth"))
+    agent.save(os.path.join(args.output, "ddqn_final.pt"))
 
-    results = {
+    summary = {
         "method": "ddqn",
-        "scenario": scenario,
-        "episodes": num_episodes,
-        "rewards": all_rewards,
-        "final_avg_100": float(np.mean(all_rewards[-100:])),
+        "scenario_mode": mode,
+        "scenarios": scenario_list,
+        "episodes": args.episodes,
+        "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
     }
-    with open(os.path.join(scenario_dir, "ddqn_training.json"), "w") as f:
-        json.dump(results, f, indent=2)
+    with open(os.path.join(args.output, "ddqn_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
 
     env.close()
-    print(f"  Scenario {scenario} done. Best avg: {best_avg:.4f}")
-    return results
+    print(f"\nTraining complete. Best avg reward: {best_avg:.4f}")
+    print(f"Logs saved to {log_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DDQN Training for RSLAQ with NS-3")
-    parser.add_argument(
-        "--scenario", type=str, default="all", help="Scenario name or 'all'"
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default="/home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym/results",
-    )
-    parser.add_argument("--episodes", type=int, default=50)
-    parser.add_argument("--max_steps", type=int, default=50)
+    parser = argparse.ArgumentParser(description="DDQN Training for RSLAQ")
+    parser.add_argument("--scenario", type=str, default="normal",
+                        help="Scenario name or 'random'")
+    parser.add_argument("--scenarios", type=str, default="",
+                        help="Comma-separated list for random mode (default: all)")
+    parser.add_argument("--ns3_path", type=str, default=DEFAULT_NS3_PATH)
+    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument("--simTime", type=float, default=4.0)
+    parser.add_argument("--appStart", type=float, default=0.5)
+    parser.add_argument("--periodMs", type=int, default=10)
+    parser.add_argument("--max_steps", type=str, default="auto",
+                        help="Max steps per episode or 'auto'")
+    parser.add_argument("--observation_mode", type=str, default="paper")
+    parser.add_argument("--action_mode", type=str, default="discrete")
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--gamma", type=float, default=0.90)
+    parser.add_argument("--epsilon_start", type=float, default=1.0)
+    parser.add_argument("--epsilon_min", type=float, default=0.05)
+    parser.add_argument("--epsilon_decay", type=float, default=0.998)
+    parser.add_argument("--buffer_size", type=int, default=10000)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--target_update", type=int, default=200)
+    parser.add_argument("--log_interval", type=int, default=1)
     args = parser.parse_args()
 
-    os.makedirs(args.output, exist_ok=True)
-    scenarios = SCENARIOS if args.scenario == "all" else [args.scenario]
+    if args.max_steps.lower() == "auto":
+        args.max_steps = None
+    else:
+        args.max_steps = int(args.max_steps)
 
-    all_results = {}
-    for scenario in scenarios:
-        r = train_scenario(scenario, args.output, args.episodes, args.max_steps)
-        all_results[scenario] = r
-
-    with open(os.path.join(args.output, "ddqn_all_results.json"), "w") as f:
-        json.dump(all_results, f, indent=2, default=str)
-    print(f"\nAll DDQN results saved to {args.output}")
+    train_ddqn(args)
 
 
 if __name__ == "__main__":

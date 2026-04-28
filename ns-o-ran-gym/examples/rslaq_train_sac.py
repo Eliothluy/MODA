@@ -1,20 +1,40 @@
-import sys
+"""
+SAC Training for RSLAQ (Resource-Only).
 
-sys.path.insert(0, "/home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym/src")
+Usage:
+    python rslaq_train_sac.py \
+        --scenario normal \
+        --episodes 10 \
+        --simTime 4.0 \
+        --periodMs 10 \
+        --observation_mode paper \
+        --action_mode continuous \
+        --output results
+"""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import argparse
+import csv
 import json
-import os
+import random
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
-import random
 
 from environments.rslaq_env import RslaqEnv
 
-NS3_PATH = "/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/"
+# Default paths (relative to repo root)
+DEFAULT_NS3_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "ns-3-dev"
+)
+DEFAULT_OUTPUT = os.path.join(os.path.dirname(__file__), "..", "results")
+
 SCENARIOS = [
     "low_traffic",
     "normal",
@@ -26,20 +46,26 @@ SCENARIOS = [
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-P_STA_WEIGHTS = np.array([0.33, 0.40, 0.27])
-P_STA = P_STA_WEIGHTS * 0.5
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 class SACActor(nn.Module):
-    """SAC Actor com entrada (3,5) e saída 3-dim contínua (pesos das slices)."""
-
     def __init__(self, state_shape, action_dim=3):
         super().__init__()
         h, w = state_shape
-        self.conv1 = nn.Conv2d(1, 16, 2, padding=1)
-        x = torch.zeros(1, 1, h, w)
-        x = torch.relu(self.conv1(x))
-        flat = x.numel()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        # Compute flattened size
+        with torch.no_grad():
+            x = torch.zeros(1, 1, h, w)
+            x = torch.relu(self.conv1(x))
+            x = torch.relu(self.conv2(x))
+            flat = x.numel()
         self.fc_mean = nn.Linear(flat, action_dim)
         self.fc_log_std = nn.Linear(flat, action_dim)
 
@@ -49,6 +75,7 @@ class SACActor(nn.Module):
         elif x.dim() == 3:
             x = x.unsqueeze(1)
         x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
         x = x.view(x.size(0), -1)
         mean = self.fc_mean(x)
         log_std = self.fc_log_std(x)
@@ -60,26 +87,25 @@ class SACActor(nn.Module):
         std = log_std.exp()
         normal = torch.distributions.Normal(mean, std)
         z = normal.rsample()
-        action = torch.tanh(z)  # [-1, 1]
-        log_prob = (
-            normal.log_prob(z) - torch.log(1 - action.pow(2) + 1e-6)
-        )
+        action = torch.tanh(z)
+        log_prob = normal.log_prob(z) - torch.log(1 - action.pow(2) + 1e-6)
         log_prob = log_prob.sum(dim=-1, keepdim=True)
         return action, log_prob
 
 
 class SACCritic(nn.Module):
-    """SAC Critic: estima Q(s,a) concatenando estado e ação."""
-
     def __init__(self, state_shape, action_dim=3):
         super().__init__()
         h, w = state_shape
-        self.conv1 = nn.Conv2d(1, 16, 2, padding=1)
-        x = torch.zeros(1, 1, h, w)
-        x = torch.relu(self.conv1(x))
-        flat = x.numel()
-        self.fc1 = nn.Linear(flat + action_dim, 128)
-        self.fc2 = nn.Linear(128, 1)
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        with torch.no_grad():
+            x = torch.zeros(1, 1, h, w)
+            x = torch.relu(self.conv1(x))
+            x = torch.relu(self.conv2(x))
+            flat = x.numel()
+        self.fc1 = nn.Linear(flat + action_dim, 256)
+        self.fc2 = nn.Linear(256, 1)
 
     def forward(self, state, action):
         if state.dim() == 2:
@@ -87,6 +113,7 @@ class SACCritic(nn.Module):
         elif state.dim() == 3:
             state = state.unsqueeze(1)
         x = torch.relu(self.conv1(state))
+        x = torch.relu(self.conv2(x))
         x = x.view(x.size(0), -1)
         x = torch.cat([x, action], dim=-1)
         x = torch.relu(self.fc1(x))
@@ -94,8 +121,6 @@ class SACCritic(nn.Module):
 
 
 class SACAgent:
-    """Agente SAC com P_STA decomposition (50% estático + 50% dinâmico)."""
-
     def __init__(
         self,
         state_shape,
@@ -128,46 +153,21 @@ class SACAgent:
         self.batch_size = batch_size
         self.step_count = 0
 
-    def continuous_to_prb(self, continuous_action):
-        """
-        Converte ação contínua [-1, 1] em PRB allocation via Softmax + P_STA.
-
-        P_final = P_STA + softmax(action) * 0.5
-        """
-        a = continuous_action.cpu().numpy().flatten()
-
-        # Softmax com estabilidade numérica
-        exp_a = np.exp(a - np.max(a))
-        p_opt = exp_a / exp_a.sum()
-        p_opt *= 0.5  # agente controla 50%
-
-        p_final = P_STA + p_opt
-        p_final /= p_final.sum()  # renormalizar
-
-        action = np.array(
-            [
-                [p_final[0] * 100.0, 0.0, 100.0],
-                [p_final[1] * 100.0, 0.0, 100.0],
-                [p_final[2] * 100.0, 0.0, 100.0],
-            ],
-            dtype=np.float64,
-        )
-        return action
-
     def act(self, state):
         s = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(device)
         with torch.no_grad():
             a, _ = self.actor.sample(s)
-        return self.continuous_to_prb(a), a.cpu().numpy().flatten()
+        # Return continuous action in [-1, 1] (shape (3,))
+        return a.cpu().numpy().flatten()
 
-    def remember(self, state, action_cont, reward, next_state, done):
+    def remember(self, state, action, reward, next_state, done):
         self.memory.append(
-            (state.copy(), action_cont.copy(), reward, next_state.copy(), done)
+            (state.copy(), action.copy(), reward, next_state.copy(), float(done))
         )
 
     def replay(self):
         if len(self.memory) < self.batch_size:
-            return None
+            return None, None
         batch = random.sample(self.memory, self.batch_size)
         states = torch.FloatTensor(np.array([b[0] for b in batch])).to(device)
         actions = torch.FloatTensor(np.array([b[1] for b in batch])).to(device)
@@ -180,9 +180,7 @@ class SACAgent:
             q1_t = self.critic1_target(next_states, next_a)
             q2_t = self.critic2_target(next_states, next_a)
             q_t = torch.min(q1_t, q2_t) - self.alpha * next_log_prob
-            q_backup = (
-                rewards.unsqueeze(1) + (1 - dones.unsqueeze(1)) * self.gamma * q_t
-            )
+            q_backup = rewards.unsqueeze(1) + (1 - dones.unsqueeze(1)) * self.gamma * q_t
 
         q1 = self.critic1(states, actions)
         q2 = self.critic2(states, actions)
@@ -212,7 +210,7 @@ class SACAgent:
             tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
 
         self.step_count += 1
-        return c1_loss.item()
+        return c1_loss.item(), actor_loss.item()
 
     def save(self, path):
         torch.save(
@@ -231,118 +229,220 @@ class SACAgent:
         self.critic2.load_state_dict(ckpt["critic2"])
 
 
-def train_scenario(scenario, output_dir, num_episodes=50, max_steps=50):
-    scenario_dir = os.path.join(output_dir, scenario)
-    os.makedirs(scenario_dir, exist_ok=True)
+def choose_scenario(episode, mode, scenarios_list):
+    if mode == "random":
+        return random.choice(scenarios_list)
+    return scenarios_list[0]
 
-    print(f"\n{'=' * 60}")
-    print(f"SAC Training | Scenario: {scenario} | Episodes: {num_episodes}")
-    print(f"{'=' * 60}")
 
+def train_sac(args):
+    set_seed(args.seed)
+
+    os.makedirs(args.output, exist_ok=True)
+
+    scenario_list = (
+        args.scenarios.split(",")
+        if args.scenarios
+        else [args.scenario]
+    )
+    if args.scenario == "random":
+        mode = "random"
+        if not args.scenarios:
+            scenario_list = SCENARIOS
+    else:
+        mode = "fixed"
+        scenario_list = [args.scenario]
+
+    # Initialize env once to get spaces (scenario will be updated per episode)
     config = {
-        "simTime": [4],
-        "appStart": [0.5],
-        "scenario": [scenario],
-        "seed": [1],
-        "periodMs": [10],
+        "simTime": [args.simTime],
+        "appStart": [args.appStart],
+        "scenario": [scenario_list[0]],
+        "seed": [args.seed],
+        "periodMs": [args.periodMs],
     }
 
     env = RslaqEnv(
-        ns3_path=NS3_PATH,
+        ns3_path=os.path.abspath(args.ns3_path),
         scenario_configuration=config,
-        output_folder=scenario_dir,
+        output_folder=args.output,
         optimized=False,
+        action_mode=args.action_mode,
+        observation_mode=args.observation_mode,
+        max_steps=args.max_steps if args.max_steps != "auto" else None,
     )
 
     state_shape = env.observation_space.shape
     agent = SACAgent(
         state_shape,
-        action_dim=3,  # 3 pesos contínuos (eMBB, URLLC, MTC)
-        lr=1e-3,
-        gamma=0.99,
-        tau=0.005,
-        alpha=0.1,
-        buffer_size=10000,
-        batch_size=256,
+        action_dim=3,
+        lr=args.lr,
+        gamma=args.gamma,
+        tau=args.tau,
+        alpha=args.alpha,
+        buffer_size=args.buffer_size,
+        batch_size=args.batch_size,
     )
 
-    all_rewards = []
-    best_avg = -float("inf")
+    log_path = os.path.join(args.output, "sac_training_log.csv")
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "episode",
+                "scenario",
+                "total_reward",
+                "avg_reward",
+                "outage_count",
+                "soft_count",
+                "steps",
+                "actor_loss",
+                "critic_loss",
+                "final_embb_thr",
+                "final_urllc_plr",
+                "final_mtc_lost",
+                "action_embb",
+                "action_urllc",
+                "action_mtc",
+            ]
+        )
 
-    for ep in range(num_episodes):
+    best_avg = -float("inf")
+    all_rewards = []
+    avg100 = 0.0
+
+    for ep in range(args.episodes):
+        chosen_scenario = choose_scenario(ep, mode, scenario_list)
+        env.scenario_configuration["scenario"] = [chosen_scenario]
+        env.scenario_name = chosen_scenario
+
         obs, info = env.reset()
         state = obs.copy()
         ep_reward = 0.0
+        ep_outages = 0
+        ep_soft = 0
+        ep_actor_losses = []
+        ep_critic_losses = []
+        step = 0
 
-        for step in range(max_steps):
-            prb_action, action_cont = agent.act(state)
-            # Enviar ação contínua (3 valores) para o env; o env faz pós-processamento
+        for step in range(env.max_steps):
+            action_cont = agent.act(state)
             next_obs, reward, terminated, truncated, info = env.step(action_cont)
             next_state = next_obs.copy()
             done = terminated or truncated
 
             agent.remember(state, action_cont, reward, next_state, float(done))
-            agent.replay()
+            c_loss, a_loss = agent.replay()
+            if c_loss is not None:
+                ep_critic_losses.append(c_loss)
+            if a_loss is not None:
+                ep_actor_losses.append(a_loss)
 
             ep_reward += reward
-            state = next_state
+            if info.get("outage_flags"):
+                if any(info["outage_flags"].values()):
+                    ep_outages += 1
+            if info.get("soft_flags"):
+                if any(info["soft_flags"].values()):
+                    ep_soft += 1
 
+            state = next_state
             if done:
                 break
 
         all_rewards.append(ep_reward)
-        avg100 = np.mean(all_rewards[-100:])
+        avg100 = np.mean(all_rewards[-100:]) if len(all_rewards) >= 100 else np.mean(all_rewards)
 
-        if (ep + 1) % 5 == 0:
+        # Extract final KPIs from info
+        final_embb_thr = info.get("slice_0_eMBB", {}).get("throughput_mbps", 0.0)
+        final_urllc_plr = info.get("slice_1_URLLC", {}).get("plr_mean", 0.0)
+        final_mtc_lost = info.get("slice_2_MTC", {}).get("dLostPackets_sum", 0.0)
+        action_info = info.get("action_info", {})
+        prb_pct = action_info.get("prb_pct", [0.0, 0.0, 0.0])
+
+        with open(log_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    ep + 1,
+                    chosen_scenario,
+                    f"{ep_reward:.4f}",
+                    f"{avg100:.4f}",
+                    ep_outages,
+                    ep_soft,
+                    step + 1,
+                    f"{np.mean(ep_actor_losses):.6f}" if ep_actor_losses else "",
+                    f"{np.mean(ep_critic_losses):.6f}" if ep_critic_losses else "",
+                    f"{final_embb_thr:.4f}",
+                    f"{final_urllc_plr:.4f}",
+                    f"{final_mtc_lost:.4f}",
+                    f"{prb_pct[0]:.2f}",
+                    f"{prb_pct[1]:.2f}",
+                    f"{prb_pct[2]:.2f}",
+                ]
+            )
+
+        if (ep + 1) % args.log_interval == 0:
             print(
-                f"  Ep {ep + 1}/{num_episodes} | Reward: {ep_reward:.4f} | Avg100: {avg100:.4f}"
+                f"Ep {ep + 1}/{args.episodes} | Scenario: {chosen_scenario} | "
+                f"Reward: {ep_reward:.4f} | Avg100: {avg100:.4f} | "
+                f"Outages: {ep_outages} | Soft: {ep_soft}"
             )
 
         if avg100 > best_avg:
             best_avg = avg100
-            agent.save(os.path.join(scenario_dir, "sac_best.pth"))
+            agent.save(os.path.join(args.output, "sac_best.pt"))
 
-    agent.save(os.path.join(scenario_dir, "sac_final.pth"))
+    agent.save(os.path.join(args.output, "sac_final.pt"))
 
-    results = {
+    summary = {
         "method": "sac",
-        "scenario": scenario,
-        "episodes": num_episodes,
-        "rewards": all_rewards,
-        "final_avg_100": float(np.mean(all_rewards[-100:])),
+        "scenario_mode": mode,
+        "scenarios": scenario_list,
+        "episodes": args.episodes,
+        "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
     }
-    with open(os.path.join(scenario_dir, "sac_training.json"), "w") as f:
-        json.dump(results, f, indent=2)
+    with open(os.path.join(args.output, "sac_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
 
     env.close()
-    print(f"  Scenario {scenario} done. Best avg: {best_avg:.4f}")
-    return results
+    print(f"\nTraining complete. Best avg reward: {best_avg:.4f}")
+    print(f"Logs saved to {log_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SAC Training for RSLAQ with NS-3")
-    parser.add_argument("--scenario", type=str, default="all")
-    parser.add_argument(
-        "--output",
-        type=str,
-        default="/home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym/results",
-    )
-    parser.add_argument("--episodes", type=int, default=50)
-    parser.add_argument("--max_steps", type=int, default=50)
+    parser = argparse.ArgumentParser(description="SAC Training for RSLAQ")
+    parser.add_argument("--scenario", type=str, default="normal",
+                        help="Scenario name or 'random'")
+    parser.add_argument("--scenarios", type=str, default="",
+                        help="Comma-separated list for random mode (default: all)")
+    parser.add_argument("--ns3_path", type=str, default=DEFAULT_NS3_PATH)
+    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT)
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument("--simTime", type=float, default=4.0)
+    parser.add_argument("--appStart", type=float, default=0.5)
+    parser.add_argument("--periodMs", type=int, default=10)
+    parser.add_argument("--max_steps", type=str, default="auto",
+                        help="Max steps per episode or 'auto'")
+    parser.add_argument("--observation_mode", type=str, default="paper")
+    parser.add_argument("--action_mode", type=str, default="continuous")
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--alpha", type=float, default=0.1)
+    parser.add_argument("--buffer_size", type=int, default=10000)
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--log_interval", type=int, default=1)
     args = parser.parse_args()
 
-    os.makedirs(args.output, exist_ok=True)
-    scenarios = SCENARIOS if args.scenario == "all" else [args.scenario]
+    if args.max_steps.lower() == "auto":
+        args.max_steps = None
+    else:
+        args.max_steps = int(args.max_steps)
 
-    all_results = {}
-    for scenario in scenarios:
-        r = train_scenario(scenario, args.output, args.episodes, args.max_steps)
-        all_results[scenario] = r
-
-    with open(os.path.join(args.output, "sac_all_results.json"), "w") as f:
-        json.dump(all_results, f, indent=2, default=str)
-    print(f"\nAll SAC results saved to {args.output}")
+    train_sac(args)
 
 
 if __name__ == "__main__":

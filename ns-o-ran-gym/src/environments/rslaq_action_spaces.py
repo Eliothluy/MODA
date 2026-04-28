@@ -1,0 +1,148 @@
+"""
+RSLAQ Action Spaces.
+
+Handles conversion from agent actions to PRB percentages for ns-3,
+supporting both continuous (SAC) and discrete (DDQN) modes.
+
+P_STA decomposition: p_final = static_fraction * weights + (1 - static_fraction) * p_opt
+"""
+
+from typing import List, Tuple
+import numpy as np
+
+# Default static weights from the RSLAQ paper
+DEFAULT_WEIGHTS = np.array([0.3333, 0.4000, 0.2667], dtype=np.float32)
+
+
+def _softmax(x: np.ndarray) -> np.ndarray:
+    """Numerically stable softmax."""
+    x = np.asarray(x, dtype=np.float64)
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum()
+
+
+def build_discrete_action_table(
+    step: float = 0.1,
+    include_scheduler: bool = False,
+) -> List[Tuple]:
+    """
+    Build the discrete action table for DDQN.
+
+    Each action is a tuple (p0, p1, p2, [sch]) where p0+p1+p2 ≈ 1.0
+    and p_i are multiples of ``step``.
+
+    With step=0.1 and 3 slices (resource-only), there are 66 actions.
+    If include_scheduler=True, actions also include scheduler_id (0=RR, 1=PF, 2=BCQI),
+    resulting in 198 actions.
+
+    Args:
+        step: Granularity of resource allocation (default 0.1).
+        include_scheduler: Whether to include scheduler selection (default False).
+
+    Returns:
+        List of action tuples.
+    """
+    values = [round(i * step, 1) for i in range(int(1.0 / step) + 1)]
+    combos: List[Tuple] = []
+    for p0 in values:
+        for p1 in values:
+            p2 = round(1.0 - p0 - p1, 1)
+            if p2 < -1e-6 or p2 > 1.0 + 1e-6:
+                continue
+            if abs(p0 + p1 + p2 - 1.0) > 1e-6:
+                continue
+            if include_scheduler:
+                for sch in (0, 1, 2):  # RR, PF, BCQI
+                    combos.append((float(p0), float(p1), float(p2), int(sch)))
+            else:
+                combos.append((float(p0), float(p1), float(p2)))
+    return combos
+
+
+def continuous_action_to_prb(
+    raw_action: np.ndarray,
+    weights: np.ndarray = None,
+    static_fraction: float = 0.5,
+) -> np.ndarray:
+    """
+    Convert a continuous raw action (e.g. from SAC) to PRB percentages.
+
+    Process:
+        1. Softmax on raw_action
+        2. p_opt = softmax(raw_action)
+        3. p_final = static_fraction * weights + (1 - static_fraction) * p_opt
+        4. Normalize to sum 1.0
+        5. Convert to percentages (*100)
+
+    Args:
+        raw_action: Array of shape (3,) in [-1, 1] or any real range.
+        weights: Static weights (default [0.3333, 0.4000, 0.2667]).
+        static_fraction: Fraction allocated to static weights (default 0.5).
+
+    Returns:
+        Array of shape (3,) with PRB percentages summing to ~100.0.
+    """
+    if weights is None:
+        weights = DEFAULT_WEIGHTS
+    weights = np.asarray(weights, dtype=np.float64)
+    raw_action = np.asarray(raw_action, dtype=np.float64).flatten()
+
+    if raw_action.shape[0] != 3:
+        raise ValueError(f"raw_action must have shape (3,), got {raw_action.shape}")
+
+    p_opt = _softmax(raw_action)
+    p_final = static_fraction * weights + (1.0 - static_fraction) * p_opt
+    p_final /= p_final.sum()
+    prb_pct = p_final * 100.0
+    return prb_pct.astype(np.float64)
+
+
+def discrete_action_to_prb(
+    action_idx: int,
+    action_table: List[Tuple],
+    weights: np.ndarray = None,
+    static_fraction: float = 0.5,
+) -> Tuple[np.ndarray, int]:
+    """
+    Convert a discrete action index (DDQN) to PRB percentages.
+
+    Args:
+        action_idx: Index into the action table.
+        action_table: List of action tuples from build_discrete_action_table.
+        weights: Static weights (default [0.3333, 0.4000, 0.2667]).
+        static_fraction: Fraction allocated to static weights (default 0.5).
+
+    Returns:
+        Tuple (prb_percentages, scheduler_id).
+        If the action table does not include scheduler, scheduler_id is -1.
+    """
+    if weights is None:
+        weights = DEFAULT_WEIGHTS
+    weights = np.asarray(weights, dtype=np.float64)
+
+    if action_idx < 0 or action_idx >= len(action_table):
+        raise ValueError(f"action_idx {action_idx} out of range [0, {len(action_table)})")
+
+    entry = action_table[action_idx]
+    if len(entry) == 3:
+        p0, p1, p2 = entry
+        sch_id = -1
+    elif len(entry) == 4:
+        p0, p1, p2, sch_id = entry
+    else:
+        raise ValueError(f"Unexpected action table entry format: {entry}")
+
+    p_opt = np.array([p0, p1, p2], dtype=np.float64)
+    # Ensure it sums to 1.0 (guard against float rounding)
+    p_opt /= p_opt.sum()
+
+    p_final = static_fraction * weights + (1.0 - static_fraction) * p_opt
+    p_final /= p_final.sum()
+    prb_pct = p_final * 100.0
+    return prb_pct.astype(np.float64), int(sch_id)
+
+
+def scheduler_id_to_name(scheduler_id: int) -> str:
+    """Map scheduler id to human-readable name."""
+    mapping = {0: "RR", 1: "PF", 2: "BCQI"}
+    return mapping.get(scheduler_id, "UNKNOWN")
