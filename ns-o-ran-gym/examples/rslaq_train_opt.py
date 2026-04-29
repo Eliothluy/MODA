@@ -1,6 +1,6 @@
 import sys
 
-sys.path.insert(0, "/home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym/src")
+sys.path.insert(0, "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/src")
 
 import argparse
 import json
@@ -9,7 +9,7 @@ import numpy as np
 
 from environments.rslaq_env import RslaqEnv
 
-NS3_PATH = "/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/"
+NS3_PATH = "/home/elioth/Documentos/artigo_jussi/ns-3-dev/"
 SCENARIOS = [
     "low_traffic",
     "normal",
@@ -29,17 +29,18 @@ OPT_P_OPT = {
     "insufficient_resources": np.array([0.20, 0.25, 0.05]),
 }
 
+DEFAULT_WEIGHTS = np.array([0.3333, 0.4000, 0.2667], dtype=np.float64)
+
 OPT_ACTIONS = {}
 for scenario, p_opt in OPT_P_OPT.items():
     p_final = P_STA + p_opt
-    OPT_ACTIONS[scenario] = np.array(
-        [
-            [p_final[0] * 100.0, 0.0, 100.0],
-            [p_final[1] * 100.0, 0.0, 100.0],
-            [p_final[2] * 100.0, 0.0, 100.0],
-        ],
-        dtype=np.float64,
-    )
+    # Invert continuous_action_to_prb to get the raw continuous action
+    # that yields p_final after softmax + P_STA decomposition.
+    target_softmax = 2.0 * p_final - DEFAULT_WEIGHTS
+    target_softmax = np.clip(target_softmax, 1e-8, None)
+    raw = np.log(target_softmax)
+    raw = raw - raw.mean()
+    OPT_ACTIONS[scenario] = raw.astype(np.float64)
 
 
 def evaluate_scenario(scenario, output_dir, num_episodes=10, max_steps=50):
@@ -55,7 +56,7 @@ def evaluate_scenario(scenario, output_dir, num_episodes=10, max_steps=50):
         "appStart": [0.5],
         "scenario": [scenario],
         "seed": [1],
-        "indicationPeriodicity": [10],
+        "periodMs": [10],
     }
 
     env = RslaqEnv(
@@ -112,7 +113,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="/home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym/results",
+        default="/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results",
     )
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--max_steps", type=int, default=50)
