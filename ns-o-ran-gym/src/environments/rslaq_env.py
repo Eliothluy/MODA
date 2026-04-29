@@ -43,6 +43,10 @@ class RslaqEnv(NsOranEnv):
 
     Important: bfs and tdp are currently proxies using plr and lostPackets.
     See rslaq_kpis.py for TODOs on replacing them with real metrics.
+
+    P_STA decomposition: By default (apply_p_sta=True), the environment applies
+    P_STA decomposition in Python before sending actions to ns-3. Set apply_p_sta=False
+    when ns-3 handles P_STA decomposition (to avoid double application).
     """
 
     def __init__(
@@ -57,6 +61,7 @@ class RslaqEnv(NsOranEnv):
         include_scheduler: bool = False,
         sla_config: dict | None = None,
         terminal_outage: bool = False,
+        apply_p_sta: bool = True,
     ):
         # Ensure required keys exist
         scenario_configuration.setdefault("simId", [""])
@@ -83,6 +88,7 @@ class RslaqEnv(NsOranEnv):
         self.include_scheduler = include_scheduler
         self.sla_config = sla_config or {}
         self.terminal_outage = terminal_outage
+        self.apply_p_sta = apply_p_sta
         self.scenario_name = scenario_configuration.get("scenario", ["normal"])[0]
 
         # Action table for discrete mode
@@ -141,6 +147,11 @@ class RslaqEnv(NsOranEnv):
         self.kpi_dict: dict = {}
         self.num_steps = 0
         self.latest_action_info: dict = {}
+
+    @override
+    def reset(self, *, seed=None, options=None):
+        self.num_steps = 0
+        return super().reset(seed=seed, options=options)
 
     def start_sim(self):
         if self.is_open:
@@ -221,7 +232,7 @@ class RslaqEnv(NsOranEnv):
                 raise ValueError(
                     f"Continuous action must have shape (3,), got {raw.shape}"
                 )
-            prb_pct = continuous_action_to_prb(raw)
+            prb_pct = continuous_action_to_prb(raw, apply_p_sta=self.apply_p_sta)
             scheduler_id = -1
         elif self.action_mode == "discrete":
             if not isinstance(action, (int, np.integer)):
@@ -235,7 +246,7 @@ class RslaqEnv(NsOranEnv):
                     "This should not happen."
                 )
             prb_pct, scheduler_id = discrete_action_to_prb(
-                action_idx, self.action_table
+                action_idx, self.action_table, apply_p_sta=self.apply_p_sta
             )
         else:
             raise ValueError(f"Unknown action_mode: {self.action_mode}")

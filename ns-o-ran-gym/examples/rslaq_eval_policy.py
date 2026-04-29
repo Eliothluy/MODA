@@ -116,6 +116,7 @@ def evaluate_agent(
         action_mode=action_mode,
         observation_mode=observation_mode,
         max_steps=max_steps if max_steps != "auto" else None,
+        apply_p_sta=False,  # P_STA applied in Python, ns-3 receives final values
     )
 
     rows = []
@@ -216,6 +217,7 @@ def main():
             action_mode=action_mode,
             observation_mode=args.observation_mode,
             max_steps=1,
+            apply_p_sta=False,
         )
         state_shape = tmp_env.observation_space.shape
         tmp_env.close()
@@ -229,6 +231,7 @@ def main():
             action_mode=action_mode,
             observation_mode=args.observation_mode,
             max_steps=1,
+            apply_p_sta=False,
         )
         state_shape = tmp_env.observation_space.shape
         action_size = len(build_discrete_action_table(step=0.1, include_scheduler=False))

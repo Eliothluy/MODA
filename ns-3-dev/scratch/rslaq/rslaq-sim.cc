@@ -572,25 +572,20 @@ KpmAndControlCallback()
                 }
                 actionFile.close();
 
-                // P_STA decomposition: 50% estático + 50% dinâmico
-                // O agente envia dedicatedPRB como % do total.
-                // Convertemos para pesos normalizados.
+                // P_STA decomposition is applied in Python (rslaq_action_spaces.py)
+                // The agent sends dedicatedPRB as % of total, already including P_STA.
+                // We use these values directly to avoid double application.
                 double totalDed = dedicatedPrb[0] + dedicatedPrb[1] + dedicatedPrb[2];
                 if (totalDed > 0.0)
                 {
-                    std::vector<double> p_dyn(NUM_SLICES);
-                    for (uint32_t s = 0; s < NUM_SLICES; s++)
-                    {
-                        p_dyn[s] = (dedicatedPrb[s] / totalDed) * 0.5;
-                    }
-
                     std::vector<double> p_final(NUM_SLICES);
                     for (uint32_t s = 0; s < NUM_SLICES; s++)
                     {
-                        p_final[s] = P_STA_WEIGHTS[s] * 0.5 + p_dyn[s];
+                        // Directly use the percentages from Python (already normalized)
+                        p_final[s] = dedicatedPrb[s] / totalDed;
                     }
 
-                    // Renormalizar para somar 1.0
+                    // Renormalizar para somar 1.0 (guard contra floating point)
                     double sum = p_final[0] + p_final[1] + p_final[2];
                     if (sum > 0.0)
                     {

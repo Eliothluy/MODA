@@ -1,7 +1,7 @@
 # RSLAQ Diagnostic Report
 
 **Scenario:** `stressed`
-**Results directory:** `results_rslaq`
+**Results directory:** `ns-3-dev/results_rslaq`
 
 ## Summary
 

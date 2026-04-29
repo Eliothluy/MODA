@@ -5,6 +5,10 @@ Handles conversion from agent actions to PRB percentages for ns-3,
 supporting both continuous (SAC) and discrete (DDQN) modes.
 
 P_STA decomposition: p_final = static_fraction * weights + (1 - static_fraction) * p_opt
+
+IMPORTANT: When using this module with ns-3 DRL training, set apply_p_sta=False to avoid
+double application. P_STA is applied on the Python side when the agent produces actions,
+and ns-3 should receive the final PRB percentages directly without further modification.
 """
 
 from typing import List, Tuple
@@ -63,6 +67,7 @@ def continuous_action_to_prb(
     raw_action: np.ndarray,
     weights: np.ndarray = None,
     static_fraction: float = 0.5,
+    apply_p_sta: bool = True,
 ) -> np.ndarray:
     """
     Convert a continuous raw action (e.g. from SAC) to PRB percentages.
@@ -70,7 +75,8 @@ def continuous_action_to_prb(
     Process:
         1. Softmax on raw_action
         2. p_opt = softmax(raw_action)
-        3. p_final = static_fraction * weights + (1 - static_fraction) * p_opt
+        3. If apply_p_sta=True: p_final = static_fraction * weights + (1 - static_fraction) * p_opt
+           If apply_p_sta=False: p_final = p_opt (raw agent output)
         4. Normalize to sum 1.0
         5. Convert to percentages (*100)
 
@@ -78,6 +84,8 @@ def continuous_action_to_prb(
         raw_action: Array of shape (3,) in [-1, 1] or any real range.
         weights: Static weights (default [0.3333, 0.4000, 0.2667]).
         static_fraction: Fraction allocated to static weights (default 0.5).
+        apply_p_sta: If True, apply P_STA decomposition. If False, return raw softmax output.
+                    Set to False when ns-3 handles P_STA decomposition. Default: True for backward compatibility.
 
     Returns:
         Array of shape (3,) with PRB percentages summing to ~100.0.
@@ -91,7 +99,10 @@ def continuous_action_to_prb(
         raise ValueError(f"raw_action must have shape (3,), got {raw_action.shape}")
 
     p_opt = _softmax(raw_action)
-    p_final = static_fraction * weights + (1.0 - static_fraction) * p_opt
+    if apply_p_sta:
+        p_final = static_fraction * weights + (1.0 - static_fraction) * p_opt
+    else:
+        p_final = p_opt
     p_final /= p_final.sum()
     prb_pct = p_final * 100.0
     return prb_pct.astype(np.float64)
@@ -102,6 +113,7 @@ def discrete_action_to_prb(
     action_table: List[Tuple],
     weights: np.ndarray = None,
     static_fraction: float = 0.5,
+    apply_p_sta: bool = True,
 ) -> Tuple[np.ndarray, int]:
     """
     Convert a discrete action index (DDQN) to PRB percentages.
@@ -111,6 +123,8 @@ def discrete_action_to_prb(
         action_table: List of action tuples from build_discrete_action_table.
         weights: Static weights (default [0.3333, 0.4000, 0.2667]).
         static_fraction: Fraction allocated to static weights (default 0.5).
+        apply_p_sta: If True, apply P_STA decomposition. If False, return raw action table values.
+                    Set to False when ns-3 handles P_STA decomposition. Default: True for backward compatibility.
 
     Returns:
         Tuple (prb_percentages, scheduler_id).
@@ -136,7 +150,10 @@ def discrete_action_to_prb(
     # Ensure it sums to 1.0 (guard against float rounding)
     p_opt /= p_opt.sum()
 
-    p_final = static_fraction * weights + (1.0 - static_fraction) * p_opt
+    if apply_p_sta:
+        p_final = static_fraction * weights + (1.0 - static_fraction) * p_opt
+    else:
+        p_final = p_opt
     p_final /= p_final.sum()
     prb_pct = p_final * 100.0
     return prb_pct.astype(np.float64), int(sch_id)

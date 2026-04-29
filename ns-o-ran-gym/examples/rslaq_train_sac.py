@@ -270,6 +270,7 @@ def train_sac(args):
         action_mode=args.action_mode,
         observation_mode=args.observation_mode,
         max_steps=args.max_steps if args.max_steps != "auto" else None,
+        apply_p_sta=args.apply_p_sta,
     )
 
     state_shape = env.observation_space.shape
@@ -435,6 +436,8 @@ def main():
     parser.add_argument("--buffer_size", type=int, default=10000)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--log_interval", type=int, default=1)
+    parser.add_argument("--apply_p_sta", type=bool, default=False,
+                        help="Apply P_STA in Python (default: False, ns-3 receives final values)")
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":
