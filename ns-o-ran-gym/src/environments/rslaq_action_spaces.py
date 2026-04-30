@@ -160,6 +160,11 @@ def discrete_action_to_prb(
 
 
 def scheduler_id_to_name(scheduler_id: int) -> str:
-    """Map scheduler id to human-readable name."""
-    mapping = {0: "RR", 1: "PF", 2: "BCQI"}
-    return mapping.get(scheduler_id, "UNKNOWN")
+    """Map scheduler id to human-readable name and cost."""
+    mapping = {
+        0: ("RR", 1.0),   # Round Robin
+        1: ("PF", 2.0),   # Proportional Fair
+        2: ("BCQI", 2.0)  # Best CQI
+    }
+    name, cost = mapping.get(scheduler_id, ("UNKNOWN", 1.0))
+    return f"{name}(cost={cost})"

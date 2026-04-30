@@ -457,7 +457,9 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
             for (const auto& ue : sliceUeVec[s])
             {
                 uint32_t bufQueueSize = ue.second;
-                if (ue.first->m_dlTbSize < std::max(bufQueueSize, 10U))
+                // Condição mais flexível: considera UE ativo se houver qualquer buffer
+                // OU se estiver recebendo dados (detecção de atividade de tráfego)
+                if (bufQueueSize > 0 || ue.first->m_dlTbSize > 0)
                 {
                     demand = true;
                     break;
@@ -550,7 +552,8 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
 
                         uint32_t bufQueueSize = ue.second;
                         uint32_t prevTbSize = ue.first->m_dlTbSize;
-                        bool demandPassed = (prevTbSize < std::max(bufQueueSize, 10U));
+                        // Condição mais flexível para detecção de demanda
+                        bool demandPassed = (bufQueueSize > 0 || prevTbSize > 0);
 
                         if (logThisSlot && m_ueAllocCsv.is_open())
                         {

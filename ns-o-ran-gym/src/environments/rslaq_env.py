@@ -311,9 +311,15 @@ class RslaqEnv(NsOranEnv):
         if "_latest_timestamp" in self.kpi_dict:
             self.last_timestamp = self.kpi_dict.pop("_latest_timestamp")
 
+        # Get observation config from sla_config
+        use_proxy_bfs = self.sla_config.get("use_proxy_bfs", False)
+        max_buffer_bytes = self.sla_config.get("max_buffer_bytes", 100000.0)
+
         self.observations = build_observation(
             self.kpi_dict,
             mode=self.observation_mode,
+            use_proxy_bfs=use_proxy_bfs,
+            max_buffer_bytes=max_buffer_bytes,
         )
 
     @override

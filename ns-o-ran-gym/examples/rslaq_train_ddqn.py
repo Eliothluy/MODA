@@ -55,7 +55,7 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-# Build discrete action table (resource-only, no scheduler)
+# Build discrete action table (will be updated in train_ddqn based on args)
 ACTION_TABLE = build_discrete_action_table(step=0.1, include_scheduler=False)
 NUM_ACTIONS = len(ACTION_TABLE)
 
@@ -210,12 +210,24 @@ def train_ddqn(args):
         mode = "fixed"
         scenario_list = [args.scenario]
 
+    # Update action table based on include_scheduler
+    global ACTION_TABLE, NUM_ACTIONS
+    ACTION_TABLE = build_discrete_action_table(step=0.1, include_scheduler=args.include_scheduler)
+    NUM_ACTIONS = len(ACTION_TABLE)
+    print(f"Action table size: {NUM_ACTIONS} (include_scheduler={args.include_scheduler})")
+
     config = {
         "simTime": [args.simTime],
         "appStart": [args.appStart],
         "scenario": [scenario_list[0]],
         "seed": [args.seed],
         "periodMs": [args.periodMs],
+    }
+
+    sla_config = {
+        "mtc_is_no_policy": args.mtc_is_no_policy,
+        "use_real_bfs": args.use_real_bfs,
+        "max_buffer_bytes": args.max_buffer_bytes,
     }
 
     env = RslaqEnv(
@@ -227,6 +239,8 @@ def train_ddqn(args):
         observation_mode=args.observation_mode,
         max_steps=args.max_steps if args.max_steps != "auto" else None,
         apply_p_sta=args.apply_p_sta,
+        include_scheduler=args.include_scheduler,
+        sla_config=sla_config,
     )
 
     state_shape = env.observation_space.shape
@@ -394,6 +408,14 @@ def main():
     parser.add_argument("--log_interval", type=int, default=1)
     parser.add_argument("--apply_p_sta", type=bool, default=False,
                         help="Apply P_STA in Python (default: False, ns-3 receives final values)")
+    parser.add_argument("--include_scheduler", action="store_true",
+                        help="Include scheduler action (198 actions instead of 66)")
+    parser.add_argument("--mtc_is_no_policy", type=bool, default=True,
+                        help="MTC is No-Policy (no outage)")
+    parser.add_argument("--use_real_bfs", type=bool, default=False,
+                        help="Use real buffer for URLLC (requires ns-3 buffer export)")
+    parser.add_argument("--max_buffer_bytes", type=float, default=100000.0,
+                        help="Max buffer bytes for URLLC normalization")
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":
