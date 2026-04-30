@@ -1,6 +1,6 @@
 import sys
 
-sys.path.insert(0, "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/src")
+sys.path.insert(0, "/home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym/src")
 
 import argparse
 import json
@@ -9,7 +9,7 @@ import numpy as np
 
 from environments.rslaq_env import RslaqEnv
 
-NS3_PATH = "/home/elioth/Documentos/artigo_jussi/ns-3-dev/"
+NS3_PATH = "/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/"
 SCENARIOS = [
     "low_traffic",
     "normal",
@@ -113,7 +113,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results",
+        default="/home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym/results",
     )
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--max_steps", type=int, default=50)

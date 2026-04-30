@@ -1,0 +1,130 @@
+==========================================================================================
+DRL TRAINING ANALYSIS REPORT — RSLAQ Optimizers (DDQN & SAC)
+==========================================================================================
+
+## 1. TRAINING REGIME OVERVIEW
+------------------------------------------------------------------------------------------
+- Episodes trained: 10 per scenario (FIXED — this is the critical bottleneck).
+- Steps per episode: ~350 (simTime=4.0s, appStart=0.5s, periodMs=10).
+- Total environment steps: ~3,500 per scenario.
+- Baseline comparison: Baseline runs simTime≈10s, yielding ~96 allocation events vs. ~36 for optimizers.
+- Verdict: The training budget is INSUFFICIENT for any meaningful policy convergence.
+
+## 2. REWARD FUNCTION DIAGNOSIS
+------------------------------------------------------------------------------------------
+Reward structure (from rslaq_reward.py):
+  • eMBB: r_embb = thr / soft_max_thr  (clipped at 1.0), zero if thr < min_thr.
+  • URLLC: r_urllc = 1.0 if BFS <= max_bfs, else exp(-(BFS-max_bfs)*0.5).
+  • MTC:   r_mtc   = 1.0 - (TDP / max_tdp), zero if TDP >= max_tdp.
+  • Outage (hard SLA violation): penalty = -sum(weights of violated slices).
+  • Soft violation: reward = 0.
+  • No violation: reward = alpha*r_embb + beta*r_urllc + gamma*r_mtc  (max ≈ 1.0).
+
+Critical observations:
+  1. The reward is SPARSE and DISCONTINUOUS. Most steps in stressed/congestion scenarios
+     will yield 0 or negative rewards, providing weak gradient signals for SAC/DDQN.
+  2. There is no intermediate shaping between 'outage' and 'soft' boundaries.
+  3. The max positive reward is bounded at ~1.0 per step, but episodes accumulate ~350 steps,
+     so total reward per episode is dominated by the frequency of outage/soft events.
+
+## 3. DDQN ANALYSIS
+------------------------------------------------------------------------------------------
+Hyperparameters:
+  • lr=1e-3, gamma=0.90, epsilon_start=1.0, epsilon_min=0.05, epsilon_decay=0.998
+  • target_update=200 steps, batch_size=128, buffer_size=10k
+
+Exploration analysis:
+  With epsilon_decay=0.998 per step, after 3,500 steps epsilon ≈ 1.0 * 0.998^3500 ≈ 0.0009.
+  This means DDQN goes from fully random to almost fully greedy within the FIRST scenario run.
+  By episode 5-6, epsilon is already near 0.05. With only 10 episodes, the agent has
+  essentially no exploration budget left before any policy improvement can be evaluated.
+
+Reward trends (from logs):
+  • normal                   :  Ep1=    6.36  Ep10=  120.43  Trend: IMPROVING
+  • congestion               :  Ep1= -140.67  Ep10= -127.33  Trend: IMPROVING
+  • stressed                 :  Ep1= -222.00  Ep10= -135.67  Trend: IMPROVING
+  • low_traffic              :  Ep1= -116.67  Ep10= -116.67  Trend: FLAT
+  • insufficient_resources   :  Ep1= -238.33  Ep10= -141.00  Trend: IMPROVING
+
+## 4. SAC ANALYSIS
+------------------------------------------------------------------------------------------
+Hyperparameters:
+  • lr=1e-3, gamma=0.99, tau=0.005, alpha=0.1, batch_size=256, buffer_size=10k
+
+Exploration analysis:
+  SAC relies on entropy regularization (alpha=0.1) for exploration. This is theoretically sound,
+  but with only 10 episodes the policy network barely sees 3,500 transitions.
+  The critic networks need significantly more data to accurately estimate Q-values
+  in a sparse-reward environment.
+
+Reward trends (from logs):
+  • normal                   :  Ep1=    1.81  Ep10=    0.60  Trend: DEGRADING
+  • congestion               :  Ep1= -130.00  Ep10= -129.67  Trend: IMPROVING
+  • stressed                 :  Ep1= -241.00  Ep10= -236.67  Trend: IMPROVING
+  • low_traffic              :  Ep1= -116.67  Ep10= -116.67  Trend: FLAT
+  • insufficient_resources   :  Ep1= -242.67  Ep10= -243.00  Trend: DEGRADING
+
+## 5. LEARNING EFFECTIVENESS — Do the agents learn?
+------------------------------------------------------------------------------------------
+Quantitative tests for learning:
+  a) Monotonic reward increase?  NO. Rewards oscillate heavily; no clear upward trend.
+  b) Decreasing loss?            PARTIALLY. DDQN loss increases from ~0.015 to ~0.071 (normal),
+                                     indicating the target network is chasing a moving goal
+                                     without enough data to stabilize.
+  c) Action convergence?         NO. PRB allocations continue to jump between episodes.
+  d) Correlation reward↔KPI?     WEAK. High reward episodes do not consistently map to
+                                     better throughput or lower PLR in the test runs.
+
+Conclusion on learning: THERE IS NO RELIABLE EVIDENCE OF POLICY LEARNING.
+The observed variance in episode rewards is consistent with random exploration
+in a high-variance environment, not with policy improvement.
+
+## 6. WHAT IS MISSING FOR CONVERGENCE?
+------------------------------------------------------------------------------------------
+1. TRAINING DURATION (Critical)
+   → Minimum: 500–1000 episodes per scenario (or 1M+ steps in random mode).
+   → Recommended: 2000+ episodes with early stopping based on a validation curve.
+
+2. REWARD SHAPING (Critical)
+   → Replace the ternary (outage/soft/ok) reward with dense, continuous shaping.
+   → Example: reward = w1*thr/10 + w2*(1-BFS/100) + w3*(1-TDP/1000) - action_penalty.
+   → This provides gradient signal at every step, not just at SLA boundaries.
+
+3. LONGER SIMULATION TIME
+   → simTime=4.0s is too short for KPIs to stabilize. Increase to 8–10s per episode.
+   → Alternatively, use a warm-up period (first 1-2s) before computing rewards.
+
+4. EXPLORATION SCHEDULE
+   → DDQN: decay epsilon over episodes, not steps, or use a slower decay (0.9995+).
+   → SAC: alpha can be tuned adaptively (Automated Entropy Adjustment).
+
+5. CURRICULUM LEARNING
+   → Start training on 'normal' / 'low_traffic' (high reward, easier dynamics).
+   → Gradually introduce 'congestion', 'stressed', 'insufficient_resources'.
+
+6. EXPERIENCE REPLAY & BATCH SIZE
+   → Current buffer_size=10k is small for 350-step episodes. Increase to 100k–500k.
+   → Use Prioritized Experience Replay (PER) to sample important transitions.
+
+7. EVALUATION PROTOCOL
+   → Separate training and test scenarios. Current setup trains and tests on same scenario,
+     but the test runs (UUID folders) are independent executions, not a held-out set.
+   → Use a deterministic evaluation every N episodes to track true policy improvement.
+
+## 7. COMPARATIVE STATISTICS
+------------------------------------------------------------------------------------------
+method               scenario  episodes  mean_total_reward  std_total_reward  min_total_reward  max_total_reward  reward_range  mean_loss  mean_epsilon  mean_steps
+  DDQN             congestion        10         -131.06667          5.682540         -140.6667         -124.6667       16.0000   0.025171       0.14932       350.0
+  DDQN insufficient_resources        10         -159.30000         37.528404         -238.3333         -132.0000      106.3333   0.032553       0.14932       350.0
+  DDQN            low_traffic        10         -116.66670          0.000000         -116.6667         -116.6667        0.0000   0.010218       0.14932       350.0
+  DDQN                 normal        10           91.07580         41.863075            6.3613          124.7684      118.4071   0.055252       0.14932       350.0
+  DDQN               stressed        10         -150.03333         29.734816         -222.0000         -129.0000       93.0000   0.034096       0.14932       350.0
+   SAC             congestion        10         -130.00000          1.728503         -133.6667         -127.3333        6.3334        NaN           NaN       350.0
+   SAC insufficient_resources        10         -243.49999          1.199283         -246.0000         -241.3333        4.6667        NaN           NaN       350.0
+   SAC            low_traffic        10         -116.66670          0.000000         -116.6667         -116.6667        0.0000        NaN           NaN       350.0
+   SAC                 normal        10            4.34652          2.236535            0.5976            8.1494        7.5518        NaN           NaN       350.0
+   SAC               stressed        10         -238.23334          2.666905         -243.6667         -234.0000        9.6667        NaN           NaN       350.0
+
+==========================================================================================
+END OF REPORT
+==========================================================================================

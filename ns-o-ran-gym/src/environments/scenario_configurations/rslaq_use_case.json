@@ -1,5 +1,5 @@
 {
-    "simTime": [4.0],
+    "simTime": [10.0],
     "appStart": [0.5],
     "scenario": ["normal"],
     "seed": [1],

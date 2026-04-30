@@ -1,0 +1,10 @@
+{
+  "method": "ddqn",
+  "scenario_mode": "fixed",
+  "scenarios": [
+    "congestion"
+  ],
+  "episodes": 10,
+  "final_avg_100": -131.0666666666662,
+  "best_avg": -131.0666666666662
+}

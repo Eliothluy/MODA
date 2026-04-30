@@ -1,0 +1,10 @@
+{
+  "method": "sac",
+  "scenario_mode": "fixed",
+  "scenarios": [
+    "stressed"
+  ],
+  "episodes": 10,
+  "final_avg_100": -238.2333333333323,
+  "best_avg": -238.2333333333323
+}
