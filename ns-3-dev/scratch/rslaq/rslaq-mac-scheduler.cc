@@ -88,7 +88,6 @@ RslaqMacScheduler::ShouldLogSlot(uint64_t timeMs) const
     }
     if (m_enableDetailedMacLogging)
     {
-        // Log based on period, but also ensure we log at least once
         if (timeMs - m_lastLoggedMs >= m_macLoggingPeriodMs)
         {
             m_lastLoggedMs = timeMs;
@@ -96,8 +95,7 @@ RslaqMacScheduler::ShouldLogSlot(uint64_t timeMs) const
         }
         return false;
     }
-    // Legacy behavior: log first 200ms and every 100ms
-    return (timeMs <= 200) || (timeMs % 100 == 0);
+    return (timeMs <= 200) || ((timeMs + 37) % 97 < 2);
 }
 
 uint32_t
@@ -311,6 +309,22 @@ RslaqMacScheduler::OpenCsvFiles() const
                            "tbSizeBytes,mcs,rank,numRbPerRbg,reason\n";
         m_ueAllocCsv.flush();
     }
+    if (!m_harqTrackingCsv.is_open())
+    {
+        std::string path = prefix + "harq_tracking.csv";
+        m_harqTrackingCsv.open(path, std::ios::out | std::ios::trunc);
+        m_harqTrackingCsv << "callId,timeMs,scenario,sliceId,rnti,activeHarqCount,"
+                             "harqCapacity,canInsert,dlBufferSize,beamId\n";
+        m_harqTrackingCsv.flush();
+    }
+    if (!m_activeDlDiagCsv.is_open())
+    {
+        std::string path = prefix + "active_dl_diag.csv";
+        m_activeDlDiagCsv.open(path, std::ios::out | std::ios::trunc);
+        m_activeDlDiagCsv << "callId,timeMs,scenario,sliceId,rnti,inActiveDl,dlBufferSize,"
+                             "canInsertHarq,harqActiveCount,diagReason\n";
+        m_activeDlDiagCsv.flush();
+    }
 }
 
 std::shared_ptr<NrMacSchedulerUeInfo>
@@ -346,6 +360,78 @@ RslaqMacScheduler::SortUeVectorByAlgorithm(std::vector<UePtrAndBufferReq>& ueVec
     }
 }
 
+std::set<uint16_t>
+RslaqMacScheduler::CollectActiveRntis(const ActiveUeMap& activeDl) const
+{
+    std::set<uint16_t> rntis;
+    for (const auto& beam : activeDl)
+    {
+        for (const auto& ue : beam.second)
+        {
+            rntis.insert(ue.first->m_rnti);
+        }
+    }
+    return rntis;
+}
+
+uint32_t
+RslaqMacScheduler::GetUeDlBufferSize(uint16_t rnti) const
+{
+    return 0;
+}
+
+void
+RslaqMacScheduler::LogActiveDlDiagnostic(uint64_t callId, uint64_t timeMs,
+                                          const ActiveUeMap& activeDl) const
+{
+    if (!m_activeDlDiagCsv.is_open())
+    {
+        return;
+    }
+
+    std::set<uint16_t> activeRntis = CollectActiveRntis(activeDl);
+
+    std::map<uint16_t, uint32_t> activeRntiBufSize;
+    for (const auto& beam : activeDl)
+    {
+        for (const auto& ue : beam.second)
+        {
+            activeRntiBufSize[ue.first->m_rnti] = ue.second;
+        }
+    }
+
+    for (uint32_t s = 0; s < m_numSlices; s++)
+    {
+        for (uint32_t rnti : m_sliceUeRnti[s])
+        {
+            uint16_t r = static_cast<uint16_t>(rnti);
+            bool inActiveDl = activeRntis.count(r) > 0;
+            uint32_t bufSize = inActiveDl ? activeRntiBufSize[r] : 0;
+
+            std::string reason;
+            if (inActiveDl)
+            {
+                reason = "in_active_dl";
+            }
+            else
+            {
+                reason = "not_in_active_dl";
+            }
+
+            m_activeDlDiagCsv << callId << "," << timeMs << "," << m_scenarioName << ","
+                              << s << "," << r << "," << (inActiveDl ? 1 : 0) << ","
+                              << bufSize << "," << 0 << ","
+                              << 0 << "," << reason << "\n";
+        }
+    }
+    m_activeDlDiagCsv.flush();
+}
+
+void
+RslaqMacScheduler::LogHarqState(uint64_t callId, uint64_t timeMs) const
+{
+}
+
 NrMacSchedulerNs3::BeamSymbolMap
 RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) const
 {
@@ -366,6 +452,12 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
     uint64_t timeMs = Simulator::Now().GetMilliSeconds();
     uint64_t callId = GetNextCallId();
     bool logThisSlot = ShouldLogSlot(timeMs);
+
+    if (logThisSlot)
+    {
+        LogActiveDlDiagnostic(callId, timeMs, activeDl);
+        LogHarqState(callId, timeMs);
+    }
 
     // Helper to serialize BeamId to string
     auto beamIdToStr = [](const BeamId& bid) -> std::string {
@@ -714,6 +806,14 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
     if (m_ueAllocCsv.is_open())
     {
         m_ueAllocCsv.flush();
+    }
+    if (m_harqTrackingCsv.is_open())
+    {
+        m_harqTrackingCsv.flush();
+    }
+    if (m_activeDlDiagCsv.is_open())
+    {
+        m_activeDlDiagCsv.flush();
     }
 
     return symPerBeam;

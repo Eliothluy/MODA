@@ -637,7 +637,7 @@ main(int argc, char* argv[])
     std::string weightsStr = "0.3333,0.4000,0.2667";
     std::string simId = "";
     bool logAllMacSlots = false;
-    uint32_t macLoggingPeriodMs = 100;
+    uint32_t macLoggingPeriodMs = 97;
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("scenario", "1-5 or name", scenarioName);

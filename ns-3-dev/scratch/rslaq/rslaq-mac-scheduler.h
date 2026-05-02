@@ -180,6 +180,8 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     mutable std::ofstream m_sliceAllocCsv;
     mutable std::ofstream m_unmappedRntiCsv;
     mutable std::ofstream m_ueAllocCsv;
+    mutable std::ofstream m_harqTrackingCsv;
+    mutable std::ofstream m_activeDlDiagCsv;
 
     // Instrumentation: call counter and tracking
     mutable uint64_t m_dlSchedCallSeq{0};
@@ -191,6 +193,35 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     uint32_t m_macLoggingPeriodMs{100};
     bool m_enableDetailedMacLogging{false};
     mutable uint64_t m_lastLoggedMs{0};
+
+    /**
+     * @brief Collect RNTIs present in the activeDl map
+     * @param activeDl Active UE map from base scheduler
+     * @return Set of RNTIs found in activeDl
+     */
+    std::set<uint16_t> CollectActiveRntis(const ActiveUeMap& activeDl) const;
+
+    /**
+     * @brief Check buffer status of a UE in m_ueMap
+     * @param rnti UE RNTI
+     * @return total DL buffer size in bytes, 0 if not found
+     */
+    uint32_t GetUeDlBufferSize(uint16_t rnti) const;
+
+    /**
+     * @brief Log activeDl diagnostic: which slice RNTIs are present/missing
+     * @param callId Scheduling call ID
+     * @param timeMs Current time in ms
+     * @param activeDl Active UE map
+     */
+    void LogActiveDlDiagnostic(uint64_t callId, uint64_t timeMs, const ActiveUeMap& activeDl) const;
+
+    /**
+     * @brief Log HARQ state for all slice UEs
+     * @param callId Scheduling call ID
+     * @param timeMs Current time in ms
+     */
+    void LogHarqState(uint64_t callId, uint64_t timeMs) const;
 };
 
 } // namespace ns3
