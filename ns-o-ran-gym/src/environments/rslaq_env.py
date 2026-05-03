@@ -285,6 +285,7 @@ class RslaqEnv(NsOranEnv):
             scenario=self.scenario_name,
             action_info=self.latest_action_info,
             config=self.sla_config,
+            step_count=self.num_steps,
         )
         self._last_reward_result = reward_result
         if reward_result.terminated:

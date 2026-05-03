@@ -1,0 +1,7 @@
+callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,effectiveWeight,activeUes,beamSym,hasDemand,budgetRbg,allocatedRbg,reason,rntis
+1,504,low_traffic,0,0,65535_65535,0,0.3333,0.0000,0,12,0,0,0,no_active_ues,""
+1,504,low_traffic,0,0,65535_65535,1,0.4000,1.0000,5,12,1,53,53,full_alloc,"21;22;23;24;25"
+1,504,low_traffic,0,0,65535_65535,2,0.2667,0.0000,0,12,0,0,0,no_active_ues,""
+73,601,low_traffic,0,0,65535_65535,0,0.4110,1.0000,5,12,1,53,53,full_alloc,"3;5;4;2;1"
+73,601,low_traffic,0,0,65535_65535,1,0.3603,0.0000,0,12,0,0,0,no_active_ues,""
+73,601,low_traffic,0,0,65535_65535,2,0.2288,0.0000,0,12,0,0,0,no_active_ues,""

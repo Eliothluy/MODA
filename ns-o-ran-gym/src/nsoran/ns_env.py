@@ -354,8 +354,8 @@ class NsOranEnv(gym.Env):
         stderr_file_path = os.path.join(self.sim_path, "stderr")
 
         with (
-            open(stdout_file_path, "w+") as stdout_file,
-            open(stderr_file_path, "w+") as stderr_file,
+            open(stdout_file_path, "a") as stdout_file,
+            open(stderr_file_path, "a") as stderr_file,
         ):
             for key, _ in events:
                 data = key.fileobj.read()

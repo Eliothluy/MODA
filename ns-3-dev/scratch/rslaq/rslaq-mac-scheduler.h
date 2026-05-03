@@ -201,6 +201,11 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     mutable uint64_t m_lastLoggedMs{0};
 
     /**
+     * @brief Last known DL buffer size per RNTI (updated during scheduling)
+     */
+    mutable std::map<uint16_t, uint32_t> m_lastDlBufferSize;
+
+    /**
      * @brief Collect RNTIs present in the activeDl map
      * @param activeDl Active UE map from base scheduler
      * @return Set of RNTIs found in activeDl

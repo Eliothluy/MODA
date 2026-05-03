@@ -181,7 +181,7 @@ static std::map<std::string, ScenarioConfig>
 InitScenarios()
 {
     std::map<std::string, ScenarioConfig> m;
-    m["low_traffic"] = {"low_traffic", 50000, 1000000, 2000000, 1500, 50, 100};
+    m["low_traffic"] = {"low_traffic", 5000000, 1000000, 2000000, 1500, 50, 100};
     m["normal"] = {"normal", 70000000, 1000000, 2000000, 1500, 50, 100};
     m["congestion"] = {"congestion", 100000000, 1000000, 100000000, 1500, 50, 100};
     m["stressed"] = {"stressed", 100000000, 1000000, 100000000, 1500, 50, 100};

@@ -377,7 +377,8 @@ RslaqMacScheduler::CollectActiveRntis(const ActiveUeMap& activeDl) const
 uint32_t
 RslaqMacScheduler::GetUeDlBufferSize(uint16_t rnti) const
 {
-    return 0;
+    auto it = m_lastDlBufferSize.find(rnti);
+    return (it != m_lastDlBufferSize.end()) ? it->second : 0;
 }
 
 void
@@ -873,13 +874,17 @@ RslaqMacScheduler::BeforeDlSched(const UePtrAndBufferReq& ue,
 {
     NS_LOG_FUNCTION(this);
     GetFirst GetUe;
-    if (GetUe(ue)->m_dlMcs == 0)
+    auto ueInfo = GetUe(ue);
+    if (ueInfo->m_dlMcs == 0)
     {
-        GetUe(ue)->m_dlMcs = 15;
+        ueInfo->m_dlMcs = 15;
     }
-    auto uePtr = dynamic_cast<NrMacSchedulerUeInfoPF*>(GetUe(ue).get());
+    auto uePtr = dynamic_cast<NrMacSchedulerUeInfoPF*>(ueInfo.get());
     NS_ASSERT(uePtr != nullptr);
     uePtr->CalculatePotentialTPutDl(assignableInIteration);
+
+    // Track buffer size for external KPM export
+    m_lastDlBufferSize[ueInfo->m_rnti] = ue.second;
 }
 
 void

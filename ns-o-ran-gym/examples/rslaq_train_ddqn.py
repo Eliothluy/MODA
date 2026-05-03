@@ -226,6 +226,7 @@ def train_ddqn(args):
 
     sla_config = {
         "max_buffer_bytes": args.max_buffer_bytes,
+        "warmup_steps": args.warmup_steps,
     }
 
     env = RslaqEnv(
@@ -410,6 +411,8 @@ def main():
                         help="Include scheduler action (198 actions instead of 66)")
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0,
                         help="Max buffer bytes for URLLC normalization")
+    parser.add_argument("--warmup_steps", type=int, default=5,
+                        help="Steps to suppress terminal conditions at episode start")
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":
