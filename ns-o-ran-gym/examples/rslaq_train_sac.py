@@ -259,12 +259,14 @@ def train_sac(args):
         "appStart": [args.appStart],
         "scenario": [scenario_list[0]],
         "seed": [args.seed],
+        "seed_cycle": [args.seed_cycle],
         "periodMs": [args.periodMs],
     }
 
     sla_config = {
         "max_buffer_bytes": args.max_buffer_bytes,
         "warmup_steps": args.warmup_steps,
+        "consecutive_outage_steps": args.consecutive_outage_steps,
     }
 
     env = RslaqEnv(
@@ -427,6 +429,8 @@ def main():
     parser.add_argument("--ns3_path", type=str, default=DEFAULT_NS3_PATH)
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed_cycle", type=int, default=100,
+                        help="Change seed every N episodes (default: 100)")
     parser.add_argument("--episodes", type=int, default=10)
     parser.add_argument("--simTime", type=float, default=4.0)
     parser.add_argument("--appStart", type=float, default=0.5)
@@ -442,12 +446,14 @@ def main():
     parser.add_argument("--buffer_size", type=int, default=10000)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--log_interval", type=int, default=1)
-    parser.add_argument("--apply_p_sta", type=bool, default=False,
+    parser.add_argument("--apply_p_sta", action="store_true",
                         help="Apply P_STA in Python (default: False, ns-3 receives final values)")
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0,
                         help="Max buffer bytes for URLLC normalization")
     parser.add_argument("--warmup_steps", type=int, default=5,
                         help="Steps to suppress terminal conditions at episode start")
+    parser.add_argument("--consecutive_outage_steps", type=int, default=5,
+                        help="Consecutive steps below threshold to declare outage (default 5 = 50ms)")
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":

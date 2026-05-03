@@ -8,6 +8,7 @@ import fcntl
 import os
 import glob
 import warnings
+from collections import deque
 from posix_ipc import Semaphore, O_CREAT
 from nsoran.ns_env import NsOranEnv
 from nsoran.action_controller import ActionController
@@ -143,17 +144,25 @@ class RslaqEnv(NsOranEnv):
 
         self._base_seed = int(scenario_configuration.get("seed", [1])[0])
         self._episode_count = 0
+        self._seed_cycle = int(scenario_configuration.get("seed_cycle", [100])[0])
+        self._current_seed_index = 0
 
         self.observations = np.zeros(obs_shape, dtype=np.float32)
         self.kpi_dict: dict = {}
         self.num_steps = 0
         self.latest_action_info: dict = {}
 
+        # History of per-step KPI dicts for consecutive-period outage detection
+        self.kpi_history: deque[dict] = deque(maxlen=10)
+
     @override
     def reset(self, *, seed=None, options=None):
         self.num_steps = 0
         self._episode_count += 1
-        self.scenario_configuration["seed"] = [self._base_seed + self._episode_count - 1]
+        self._current_seed_index = (self._episode_count - 1) // self._seed_cycle
+        current_seed = self._base_seed + self._current_seed_index
+        self.scenario_configuration["seed"] = [current_seed]
+        self.kpi_history.clear()
         return super().reset(seed=seed, options=options)
 
     def start_sim(self):
@@ -171,6 +180,8 @@ class RslaqEnv(NsOranEnv):
 
         flat_params = {}
         for k, v in parameters.items():
+            if k in ("seed_cycle", "_current_seed_index"):
+                continue
             if isinstance(v, list) and len(v) == 1:
                 flat_params[k] = v[0]
             else:
@@ -286,6 +297,7 @@ class RslaqEnv(NsOranEnv):
             action_info=self.latest_action_info,
             config=self.sla_config,
             step_count=self.num_steps,
+            kpi_history=list(self.kpi_history),
         )
         self._last_reward_result = reward_result
         if reward_result.terminated:
@@ -333,6 +345,10 @@ class RslaqEnv(NsOranEnv):
             self.controlSemaphore.release()
             self._wait_data_availability()
             self._fill_datalake()
+
+        # Store current KPI dict in history for consecutive-period detection
+        if self.kpi_dict:
+            self.kpi_history.append(self.kpi_dict.copy())
 
         self.num_steps += 1
         if self.num_steps >= self.max_steps:

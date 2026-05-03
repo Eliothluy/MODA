@@ -13,12 +13,14 @@ NS3_DIR="${REPO_ROOT}/ns-3-dev"
 GYM_DIR="${REPO_ROOT}/ns-o-ran-gym"
 RESULTS_DIR="${GYM_DIR}/results"
 
-EPISODES=100
-MAX_STEPS=3500
+EPISODES=350
+SEED_CYCLE=50
 SIM_TIME=10.0
 APP_START=0.5
 PERIOD_MS=10
-APPLY_P_STA="True"
+# Compute max_steps automatically to align with simTime and appStart
+MAX_STEPS=$(python3 -c "print(int((${SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
+CONSECUTIVE_OUTAGE_STEPS=5
 
 SCENARIOS=(
     "low_traffic"
@@ -32,10 +34,11 @@ echo "============================================"
 echo "RSLAQ — All Scenarios Training"
 echo "============================================"
 echo "Episodes:    ${EPISODES}"
+echo "Seed cycle:  ${SEED_CYCLE}"
 echo "Max steps:   ${MAX_STEPS}"
 echo "Sim time:    ${SIM_TIME}s"
 echo "Period:      ${PERIOD_MS}ms"
-echo "P_STA:       ${APPLY_P_STA} (paper: 50% static + 50% DRL)"
+echo "Outage win:  ${CONSECUTIVE_OUTAGE_STEPS} steps (${CONSECUTIVE_OUTAGE_STEPS}0ms)"
 echo "Results:     ${RESULTS_DIR}"
 echo ""
 
@@ -67,13 +70,14 @@ for scenario in "${SCENARIOS[@]}"; do
     python3 examples/rslaq_train_sac.py \
         --scenario "${scenario}" \
         --episodes "${EPISODES}" \
+        --seed_cycle "${SEED_CYCLE}" \
         --simTime "${SIM_TIME}" \
         --appStart "${APP_START}" \
         --periodMs "${PERIOD_MS}" \
         --max_steps "${MAX_STEPS}" \
         --observation_mode paper \
         --action_mode continuous \
-        --apply_p_sta "${APPLY_P_STA}" \
+        --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
         --output "${RESULTS_DIR}/sac_${scenario}"
 done
 
@@ -88,13 +92,14 @@ for scenario in "${SCENARIOS[@]}"; do
     python3 examples/rslaq_train_ddqn.py \
         --scenario "${scenario}" \
         --episodes "${EPISODES}" \
+        --seed_cycle "${SEED_CYCLE}" \
         --simTime "${SIM_TIME}" \
         --appStart "${APP_START}" \
         --periodMs "${PERIOD_MS}" \
         --max_steps "${MAX_STEPS}" \
         --observation_mode paper \
         --action_mode discrete \
-        --apply_p_sta "${APPLY_P_STA}" \
+        --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
         --output "${RESULTS_DIR}/ddqn_${scenario}"
 done
 

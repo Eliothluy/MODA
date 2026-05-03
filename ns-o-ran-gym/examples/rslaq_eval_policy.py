@@ -183,6 +183,8 @@ def main():
     parser.add_argument("--scenario", type=str, default="normal")
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--eval_seeds", type=str, default="",
+                        help="Comma-separated seeds for multi-seed evaluation (e.g., '1,2,3,4,5'). Overrides --seed if set.")
     parser.add_argument("--ns3_path", type=str, default=DEFAULT_NS3_PATH)
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT)
     parser.add_argument("--simTime", type=float, default=4.0)
@@ -240,21 +242,31 @@ def main():
 
     all_rows = []
 
-    # Evaluate trained agent
-    print(f"Evaluating {args.algo.upper()} on {args.scenario} ...")
-    rows = evaluate_agent(
-        agent_fn,
-        env_config,
-        args.ns3_path,
-        args.output,
-        args.episodes,
-        action_mode,
-        args.observation_mode,
-        args.max_steps,
-        run_id,
-        args.algo,
-    )
-    all_rows.extend(rows)
+    # Determine seeds for evaluation
+    if args.eval_seeds:
+        eval_seeds = [int(s.strip()) for s in args.eval_seeds.split(",")]
+        print(f"Multi-seed evaluation with seeds: {eval_seeds}")
+    else:
+        eval_seeds = [args.seed]
+
+    # Evaluate trained agent across all seeds
+    for seed in eval_seeds:
+        print(f"Evaluating {args.algo.upper()} on {args.scenario} (seed={seed}) ...")
+        seed_config = env_config.copy()
+        seed_config["seed"] = [seed]
+        rows = evaluate_agent(
+            agent_fn,
+            seed_config,
+            args.ns3_path,
+            args.output,
+            args.episodes,
+            action_mode,
+            args.observation_mode,
+            args.max_steps,
+            run_id,
+            f"{args.algo}_s{seed}",
+        )
+        all_rows.extend(rows)
 
     # Baselines (only for continuous/resource mode)
     baselines = {
@@ -267,19 +279,22 @@ def main():
     for name, weights in baselines.items():
         print(f"Evaluating baseline {name} ...")
         baseline_agent = FixedBaselineAgent(weights, action_mode="continuous")
-        rows = evaluate_agent(
-            baseline_agent.act,
-            env_config,
-            args.ns3_path,
-            args.output,
-            args.episodes,
-            "continuous",
-            args.observation_mode,
-            args.max_steps,
-            run_id,
-            name,
-        )
-        all_rows.extend(rows)
+        for seed in eval_seeds:
+            seed_config = env_config.copy()
+            seed_config["seed"] = [seed]
+            rows = evaluate_agent(
+                baseline_agent.act,
+                seed_config,
+                args.ns3_path,
+                args.output,
+                args.episodes,
+                "continuous",
+                args.observation_mode,
+                args.max_steps,
+                run_id,
+                f"{name}_s{seed}",
+            )
+            all_rows.extend(rows)
 
     # Save CSV
     csv_path = os.path.join(args.output, f"eval_{args.algo}_{args.scenario}_{run_id}.csv")

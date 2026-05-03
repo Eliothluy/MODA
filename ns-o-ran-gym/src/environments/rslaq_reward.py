@@ -10,7 +10,7 @@ strictly following the equations published in the RSLAQ paper:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 from .rslaq_slice_ids import get_num_slices, slice_name
 
@@ -84,12 +84,50 @@ def get_scheduler_cost(scheduler_id: int) -> float:
     return mapping.get(scheduler_id, 1.0)
 
 
+def _evaluate_outage_conditions(
+    metrics: Dict[int, Dict[str, Any]],
+    sla: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Dict[int, bool]:
+    """
+    Evaluate instantaneous outage conditions for each slice.
+
+    Returns a dict {slice_id: bool} where True means the slice meets
+    the instantaneous outage condition in this step.
+    """
+    flags: Dict[int, bool] = {0: False, 1: False, 2: False}
+
+    embb = metrics.get(0, {})
+    urllc = metrics.get(1, {})
+    mtc = metrics.get(2, {})
+
+    # eMBB: demand exists but throughput below minimum
+    embb_thr = float(embb.get("throughputMbps_sum", 0.0))
+    embb_tx = float(embb.get("dTxBytes_sum", 0.0))
+    min_tx = float(config.get("min_tx_bytes_for_outage", 1.0))
+    if embb_thr < sla["embb_min_throughput_mbps"] and embb_tx >= min_tx:
+        flags[0] = True
+
+    # URLLC: buffer exceeds threshold
+    urllc_max_bfs = float(urllc.get("bufferBytes_max", 0.0))
+    if urllc_max_bfs > sla["urllc_outage_bfs_bytes"]:
+        flags[1] = True
+
+    # MTC: total dropped packets exceed threshold
+    mtc_tdp = float(mtc.get("dLostPackets_sum", 0.0))
+    if mtc_tdp >= sla["mtc_max_tdp"]:
+        flags[2] = True
+
+    return flags
+
+
 def compute_rslaq_reward(
     metrics: Dict[int, Dict[str, Any]],
     scenario: str,
     action_info: Optional[Dict[str, Any]] = None,
     config: Optional[Dict[str, Any]] = None,
     step_count: int = 0,
+    kpi_history: Optional[List[Dict[int, Dict[str, Any]]]] = None,
 ) -> RewardResult:
     """
     Compute the SLA-aware reward for RSLAQ (paper-faithful implementation).
@@ -111,6 +149,7 @@ def compute_rslaq_reward(
 
     sla = SLA_BY_SCENARIO.get(scenario, SLA_BY_SCENARIO["normal"])
     warmup_steps = int(config.get("warmup_steps", 5))
+    consecutive_outage_steps = int(config.get("consecutive_outage_steps", 5))
 
     alpha = config.get("alpha", ALPHA)
     beta = config.get("beta", BETA)
@@ -127,17 +166,10 @@ def compute_rslaq_reward(
 
     # ---- h_1: eMBB optimization term (Equation 16) ----
     embb_thr = float(embb_metrics.get("throughputMbps_sum", 0.0))
-    embb_tx_bytes = float(embb_metrics.get("dTxBytes_sum", 0.0))
     target_thr = sla["embb_soft_max_throughput_mbps"]
     min_thr = sla["embb_min_throughput_mbps"]
 
     h_1 = min(embb_thr / target_thr, 1.0) if target_thr > 0 else 0.0
-
-    # Only flag outage if there is actual demand (txBytes > 0) but throughput is insufficient.
-    # If txBytes == 0, the slice has no traffic and outage is not meaningful.
-    min_tx_bytes_for_outage = float(config.get("min_tx_bytes_for_outage", 1.0))
-    if embb_thr < min_thr and embb_tx_bytes >= min_tx_bytes_for_outage:
-        result.outage_flags[0] = True   # phi_0 = 1 (outage)
 
     # ---- h_2: URLLC optimization term (Equation 17) ----
     urllc_max_bfs = float(urllc_metrics.get("bufferBytes_max", 0.0))
@@ -146,19 +178,12 @@ def compute_rslaq_reward(
     h_2 = 1.0 / (urllc_max_bfs + EPSILON)
     h_2 = min(h_2, max_h2)  # cap to avoid explosion when buffer is empty
 
-    if urllc_max_bfs > sla["urllc_outage_bfs_bytes"]:
-        result.outage_flags[1] = True   # phi_1 = 1 (outage)
-
     # ---- h_3: MTC optimization term (Equation 18) ----
     mtc_thr = float(mtc_metrics.get("throughputMbps_sum", 0.0))
     mtc_tdp = float(mtc_metrics.get("dLostPackets_sum", 0.0))
     mtc_target = sla["mtc_target_throughput"]
-    mtc_max_tdp = sla["mtc_max_tdp"]
 
     h_3 = min(mtc_thr / mtc_target, 1.0) if mtc_target > 0 else 0.0
-
-    if mtc_tdp >= mtc_max_tdp:
-        result.outage_flags[2] = True   # phi_2 = 1 (outage)
 
     # ---- Base optimization reward (Equation 8) ----
     opt_reward = alpha * h_1 + beta * h_2 + gamma_val * h_3
@@ -168,21 +193,37 @@ def compute_rslaq_reward(
         scheduler_cost_val = get_scheduler_cost(scheduler_id)
         opt_reward += (1.0 / scheduler_cost_val)
 
-    # ---- Terminal conditions (Equation 12) ----
-    # Suppress terminal conditions during warmup to avoid false positives
-    # when FlowMonitor has not yet accumulated enough packets (especially
-    # in low_traffic scenarios where inter-arrival time can exceed the
-    # first few indication periods).
+    # ---- Terminal conditions with consecutive-period confirmation ----
+    # Require N consecutive steps below threshold before declaring outage.
+    # This filters simulator jitter (HARQ delays, fading) while preserving
+    # the paper's binary penalty semantics (Eq. 12).
     in_warmup = step_count < warmup_steps
+
+    # Evaluate instantaneous conditions for the current step
+    current_conditions = _evaluate_outage_conditions(metrics, sla, config)
+
+    # Count consecutive steps with the same condition in history
+    history = kpi_history if kpi_history is not None else []
+    for sid in range(get_num_slices()):
+        if current_conditions[sid]:
+            streak = 1  # current step counts as 1
+            for past_metrics in reversed(history):
+                past_conditions = _evaluate_outage_conditions(past_metrics, sla, config)
+                if past_conditions[sid]:
+                    streak += 1
+                else:
+                    break  # streak broken
+            if streak >= consecutive_outage_steps and not in_warmup:
+                result.outage_flags[sid] = True
 
     outage_slices = [sid for sid, flag in result.outage_flags.items() if flag]
     soft_slices = [sid for sid, flag in result.soft_flags.items() if flag]
 
-    if outage_slices and not in_warmup:
+    if outage_slices:
         weights_map = {0: alpha, 1: beta, 2: gamma_val}
         result.reward = -sum(weights_map[sid] for sid in outage_slices)
         result.terminated = True
-    elif soft_slices and not in_warmup:
+    elif soft_slices:
         result.reward = 0.0
         result.terminated = True
     else:

@@ -1,0 +1,90 @@
+========================================
+  RSLAQ Simulation (Slice-Aware + IPC)
+========================================
+Scenario     : low_traffic
+Frequency    : 2.59 GHz
+Bandwidth    : 10 MHz
+Numerology   : 0 (SCS 15 kHz)
+UEs          : 20 (eMBB=5 URLLC=5 MTC=10)
+SimTime      : 10 s
+TxPower      : 43 dBm
+Stats period : 10 ms
+IPC enabled  : YES
+Weights      : eMBB=0.3333 URLLC=0.4 MTC=0.2667
+
+[RslaqSim] IPC semaphores created: /sem_metrics_c173f42e-4d55-44b0-973f-234240e5bfa8 and /sem_control_c173f42e-4d55-44b0-973f-234240e5bfa8
+UE  1 [eMBB] port=12001 rate=      1.00 Mbps pkt=1500 B
+UE  2 [eMBB] port=12002 rate=      1.00 Mbps pkt=1500 B
+UE  3 [eMBB] port=12003 rate=      1.00 Mbps pkt=1500 B
+UE  4 [eMBB] port=12004 rate=      1.00 Mbps pkt=1500 B
+UE  5 [eMBB] port=12005 rate=      1.00 Mbps pkt=1500 B
+UE  6 [URLLC] port=12006 rate=      0.20 Mbps pkt=50 B
+UE  7 [URLLC] port=12007 rate=      0.20 Mbps pkt=50 B
+UE  8 [URLLC] port=12008 rate=      0.20 Mbps pkt=50 B
+UE  9 [URLLC] port=12009 rate=      0.20 Mbps pkt=50 B
+UE 10 [URLLC] port=12010 rate=      0.20 Mbps pkt=50 B
+UE 11 [ MTC] port=12011 rate=      0.20 Mbps pkt=100 B
+UE 12 [ MTC] port=12012 rate=      0.20 Mbps pkt=100 B
+UE 13 [ MTC] port=12013 rate=      0.20 Mbps pkt=100 B
+UE 14 [ MTC] port=12014 rate=      0.20 Mbps pkt=100 B
+UE 15 [ MTC] port=12015 rate=      0.20 Mbps pkt=100 B
+UE 16 [ MTC] port=12016 rate=      0.20 Mbps pkt=100 B
+UE 17 [ MTC] port=12017 rate=      0.20 Mbps pkt=100 B
+UE 18 [ MTC] port=12018 rate=      0.20 Mbps pkt=100 B
+UE 19 [ MTC] port=12019 rate=      0.20 Mbps pkt=100 B
+UE 20 [ MTC] port=12020 rate=      0.20 Mbps pkt=100 B
+[RslaqSim] IPC callback scheduled at t=510 ms
+
+=== UE Mapping (RNTI real após attach) ===
+ Idx |   IMSI |   RNTI |  SliceId | SliceType
+-------------------------------------------
+   1 |      1 |      1 |        0 |     eMBB
+   2 |      2 |      2 |        0 |     eMBB
+   3 |      3 |      3 |        0 |     eMBB
+   4 |      4 |      4 |        0 |     eMBB
+   5 |      5 |      5 |        0 |     eMBB
+   6 |      6 |      6 |        1 |    URLLC
+   7 |      7 |     21 |        1 |    URLLC
+   8 |      8 |     22 |        1 |    URLLC
+   9 |      9 |     23 |        1 |    URLLC
+  10 |     10 |     24 |        1 |    URLLC
+  11 |     11 |     25 |        2 |      MTC
+  12 |     12 |     35 |        2 |      MTC
+  13 |     13 |     36 |        2 |      MTC
+  14 |     14 |     37 |        2 |      MTC
+  15 |     15 |     38 |        2 |      MTC
+  16 |     16 |     39 |        2 |      MTC
+  17 |     17 |     40 |        2 |      MTC
+  18 |     18 |     44 |        2 |      MTC
+  19 |     19 |     45 |        2 |      MTC
+  20 |     20 |     46 |        2 |      MTC
+==========================================
+UE/RNTI mapping written to: ./low_traffic_ue_rnti_mapping.csv
+
+
+========================================
+  RESULTS (low_traffic)
+========================================
+eMBB:
+  Throughput : 5.0839 Mbps
+  Avg delay  : 7.649 ms
+  PDR        : 0.9990
+  TX/RX pkts : 3955 / 3951
+
+URLLC:
+  Throughput : 1.5590 Mbps
+  Avg delay  : 5.027 ms
+  PDR        : 0.9996
+  TX/RX pkts : 23745 / 23735
+
+MTC:
+  Throughput : 2.5578 Mbps
+  Avg delay  : 5.193 ms
+  PDR        : 0.9996
+  TX/RX pkts : 23740 / 23730
+
+CSV outputs:
+  ./rslaq_low_traffic_ue.csv
+  ./rslaq_low_traffic_slice.csv
+  ./rslaq_stats_timeseries.csv
+[RslaqSim] IPC semaphores cleaned up.
