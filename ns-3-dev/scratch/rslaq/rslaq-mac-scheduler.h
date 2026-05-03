@@ -85,9 +85,15 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     int32_t GetSliceIndexForRnti(uint16_t rnti) const;
 
     void DumpSliceConfiguration() const;
-
     void SetScenarioName(const std::string& name);
     void SetOutputDir(const std::string& dir);
+
+    /**
+     * @brief Check buffer status of a UE in m_ueMap
+     * @param rnti UE RNTI
+     * @return total DL buffer size in bytes, 0 if not found
+     */
+    uint32_t GetUeDlBufferSize(uint16_t rnti) const;
 
     /**
      * @brief Set current slot number for logging
@@ -200,13 +206,6 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      * @return Set of RNTIs found in activeDl
      */
     std::set<uint16_t> CollectActiveRntis(const ActiveUeMap& activeDl) const;
-
-    /**
-     * @brief Check buffer status of a UE in m_ueMap
-     * @param rnti UE RNTI
-     * @return total DL buffer size in bytes, 0 if not found
-     */
-    uint32_t GetUeDlBufferSize(uint16_t rnti) const;
 
     /**
      * @brief Log activeDl diagnostic: which slice RNTIs are present/missing

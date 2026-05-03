@@ -61,6 +61,7 @@ static Ptr<FlowMonitor> g_monitorPtr = nullptr;
 static Ptr<Ipv4FlowClassifier> g_classifierPtr = nullptr;
 static std::map<uint16_t, uint16_t> g_portToUeId;
 static std::map<uint16_t, SliceType> g_ueToSlice;
+static std::map<uint16_t, uint16_t> g_ueIdToRnti;
 static uint32_t g_indicationPeriodMs = 10;
 static bool g_ipcEnabled = false;
 
@@ -477,7 +478,7 @@ KpmAndControlCallback()
     // Escrever rslaq-kpms.txt (now using delta-based metrics)
     {
         std::ofstream kpmFile("rslaq-kpms.txt", std::ios::out | std::ios::trunc);
-        kpmFile << "timestamp,ueImsi,sliceId,dTxBytes,dRxBytes,plr,resourceSharePct,dLostPackets,throughputMbps\n";
+        kpmFile << "timestamp,ueImsi,sliceId,dTxBytes,dRxBytes,plr,resourceSharePct,dLostPackets,throughputMbps,bufferBytes\n";
 
         for (const auto& kv : ueKpms)
         {
@@ -514,12 +515,17 @@ KpmAndControlCallback()
                                  ? (static_cast<double>(dRxBytes) * 8.0 / periodSec / 1e6)
                                  : 0.0;
 
+            uint32_t bufferBytes = (g_schedulerPtr && g_ueIdToRnti.count(ueId))
+                                       ? g_schedulerPtr->GetUeDlBufferSize(g_ueIdToRnti[ueId])
+                                       : 0;
+
             kpmFile << nowMs << "," << ueId << "," << sliceIdx << ","
                     << dTxBytes << "," << dRxBytes << ","
                     << std::fixed << std::setprecision(2) << plr << ","
                     << std::setprecision(2) << rsh << ","
                     << effectiveLost << ","
-                    << std::setprecision(4) << thrMbps << "\n";
+                    << std::setprecision(4) << thrMbps << ","
+                    << bufferBytes << "\n";
         }
         kpmFile.flush();
     }
@@ -922,6 +928,7 @@ main(int argc, char* argv[])
 
             sliceRntis[sliceIdx].push_back(rnti);
             g_ueToSlice[ueId] = slice;
+            g_ueIdToRnti[ueId] = rnti;
 
             std::cout << std::setw(4) << ueId << " | "
                       << std::setw(6) << imsi << " | "
