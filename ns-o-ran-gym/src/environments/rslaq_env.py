@@ -60,7 +60,6 @@ class RslaqEnv(NsOranEnv):
         max_steps: int | None = None,
         include_scheduler: bool = False,
         sla_config: dict | None = None,
-        terminal_outage: bool = False,
         apply_p_sta: bool = True,
     ):
         # Ensure required keys exist
@@ -87,7 +86,6 @@ class RslaqEnv(NsOranEnv):
         self.observation_mode = observation_mode
         self.include_scheduler = include_scheduler
         self.sla_config = sla_config or {}
-        self.terminal_outage = terminal_outage
         self.apply_p_sta = apply_p_sta
         self.scenario_name = scenario_configuration.get("scenario", ["normal"])[0]
 
@@ -143,6 +141,9 @@ class RslaqEnv(NsOranEnv):
         self.num_slices = get_num_slices()
         self.num_ues = scenario_configuration.get("ues", [20])[0]
 
+        self._base_seed = int(scenario_configuration.get("seed", [1])[0])
+        self._episode_count = 0
+
         self.observations = np.zeros(obs_shape, dtype=np.float32)
         self.kpi_dict: dict = {}
         self.num_steps = 0
@@ -151,6 +152,8 @@ class RslaqEnv(NsOranEnv):
     @override
     def reset(self, *, seed=None, options=None):
         self.num_steps = 0
+        self._episode_count += 1
+        self.scenario_configuration["seed"] = [self._base_seed + self._episode_count - 1]
         return super().reset(seed=seed, options=options)
 
     def start_sim(self):
@@ -281,10 +284,7 @@ class RslaqEnv(NsOranEnv):
             metrics=self.kpi_dict,
             scenario=self.scenario_name,
             action_info=self.latest_action_info,
-            config={
-                **self.sla_config,
-                "terminal_outage": self.terminal_outage,
-            },
+            config=self.sla_config,
         )
         self._last_reward_result = reward_result
         if reward_result.terminated:

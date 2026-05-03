@@ -3,22 +3,6 @@ RSLAQ KPI Parser and Observation Builder.
 
 Reads per-UE KPMs produced by ns-3 (rslaq-kpms.txt) and builds the
 observation matrix used by the DRL agent.
-
-Important Notes on Proxies:
-----------------------------
-- ``bfs`` (row 1) can use either:
-  * ``bufferBytes_mean`` (real buffer) - PAPER MODE (set use_proxy_bfs=False)
-  * ``plr`` (packet loss ratio %) as a proxy - LEGACY MODE (set use_proxy_bfs=True)
-- ``tdp`` (row 3) uses ``dLostPackets`` (delta lost packets) as a
-  proxy for dropped/transmitted-dropped bytes.
-
-To use paper mode (real buffer):
-  1. Update ns-3 rslaq-sim.cc to export bufferBytes in KPM file
-  2. Set use_proxy_bfs=False in build_observation()
-  3. Set use_real_bfs=True in compute_rslaq_reward()
-
-TODO(tdp-real): Replace dLostPackets proxy with real dropped/transmitted
-    dropped bytes when available.
 """
 
 import csv
@@ -41,37 +25,19 @@ def parse_kpm_file(
 ) -> Dict[int, Dict[str, Any]]:
     """
     Parse rslaq-kpms.txt and return aggregated metrics per slice + cell total.
-
-    The ns-3 file format is expected to be CSV with columns:
-        timestamp,ueImsi,sliceId,dTxBytes,dRxBytes,plr,bufferBytes,resourceSharePct,dLostPackets,throughputMbps
-        OR (legacy format without bufferBytes):
-        timestamp,ueImsi,sliceId,dTxBytes,dRxBytes,plr,resourceSharePct,dLostPackets,throughputMbps
-
-    Args:
-        kpm_path: Full path to the KPM file.
-        last_timestamp: Only consider rows with timestamp >= this value.
-
-    Returns:
-        Dictionary with keys 0, 1, 2 (slices) and 3 (cell total).
-        Each value is a dict with aggregated metrics:
-            - dTxBytes_sum
-            - dRxBytes_sum
-            - plr_mean
-            - bufferBytes_sum / bufferBytes_mean (if available)
-            - resourceSharePct_mean
-            - dLostPackets_sum
-            - throughputMbps_sum
-            - ue_count
     """
     slice_data: Dict[int, Dict[str, float]] = {
         0: {"dTxBytes_sum": 0.0, "dRxBytes_sum": 0.0, "plr_sum": 0.0,
-            "bufferBytes_sum": 0.0, "resourceSharePct_sum": 0.0, "dLostPackets_sum": 0.0,
+            "bufferBytes_sum": 0.0, "bufferBytes_max": 0.0,
+            "resourceSharePct_sum": 0.0, "dLostPackets_sum": 0.0,
             "throughputMbps_sum": 0.0, "ue_count": 0.0},
         1: {"dTxBytes_sum": 0.0, "dRxBytes_sum": 0.0, "plr_sum": 0.0,
-            "bufferBytes_sum": 0.0, "resourceSharePct_sum": 0.0, "dLostPackets_sum": 0.0,
+            "bufferBytes_sum": 0.0, "bufferBytes_max": 0.0,
+            "resourceSharePct_sum": 0.0, "dLostPackets_sum": 0.0,
             "throughputMbps_sum": 0.0, "ue_count": 0.0},
         2: {"dTxBytes_sum": 0.0, "dRxBytes_sum": 0.0, "plr_sum": 0.0,
-            "bufferBytes_sum": 0.0, "resourceSharePct_sum": 0.0, "dLostPackets_sum": 0.0,
+            "bufferBytes_sum": 0.0, "bufferBytes_max": 0.0,
+            "resourceSharePct_sum": 0.0, "dLostPackets_sum": 0.0,
             "throughputMbps_sum": 0.0, "ue_count": 0.0},
     }
 
@@ -104,7 +70,12 @@ def parse_kpm_file(
             sd["dTxBytes_sum"] += float(row.get("dTxBytes", 0.0))
             sd["dRxBytes_sum"] += float(row.get("dRxBytes", 0.0))
             sd["plr_sum"] += float(row.get("plr", 0.0))
-            sd["bufferBytes_sum"] += float(row.get("bufferBytes", 0.0))
+            
+            # Extração do Buffer e rastreio do Valor Máximo (Para Equação 17)
+            ue_buffer = float(row.get("bufferBytes", 0.0))
+            sd["bufferBytes_sum"] += ue_buffer
+            sd["bufferBytes_max"] = max(sd["bufferBytes_max"], ue_buffer)
+            
             sd["resourceSharePct_sum"] += float(row.get("resourceSharePct", 0.0))
             sd["dLostPackets_sum"] += float(row.get("dLostPackets", 0.0))
             sd["throughputMbps_sum"] += float(row.get("throughputMbps", 0.0))
@@ -124,6 +95,7 @@ def _build_return_dict(
         "dRxBytes_sum": 0.0,
         "plr_mean": 0.0,
         "bufferBytes_mean": 0.0,
+        "bufferBytes_max": 0.0,
         "resourceSharePct_mean": 0.0,
         "dLostPackets_sum": 0.0,
         "throughputMbps_sum": 0.0,
@@ -139,6 +111,7 @@ def _build_return_dict(
                 "dRxBytes_sum": sd["dRxBytes_sum"],
                 "plr_mean": sd["plr_sum"] / n,
                 "bufferBytes_mean": sd["bufferBytes_sum"] / n,
+                "bufferBytes_max": sd["bufferBytes_max"],
                 "resourceSharePct_mean": sd["resourceSharePct_sum"] / n,
                 "dLostPackets_sum": sd["dLostPackets_sum"],
                 "throughputMbps_sum": sd["throughputMbps_sum"],
@@ -150,6 +123,7 @@ def _build_return_dict(
                 "dRxBytes_sum": 0.0,
                 "plr_mean": 0.0,
                 "bufferBytes_mean": 0.0,
+                "bufferBytes_max": 0.0,
                 "resourceSharePct_mean": 0.0,
                 "dLostPackets_sum": 0.0,
                 "throughputMbps_sum": 0.0,
@@ -162,22 +136,18 @@ def _build_return_dict(
         cell["dLostPackets_sum"] += agg["dLostPackets_sum"]
         cell["throughputMbps_sum"] += agg["throughputMbps_sum"]
         cell["ue_count"] += agg["ue_count"]
+        cell["bufferBytes_max"] = max(cell["bufferBytes_max"], agg["bufferBytes_max"])
 
-    # Cell-level averages for plr, bufferBytes and rsh (weighted by ue_count)
     total_ue = cell["ue_count"]
     if total_ue > 0:
-        # Média ponderada por número de UEs por slice
         cell_plr_weighted = sum(
-            result[sid]["plr_mean"] * result[sid]["ue_count"]
-            for sid in range(get_num_slices())
+            result[sid]["plr_mean"] * result[sid]["ue_count"] for sid in range(get_num_slices())
         ) / total_ue
         cell_rsh_weighted = sum(
-            result[sid]["resourceSharePct_mean"] * result[sid]["ue_count"]
-            for sid in range(get_num_slices())
+            result[sid]["resourceSharePct_mean"] * result[sid]["ue_count"] for sid in range(get_num_slices())
         ) / total_ue
         cell_buffer_weighted = sum(
-            result[sid]["bufferBytes_mean"] * result[sid]["ue_count"]
-            for sid in range(get_num_slices())
+            result[sid]["bufferBytes_mean"] * result[sid]["ue_count"] for sid in range(get_num_slices())
         ) / total_ue
 
         cell["plr_mean"] = cell_plr_weighted
@@ -201,35 +171,7 @@ def build_observation(
     max_buffer_bytes: float = DEFAULT_MAX_BUFFER_BYTES,
     use_proxy_bfs: bool = False,
 ) -> np.ndarray:
-    """
-    Build the observation matrix from parsed KPIs.
-
-    Modes:
-        - "paper": Returns (4, 4) matrix:
-            rows: [btx, bfs, rsh, tdp]
-            cols: [eMBB, URLLC, MTC, cell]
-        - "debug": Returns (3, 5) legacy matrix for backward compatibility.
-
-    Normalization:
-        - btx (row 0): dTxBytes_sum / max_btx, clipped to [0, 1]
-        - bfs (row 1): depends on use_proxy_bfs:
-            * If use_proxy_bfs=True: plr_mean / 100.0 (proxy, legacy)
-            * If use_proxy_bfs=False: bufferBytes_mean / max_buffer_bytes (real buffer)
-        - rsh (row 2): resourceSharePct_mean / 100.0, clipped to [0, 1]
-        - tdp (row 3): dLostPackets_sum / max_tdp, clipped to [0, 1]
-
-    Args:
-        kpi_dict: Output from parse_kpm_file.
-        mode: "paper" or "debug".
-        max_btx: Cap for transmitted bytes normalization.
-        max_tdp: Cap for lost packets normalization.
-        max_buffer_bytes: Cap for buffer bytes normalization (when use_proxy_bfs=False).
-        use_proxy_bfs: If True, uses PLR as proxy for buffer (legacy).
-                     If False, uses real bufferBytes.
-
-    Returns:
-        np.ndarray of the requested shape.
-    """
+    """Build the observation matrix from parsed KPIs."""
     if mode == "paper":
         obs = np.zeros((4, 4), dtype=np.float32)
         for col, sid in enumerate(range(get_num_slices())):
@@ -242,7 +184,6 @@ def build_observation(
             obs[2, col] = _clip_norm(metrics.get("resourceSharePct_mean", 0.0), 100.0)
             obs[3, col] = _clip_norm(metrics.get("dLostPackets_sum", 0.0), max_tdp)
 
-        # Cell column (index 3)
         cell = kpi_dict.get(3, {})
         obs[0, 3] = _clip_norm(cell.get("dTxBytes_sum", 0.0), max_btx * get_num_slices())
         if use_proxy_bfs:
@@ -254,12 +195,10 @@ def build_observation(
         return obs
 
     elif mode == "debug":
-        # Legacy (3, 5): slices x [thr, btx, plr, rsh, lost]
         obs = np.zeros((3, 5), dtype=np.float32)
         for row, sid in enumerate(range(get_num_slices())):
             metrics = kpi_dict.get(sid, {})
             thr = metrics.get("throughputMbps_sum", 0.0)
-            # rough normalization for throughput in debug mode
             obs[row, 0] = min(thr / 150.0, 1.0)
             obs[row, 1] = _clip_norm(metrics.get("dTxBytes_sum", 0.0), max_btx)
             obs[row, 2] = _clip_norm(metrics.get("plr_mean", 0.0), 100.0)

@@ -56,21 +56,10 @@ mkdir -p "${RESULTS_DIR}"
 
 cd "${GYM_DIR}"
 
-# 3. OPT Baseline (all scenarios)
+# 3. SAC — per scenario
 echo ""
 echo "============================================"
-echo "[1/3] OPT Baseline (all scenarios)"
-echo "============================================"
-python3 examples/rslaq_train_opt.py \
-    --scenario all \
-    --output "${RESULTS_DIR}/opt" \
-    --episodes "${EPISODES}" \
-    --max_steps "${MAX_STEPS}"
-
-# 4. SAC — per scenario
-echo ""
-echo "============================================"
-echo "[2/3] SAC Training — Per Scenario"
+echo "[1/2] SAC Training — Per Scenario"
 echo "============================================"
 for scenario in "${SCENARIOS[@]}"; do
     echo ""
@@ -88,10 +77,10 @@ for scenario in "${SCENARIOS[@]}"; do
         --output "${RESULTS_DIR}/sac_${scenario}"
 done
 
-# 5. DDQN — per scenario
+# 4. DDQN — per scenario
 echo ""
 echo "============================================"
-echo "[3/3] DDQN Training — Per Scenario"
+echo "[2/2] DDQN Training — Per Scenario"
 echo "============================================"
 for scenario in "${SCENARIOS[@]}"; do
     echo ""

@@ -263,8 +263,6 @@ def train_sac(args):
     }
 
     sla_config = {
-        "mtc_is_no_policy": args.mtc_is_no_policy,
-        "use_real_bfs": args.use_real_bfs,
         "max_buffer_bytes": args.max_buffer_bytes,
     }
 
@@ -445,10 +443,6 @@ def main():
     parser.add_argument("--log_interval", type=int, default=1)
     parser.add_argument("--apply_p_sta", type=bool, default=False,
                         help="Apply P_STA in Python (default: False, ns-3 receives final values)")
-    parser.add_argument("--mtc_is_no_policy", type=bool, default=True,
-                        help="MTC is No-Policy (no outage)")
-    parser.add_argument("--use_real_bfs", type=bool, default=False,
-                        help="Use real buffer for URLLC (requires ns-3 buffer export)")
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0,
                         help="Max buffer bytes for URLLC normalization")
     args = parser.parse_args()
