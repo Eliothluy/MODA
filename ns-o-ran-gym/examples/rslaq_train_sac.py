@@ -446,8 +446,11 @@ def main():
     parser.add_argument("--buffer_size", type=int, default=10000)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--log_interval", type=int, default=1)
-    parser.add_argument("--apply_p_sta", action="store_true",
-                        help="Apply P_STA in Python (default: False, ns-3 receives final values)")
+    # Paper Eq. 3-5: P_STA decomposition ensures slice isolation
+    # p_j = 0.5*omega_j + 0.5*p_opt  → minimum allocation guaranteed
+    parser.set_defaults(apply_p_sta=True)
+    parser.add_argument("--no-apply-p-sta", action="store_false", dest="apply_p_sta",
+                        help="Disable P_STA decomposition in Python (ns-3 handles it)")
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0,
                         help="Max buffer bytes for URLLC normalization")
     parser.add_argument("--warmup_steps", type=int, default=5,

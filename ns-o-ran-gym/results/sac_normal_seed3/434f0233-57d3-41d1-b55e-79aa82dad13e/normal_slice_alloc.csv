@@ -1,0 +1,4 @@
+callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,effectiveWeight,activeUes,beamSym,hasDemand,budgetRbg,allocatedRbg,reason,rntis
+1,502,normal,0,0,65535_65535,0,0.3333,1.0000,5,12,1,53,53,full_alloc,"5;4;3;2;1"
+1,502,normal,0,0,65535_65535,1,0.4000,0.0000,0,12,0,0,0,no_active_ues,""
+1,502,normal,0,0,65535_65535,2,0.2667,0.0000,0,12,0,0,0,no_active_ues,""

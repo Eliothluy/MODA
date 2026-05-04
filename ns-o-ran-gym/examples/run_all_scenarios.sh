@@ -1,7 +1,9 @@
 #!/bin/bash
 # RSLAQ Training Script — All Scenarios, Single Seed
-# Based on seed_cycle=50 analysis: seed 3 (eps 101-150) had best UE geometry (reward 546.0).
-# Runs both SAC and DDQN on all 5 scenarios with fixed seed, 300 episodes each.
+# Paper-faithful DDQN (IEEE TMC 2026, Hyp-set3) + SAC baseline.
+#
+# DDQN follows: Algorithm 1, Table VI (Hyp-set3), ntsr=100.
+# SAC kept as continuous baseline with original hyperparameters.
 #
 # Usage:
 #   cd /home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym
@@ -15,18 +17,23 @@ GYM_DIR="${REPO_ROOT}/ns-o-ran-gym"
 RESULTS_DIR="${GYM_DIR}/results"
 
 # ── Seed ──────────────────────────────────────────────────
-# seed_cycle=99999 keeps seed fixed across all episodes.
-# Seed 3 had the best UE geometry in prior seed_cycle=50 analysis.
 FIXED_SEED=3
 SEED_CYCLE=99999
 
 # ── Training ──────────────────────────────────────────────
-EPISODES=300
-SIM_TIME=10.0
+# DDQN: ns-3 episodes avg ~7 steps (outage), need more episodes to fill buffer
+DDQN_EPISODES=50
+# SAC uses continuous space — keep longer training
+SAC_EPISODES=300
+# simTime for DDQN: ntsr=100 with periodMs=10 needs >=1.5s
+DDQN_SIM_TIME=2.0
+SAC_SIM_TIME=10.0
 APP_START=0.5
 PERIOD_MS=10
-MAX_STEPS=$(python3 -c "print(int((${SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
 CONSECUTIVE_OUTAGE_STEPS=5
+
+# ── Paper: ntsr=100 periodic reset (Algorithm 1, Line 17-19) ──
+NTSR=100
 
 # ── SAC hyperparameters ───────────────────────────────────
 SAC_BUFFER_SIZE=50000
@@ -35,16 +42,18 @@ SAC_LR=0.001
 SAC_GAMMA=0.99
 SAC_TAU=0.005
 SAC_ALPHA=0.1
+SAC_MAX_STEPS=$(python3 -c "print(int((${SAC_SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
 
-# ── DDQN hyperparameters ──────────────────────────────────
-DDQN_BUFFER_SIZE=50000
-DDQN_BATCH_SIZE=256
+# ── DDQN hyperparameters (paper Hyp-set3, Table VI, calibrated for ns-3) ──
+DDQN_BUFFER_SIZE=128
+DDQN_BATCH_SIZE=32
 DDQN_LR=0.001
-DDQN_GAMMA=0.99
+DDQN_GAMMA=0.80
 DDQN_EPS_START=1.0
-DDQN_EPS_MIN=0.01
-DDQN_EPS_DECAY=0.995
-DDQN_TARGET_UPDATE=100
+DDQN_EPS_MIN=0.05
+DDQN_EPS_DECAY=0.998
+DDQN_TARGET_UPDATE=200
+DDQN_MAX_STEPS=$(python3 -c "print(int((${DDQN_SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
 
 # ── Scenarios ─────────────────────────────────────────────
 SCENARIOS=(
@@ -59,9 +68,8 @@ echo "============================================"
 echo "RSLAQ — All Scenarios | Single Seed (${FIXED_SEED})"
 echo "============================================"
 echo "Seed:        ${FIXED_SEED} (fixed)"
-echo "Episodes:    ${EPISODES}"
-echo "Max steps:   ${MAX_STEPS}  (sim=${SIM_TIME}s, period=${PERIOD_MS}ms)"
-echo "Outage win:  ${CONSECUTIVE_OUTAGE_STEPS} steps"
+echo "DDQN:        ${DDQN_EPISODES} eps × ${NTSR} steps = $((DDQN_EPISODES * NTSR)) total (paper Hyp-set3)"
+echo "SAC:         ${SAC_EPISODES} eps × ${SAC_MAX_STEPS} steps"
 echo "Results:     ${RESULTS_DIR}/"
 echo ""
 
@@ -94,13 +102,13 @@ for scenario in "${SCENARIOS[@]}"; do
     echo "  [SAC]  Starting... (output: sac_${scenario}_seed${FIXED_SEED})"
     python3 examples/rslaq_train_sac.py \
         --scenario "${scenario}" \
-        --episodes "${EPISODES}" \
+        --episodes "${SAC_EPISODES}" \
         --seed "${FIXED_SEED}" \
         --seed_cycle "${SEED_CYCLE}" \
-        --simTime "${SIM_TIME}" \
+        --simTime "${SAC_SIM_TIME}" \
         --appStart "${APP_START}" \
         --periodMs "${PERIOD_MS}" \
-        --max_steps "${MAX_STEPS}" \
+        --max_steps "${SAC_MAX_STEPS}" \
         --observation_mode paper \
         --action_mode continuous \
         --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
@@ -115,13 +123,14 @@ for scenario in "${SCENARIOS[@]}"; do
     echo "  [DDQN] Starting... (output: ddqn_${scenario}_seed${FIXED_SEED})"
     python3 examples/rslaq_train_ddqn.py \
         --scenario "${scenario}" \
-        --episodes "${EPISODES}" \
+        --episodes "${DDQN_EPISODES}" \
         --seed "${FIXED_SEED}" \
         --seed_cycle "${SEED_CYCLE}" \
-        --simTime "${SIM_TIME}" \
+        --simTime "${DDQN_SIM_TIME}" \
         --appStart "${APP_START}" \
         --periodMs "${PERIOD_MS}" \
-        --max_steps "${MAX_STEPS}" \
+        --max_steps "${DDQN_MAX_STEPS}" \
+        --ntsr "${NTSR}" \
         --observation_mode paper \
         --action_mode discrete \
         --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \

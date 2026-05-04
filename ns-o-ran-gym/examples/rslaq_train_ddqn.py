@@ -1,14 +1,19 @@
 """
-DDQN Training for RSLAQ (Resource-Only).
+DDQN Training for RSLAQ — Paper-faithful implementation.
+
+Follows Algorithm 1 and hyperparameters from:
+  Yungaicela-Naula et al., "RSLAQ - A Robust SLA-driven 6G O-RAN QoS xApp
+  Using Deep Reinforcement Learning", IEEE TMC 2026.
+
+Architecture: 4 Conv2D + BatchNorm + Tanh + FC (Section IV-C)
+Hyperparameters: Hyp-set3 from Table VI (LR=0.001, gamma=0.80, decay=0.998)
 
 Usage:
     python rslaq_train_ddqn.py \
-        --scenario normal \
-        --episodes 10 \
-        --simTime 4.0 \
-        --periodMs 10 \
-        --observation_mode paper \
-        --action_mode discrete \
+        --scenario low_traffic \
+        --episodes 35 \
+        --simTime 2.0 \
+        --ntsr 100 \
         --output results
 """
 
@@ -56,50 +61,75 @@ def set_seed(seed: int):
 
 
 # Build discrete action table (will be updated in train_ddqn based on args)
-ACTION_TABLE = build_discrete_action_table(step=0.1, include_scheduler=False)
+ACTION_TABLE = build_discrete_action_table(step=0.1, include_scheduler=True)
 NUM_ACTIONS = len(ACTION_TABLE)
 
 
 class QNetwork(nn.Module):
-    """Small CNN for 4x4 observation -> Q-values."""
+    """
+    DNN architecture from the RSLAQ paper (Section IV-C):
+    "four 2D convolutional layers, each followed by a batch
+    normalization layer, and a fully connected layer at the output.
+    The layers are using the Tanh activation function."
+    """
 
     def __init__(self, state_shape, action_size):
         super().__init__()
         h, w = state_shape
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(64)
+        self.conv4 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(64)
+
         with torch.no_grad():
             x = torch.zeros(1, 1, h, w)
-            x = torch.relu(self.conv1(x))
-            x = torch.relu(self.conv2(x))
+            x = torch.tanh(self.bn1(self.conv1(x)))
+            x = torch.tanh(self.bn2(self.conv2(x)))
+            x = torch.tanh(self.bn3(self.conv3(x)))
+            x = torch.tanh(self.bn4(self.conv4(x)))
             flat = x.numel()
-        self.fc1 = nn.Linear(flat, 256)
-        self.fc2 = nn.Linear(256, action_size)
+
+        self.fc = nn.Linear(flat, action_size)
 
     def forward(self, x):
         if x.dim() == 2:
             x = x.unsqueeze(0).unsqueeze(0)
         elif x.dim() == 3:
             x = x.unsqueeze(1)
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
+        x = torch.tanh(self.bn1(self.conv1(x)))
+        x = torch.tanh(self.bn2(self.conv2(x)))
+        x = torch.tanh(self.bn3(self.conv3(x)))
+        x = torch.tanh(self.bn4(self.conv4(x)))
         x = x.view(x.size(0), -1)
-        x = torch.relu(self.fc1(x))
-        return self.fc2(x)
+        return self.fc(x)
 
 
 class DDQNAgent:
+    """
+    Double DQN agent matching the RSLAQ paper's DDQL (Algorithm 1).
+
+    Defaults follow paper Hyp-set3 (Table VI) with batch/buffer
+    calibrated for ns-3 (shorter episodes due to outage termination):
+        lr=0.001, gamma=0.80, epsilon_decay=0.998, epsilon_min=0.05,
+        buffer_size=128, batch_size=32, target_update=200.
+    """
+
     def __init__(
         self,
         state_shape,
         action_size,
         lr=1e-3,
-        gamma=0.90,
+        gamma=0.80,
         epsilon=1.0,
         epsilon_min=0.05,
         epsilon_decay=0.998,
-        buffer_size=10000,
-        batch_size=128,
+        buffer_size=128,
+        batch_size=32,
         target_update=200,
     ):
         self.state_shape = state_shape
@@ -123,7 +153,6 @@ class DDQNAgent:
     def act(self, state):
         if random.random() < self.epsilon:
             return random.randrange(self.action_size)
-        # Eval mode for inference to avoid BatchNorm issues (if any)
         self.online_net.eval()
         with torch.no_grad():
             s = torch.FloatTensor(state).unsqueeze(0).unsqueeze(0).to(device)
@@ -212,9 +241,19 @@ def train_ddqn(args):
 
     # Update action table based on include_scheduler
     global ACTION_TABLE, NUM_ACTIONS
-    ACTION_TABLE = build_discrete_action_table(step=0.1, include_scheduler=args.include_scheduler)
+    ACTION_TABLE = build_discrete_action_table(
+        step=0.1, include_scheduler=args.include_scheduler
+    )
     NUM_ACTIONS = len(ACTION_TABLE)
     print(f"Action table size: {NUM_ACTIONS} (include_scheduler={args.include_scheduler})")
+    print(f"ntsr={args.ntsr}, total steps={args.episodes * args.ntsr}")
+
+    # Paper uses ntsr=100 steps per episode (Algorithm 1, Line 17-19)
+    # Set max_steps to ntsr so episodes match the paper's periodic reset
+    if args.max_steps == "auto":
+        max_steps = args.ntsr
+    else:
+        max_steps = int(args.max_steps)
 
     config = {
         "simTime": [args.simTime],
@@ -238,7 +277,7 @@ def train_ddqn(args):
         optimized=False,
         action_mode=args.action_mode,
         observation_mode=args.observation_mode,
-        max_steps=args.max_steps if args.max_steps != "auto" else None,
+        max_steps=max_steps,
         apply_p_sta=args.apply_p_sta,
         include_scheduler=args.include_scheduler,
         sla_config=sla_config,
@@ -298,7 +337,10 @@ def train_ddqn(args):
         ep_losses = []
         step = 0
 
-        for step in range(env.max_steps):
+        # ntsr: paper's periodic reset (Algorithm 1, Lines 17-19)
+        ep_max_steps = min(args.ntsr, env.max_steps)
+
+        for step in range(ep_max_steps):
             action_idx = agent.act(state)
             next_obs, reward, terminated, truncated, info = env.step(action_idx)
             next_state = next_obs.copy()
@@ -322,7 +364,11 @@ def train_ddqn(args):
                 break
 
         all_rewards.append(ep_reward)
-        avg100 = np.mean(all_rewards[-100:]) if len(all_rewards) >= 100 else np.mean(all_rewards)
+        avg100 = (
+            np.mean(all_rewards[-100:])
+            if len(all_rewards) >= 100
+            else np.mean(all_rewards)
+        )
 
         final_embb_thr = info.get("slice_0_eMBB", {}).get("throughput_mbps", 0.0)
         final_urllc_plr = info.get("slice_1_URLLC", {}).get("plr_mean", 0.0)
@@ -370,6 +416,7 @@ def train_ddqn(args):
         "scenario_mode": mode,
         "scenarios": scenario_list,
         "episodes": args.episodes,
+        "ntsr": args.ntsr,
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
     }
@@ -382,7 +429,7 @@ def train_ddqn(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DDQN Training for RSLAQ")
+    parser = argparse.ArgumentParser(description="DDQN Training for RSLAQ (paper-faithful)")
     parser.add_argument("--scenario", type=str, default="normal",
                         help="Scenario name or 'random'")
     parser.add_argument("--scenarios", type=str, default="",
@@ -392,39 +439,52 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--seed_cycle", type=int, default=100,
                         help="Change seed every N episodes (default: 100)")
-    parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--simTime", type=float, default=4.0)
+    # Paper: 35 episodes × 100 steps = 3500 total steps (Fig. 5)
+    parser.add_argument("--episodes", type=int, default=35)
+    parser.add_argument("--simTime", type=float, default=2.0,
+                        help="Simulation time in seconds (ntsr=100 + appStart=0.5 needs >=1.5s)")
     parser.add_argument("--appStart", type=float, default=0.5)
     parser.add_argument("--periodMs", type=int, default=10)
+    # Paper: ntsr=100 periodic reset (Algorithm 1, Line 17-19)
+    parser.add_argument("--ntsr", type=int, default=100,
+                        help="Steps per episode before periodic reset (paper: 100)")
     parser.add_argument("--max_steps", type=str, default="auto",
-                        help="Max steps per episode or 'auto'")
+                        help="Max steps per episode or 'auto' (uses ntsr)")
     parser.add_argument("--observation_mode", type=str, default="paper")
     parser.add_argument("--action_mode", type=str, default="discrete")
+    # Paper Hyp-set3: LR=0.001
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--gamma", type=float, default=0.90)
+    # Paper Hyp-set3: gamma=0.80
+    parser.add_argument("--gamma", type=float, default=0.80)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_min", type=float, default=0.05)
+    # Paper Hyp-set3: lambda_epsilon=0.998
     parser.add_argument("--epsilon_decay", type=float, default=0.998)
-    parser.add_argument("--buffer_size", type=int, default=10000)
-    parser.add_argument("--batch_size", type=int, default=128)
+    # Paper: buffer L=500, batch btsz=350 (calibrated to 128/32 for ns-3)
+    parser.add_argument("--buffer_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=32)
+    # Paper: nsut=200 (target update interval)
     parser.add_argument("--target_update", type=int, default=200)
     parser.add_argument("--log_interval", type=int, default=1)
-    parser.add_argument("--apply_p_sta", action="store_true",
-                        help="Apply P_STA in Python (default: False, ns-3 receives final values)")
-    parser.add_argument("--include_scheduler", action="store_true",
-                        help="Include scheduler action (198 actions instead of 66)")
+    # Paper Eq. 3-5: P_STA decomposition ensures slice isolation
+    # p_j = 0.5*omega_j + 0.5*p_opt  → minimum allocation guaranteed
+    parser.set_defaults(apply_p_sta=True)
+    parser.add_argument("--no-apply-p-sta", action="store_false", dest="apply_p_sta",
+                        help="Disable P_STA decomposition in Python (ns-3 handles it)")
+    # Paper: action always includes scheduler (198 actions)
+    parser.set_defaults(include_scheduler=True)
+    parser.add_argument("--no-include-scheduler", action="store_false", dest="include_scheduler",
+                        help="Disable scheduler selection in action space (default: enabled)")
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0,
                         help="Max buffer bytes for URLLC normalization")
     parser.add_argument("--warmup_steps", type=int, default=5,
                         help="Steps to suppress terminal conditions at episode start")
     parser.add_argument("--consecutive_outage_steps", type=int, default=5,
-                        help="Consecutive steps below threshold to declare outage (default 5 = 50ms)")
+                        help="Consecutive steps to declare outage (default 5 = 50ms)")
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":
-        args.max_steps = None
-    else:
-        args.max_steps = int(args.max_steps)
+        args.max_steps = "auto"  # train_ddqn will use args.ntsr
 
     train_ddqn(args)
 

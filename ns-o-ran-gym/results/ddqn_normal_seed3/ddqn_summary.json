@@ -1,0 +1,11 @@
+{
+  "method": "ddqn",
+  "scenario_mode": "fixed",
+  "scenarios": [
+    "normal"
+  ],
+  "episodes": 50,
+  "ntsr": 100,
+  "final_avg_100": 4.492751891439278,
+  "best_avg": 4.532029532596365
+}
