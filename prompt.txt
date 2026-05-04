@@ -1,679 +1,89 @@
-Atue como engenheiro sênior de dados, Python e DRL, especialista em Gymnasium, ns-3/5G-LENA, O-RAN, RAN slicing e integração online entre simulador e agente de aprendizado por reforço.
-
-Contexto do projeto:
-Estou implementando uma reprodução inspirada no artigo RSLAQ — “A Robust SLA-driven 6G O-RAN QoS xApp using deep reinforcement learning”.
-
-O repositório do ambiente Gymnasium está em:
-
-/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/
-
-A simulação ns-3 base sem DRL já foi validada estruturalmente nos cenários:
-- normal
-- congestion
-- stressed
-- insufficient_resources
-
-A base ns-3 já consegue:
-- mapear UE/RNTI/slice;
-- gerar KPIs por UE e por slice;
-- registrar alocação RBG por slice;
-- registrar detalhes por UE;
-- gerar diagnósticos de consistência;
-- confirmar que MTC não está mais zerada;
-- confirmar que os slices têm TX/RX/allocatedRbg.
-
-Agora o objetivo é implementar corretamente a camada DRL no ambiente `ns-o-ran-gym`.
-
-Importante:
-A tarefa NÃO é mexer primeiro na simulação ns-3 base, exceto se for necessário para expor métricas ou ações que o ambiente Gym precise. A prioridade é corrigir e implementar o ambiente Gymnasium e os scripts de treino DRL para ficarem alinhados ao artigo.
-
-Arquivos principais esperados:
-- ns-o-ran-gym/src/environments/rslaq_env.py
-- ns-o-ran-gym/examples/rslaq_train_sac.py
-- ns-o-ran-gym/examples/rslaq_train_ddqn.py
-- ns-o-ran-gym/src/environments/ ou pacote equivalente para novos módulos auxiliares
-- ns-3-dev/scratch/rslaq/rslaq-sim.cc, se precisar ajustar KPM/control file
-- ns-3-dev/scratch/rslaq/rslaq-mac-scheduler.cc, somente se precisar aceitar scheduler_id/algorithm vindo da DRL
-
-Objetivo geral:
-Implementar uma versão correta, testável e modular da DRL RSLAQ, com dois modos:
-1. SAC com ação contínua para otimização de proporção de recursos por slice.
-2. DDQN com ação discreta baseada na tabela do artigo.
-
-Não implementar tudo de forma monolítica. Separar ambiente, action spaces, reward, parser de KPIs, treino e avaliação.
-
-====================================================================
-1. AUDITORIA INICIAL DO AMBIENTE
-====================================================================
-
-Antes de modificar, inspecione o código atual do `ns-o-ran-gym`.
-
-Verifique:
-- estrutura do pacote;
-- como `NsOranEnv` funciona;
-- como `RslaqEnv` herda de `NsOranEnv`;
-- como ações são enviadas para o ns-3;
-- como KPIs são lidos;
-- como semáforos/arquivos compartilhados são usados;
-- como `rslaq_train_sac.py` chama `env.step()`;
-- como `rslaq_train_ddqn.py` monta a ação;
-- se existem scripts de avaliação;
-- se existem testes.
-
-Produza uma seção inicial no relatório com:
-- arquivos inspecionados;
-- problemas encontrados;
-- plano de correção;
-- riscos de compatibilidade.
-
-====================================================================
-2. PADRONIZAR IDS DE SLICE
-====================================================================
-
-Problema esperado:
-A simulação ns-3 e os diagnósticos usam:
-
-    0 = eMBB
-    1 = URLLC
-    2 = MTC
-
-Mas o ambiente Python pode estar usando:
-
-    1 = eMBB
-    2 = URLLC
-    3 = MTC
-
-Isso pode deslocar estados, ações e rewards.
-
-Tarefa:
-- Padronizar TODO o pipeline Python para 0-based:
-
-    SLICE_ID_TO_NAME = {
-        0: "eMBB",
-        1: "URLLC",
-        2: "MTC",
-    }
-
-- Criar funções utilitárias:
-
-    normalize_slice_id(raw_slice_id)
-    slice_name(slice_id)
-    slice_id_from_name(name)
-
-- Se o input vier 1-based, detectar e converter explicitamente, mas documentar.
-- Preferencialmente, exigir 0-based no modo final.
-- Não assumir que `ue_id == rnti`.
-
-Critérios de aceite:
-- O ambiente lê KPIs de eMBB, URLLC e MTC sem deslocamento.
-- O ambiente envia ações para `sliceId=0,1,2`.
-- Logs e `info` do Gym mostram corretamente nomes e IDs.
-- O mapeamento está documentado.
-
-====================================================================
-3. SEPARAR MODOS DE AÇÃO: SAC CONTÍNUO E DDQN DISCRETO
-====================================================================
-
-O ambiente precisa suportar:
-
-    action_mode="continuous"   # SAC
-    action_mode="discrete"     # DDQN
-
---------------------------------------------------------------------
-3.1 Modo contínuo — SAC
---------------------------------------------------------------------
-
-No modo SAC:
-
-    action_space = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
-
-A ação bruta do agente deve ser convertida assim:
-
-    raw_action -> softmax -> p_opt
-    p_final = p_static + 0.5 * p_opt
-    p_final = normalize(p_final)
-
-Onde:
-
-    weights = [0.3333, 0.4000, 0.2667]
-    p_static = 0.5 * weights
-
-Resultado final:
-- eMBB recebe `p_final[0]`;
-- URLLC recebe `p_final[1]`;
-- MTC recebe `p_final[2]`.
-
-Enviar para ns-3 em porcentagem ou fração conforme o parser C++ espera. Verificar o formato atual.
-
---------------------------------------------------------------------
-3.2 Modo discreto — DDQN
---------------------------------------------------------------------
-
-No modo DDQN:
-
-    action_space = spaces.Discrete(len(ACTION_TABLE))
-
-Criar tabela de ações discretas inspirada no artigo.
-
-A tabela deve conter combinações:
-
-    p0, p1, p2 ∈ {0.0, 0.1, ..., 1.0}
-    p0 + p1 + p2 = 1.0
-
-E, futuramente, scheduler:
-
-    sch ∈ {0, 1, 2}
-    0 = RR
-    1 = PF
-    2 = BCQI
-
-Para três slices e resolução 0.1, a tabela com scheduler deve ter 198 ações, se seguir a formulação do artigo.
-
-Criar módulo novo:
-
-    ns-o-ran-gym/src/environments/rslaq_action_spaces.py
-
-Com funções:
-
-    build_discrete_action_table(step=0.1, include_scheduler=True)
-    continuous_action_to_prb(raw_action, weights, static_fraction=0.5)
-    discrete_action_to_prb(action_idx, action_table, weights, static_fraction=0.5)
-    scheduler_id_to_name(scheduler_id)
-
-Critérios de aceite:
-- SAC envia ação contínua com shape `(3,)`.
-- DDQN envia índice inteiro.
-- O ambiente converte a ação corretamente.
-- Não aplicar `softmax` duas vezes.
-- Não passar matriz 3×3 para o ambiente DDQN.
-- A ação final enviada para ns-3 sempre soma aproximadamente 1.0 ou 100%.
-
-====================================================================
-4. REFORMULAR OBSERVATION SPACE PARA O MODO DO ARTIGO
-====================================================================
-
-O artigo define o estado como matriz:
-
-    s ∈ R^{4 × (J+1)}
-
-Para 3 slices:
-
-    shape = (4, 4)
-
-Linhas:
-    0: btx
-    1: bfs
-    2: rsh
-    3: tdp
-
-Colunas:
-    0: eMBB
-    1: URLLC
-    2: MTC
-    3: cell total
-
-Tarefa:
-Implementar dois modos de observação:
-
-    observation_mode="paper"
-    observation_mode="debug"
-
-O modo `paper` deve retornar:
-
-    np.ndarray shape=(4,4), dtype=np.float32
-
-O modo `debug` pode manter o formato antigo, se útil para compatibilidade.
-
-Criar módulo:
-
-    ns-o-ran-gym/src/environments/rslaq_kpis.py
-
-Responsável por:
-- ler KPIs vindos do ns-3;
-- normalizar métricas;
-- construir estado `4x4`;
-- calcular coluna `cell total`;
-- lidar com valores ausentes.
-
-Mapeamento sugerido:
-- `btx`: bytes transmitidos/oferecidos ou bytes TX no intervalo;
-- `bfs`: buffer status ou proxy de backlog/perda/queue, conforme disponível;
-- `rsh`: resource share ou allocated PRB/RBG share;
-- `tdp`: dropped/transmitted dropped bytes ou perda efetiva.
-
-Se alguma métrica real ainda não existir no ns-3:
-- usar proxy temporário;
-- documentar claramente;
-- adicionar TODO;
-- não mascarar como se fosse métrica exata do artigo.
-
-Normalização:
-- throughput/bytes devem ser normalizados por capacidade ou máximo observado/configurado;
-- `rsh` deve estar em [0,1];
-- perdas/buffer devem ser limitadas/clampadas para evitar explosão numérica.
-
-Critérios de aceite:
-- `env.observation_space` bate com o estado retornado.
-- `reset()` retorna `obs` com shape correto.
-- `step()` retorna `obs` com shape correto.
-- O estado inclui coluna da célula.
-- O relatório documenta quais métricas são reais e quais são proxies.
-
-====================================================================
-5. IMPLEMENTAR REWARD SLA-AWARE DO RSLAQ
-====================================================================
-
-Criar módulo:
-
-    ns-o-ran-gym/src/environments/rslaq_reward.py
-
-A reward deve ser configurável por cenário.
-
-Cenários:
-- low_traffic
-- normal
-- congestion
-- stressed
-- insufficient_resources
-
-Configuração base:
-
-    weights = [0.3333, 0.4000, 0.2667]
-
-SLAs aproximados:
-- low_traffic:
-    eMBB min throughput = 10 Mbps
-    eMBB soft max throughput = 15 Mbps
-    URLLC max bfs/loss/buffer = 3%
-- normal:
-    eMBB min throughput = 10 Mbps
-    eMBB soft max throughput = 15 Mbps
-    URLLC max bfs/loss/buffer = 3%
-- congestion:
-    eMBB min throughput = 10 Mbps
-    eMBB soft max throughput = 15 Mbps
-    URLLC max bfs/loss/buffer = 3%
-- stressed:
-    eMBB min throughput = 20 Mbps
-    eMBB soft max throughput = 25 Mbps
-    URLLC max bfs/loss/buffer = 3%
-- insufficient_resources:
-    eMBB min throughput = 20 Mbps
-    eMBB soft max throughput = 25 Mbps
-    URLLC max bfs/loss/buffer = 3%
-
-Implementar:
-
-    SLA_BY_SCENARIO = {...}
-
-Reward conceitual:
-- Se outage SLA crítico ocorrer:
-    reward = -sum(weights das slices violadas)
-    terminated = True ou opcionalmente `outage=True` sem terminar, configurável.
-- Se soft KPI for violado:
-    reward = 0 ou penalidade configurável.
-- Caso contrário:
-    reward = weighted optimization reward + scheduler_cost_term.
-
-Para resource-only, scheduler_cost pode ser 1.0.
-Quando scheduler_id estiver ativo:
-    RR -> cost 1
-    PF/BCQI -> cost 2
-
-Métricas mínimas:
-- eMBB: throughput por slice.
-- URLLC: buffer/loss/delay proxy.
-- MTC: throughput ou entrega efetiva.
-
-Implementar função:
-
-    compute_rslaq_reward(metrics, scenario, action_info=None, config=None) -> RewardResult
-
-Onde `RewardResult` pode ser dataclass contendo:
-- reward
-- terminated
-- outage_flags
-- soft_flags
-- optimization_terms
-- debug_info
-
-Critérios de aceite:
-- Reward não depende de variáveis globais implícitas.
-- Reward registra no `info` quais SLAs foram violados.
-- Reward usa `effective_lost`/`effective_pdr`, não `FlowMonitor lost_packets`.
-- Reward é testável com métricas sintéticas.
-
-====================================================================
-6. AJUSTAR HORIZONTE DO EPISÓDIO
-====================================================================
-
-Problema:
-Scripts atuais podem usar `max_steps=50`, o que cobre só 0.5 s se o período for 10 ms.
-
-Implementar cálculo:
-
-    max_steps = int((simTime - appStart) * 1000 / periodMs)
-
-Exemplo:
-    simTime = 4.0
-    appStart = 0.5
-    periodMs = 10
-    max_steps = 350
-
-Tarefa:
-- Adicionar `--max_steps auto`.
-- Se `max_steps` não for fornecido, calcular automaticamente.
-- Garantir que `truncated=True` ao atingir max_steps.
-- Garantir que `terminated=True` em outage terminal, se configurado.
-
-Critérios de aceite:
-- SAC e DDQN treinam com horizonte coerente.
-- O número de passos por episódio aparece no log.
-
-====================================================================
-7. CONTROL FILE E SUPORTE A SCHEDULER_ID
-====================================================================
-
-Fase A — resource-only:
-Manter controle apenas de proporção de PRB/RBG:
-
-    timestamp,sliceId,dedicatedPRB,minPRB,maxPRB
-
-Fase B — scheduler-aware:
-Adicionar coluna:
-
-    algorithm
-
-Formato recomendado:
-
-    timestamp,sliceId,dedicatedPRB,minPRB,maxPRB,algorithm
-
-Onde:
-    0 = RR
-    1 = PF
-    2 = BCQI
-
-Tarefa:
-- Verificar parser C++ atual.
-- Se ele ainda não aceitar `algorithm`, manter `include_scheduler=False` por padrão.
-- Implementar suporte opcional no Python:
-
-    include_scheduler=True/False
-
-- Não quebrar compatibilidade com parser antigo.
-
-Critérios de aceite:
-- Resource-only funciona sem alterar C++.
-- Scheduler-aware só é ativado quando C++ suporta `algorithm`.
-- O ambiente documenta se `algorithm` está ativo ou ignorado.
-
-====================================================================
-8. CORRIGIR SCRIPTS DE TREINO SAC
-====================================================================
-
-Arquivo:
-    ns-o-ran-gym/examples/rslaq_train_sac.py
-
-Tarefas:
-- Usar `RslaqEnv(action_mode="continuous", observation_mode="paper")`.
-- Garantir que o agente envia apenas a ação contínua bruta para `env.step(action)`.
-- Remover conversões duplicadas fora do ambiente.
-- Logar por episódio:
-    episode
-    scenario
-    reward total
-    avg reward
-    outage count
-    final KPIs por slice
-    action média
-    loss actor/critic, se disponível
-- Salvar checkpoints:
-    results/sac_<scenario>_seed<seed>.pt
-- Salvar CSV de treinamento:
-    results/sac_training_log.csv
-
-Hiperparâmetros iniciais sugeridos:
-- actor/critic learning rate: 1e-3
-- gamma: 0.99
-- tau: 0.005
-- entropy coefficient: 0.1 ou auto, se implementado
-- batch size: 256
-- replay buffer: 10000
-- warmup steps: 1000, se viável
-- max_steps auto
-
-Critérios de aceite:
-- O script roda pelo menos 1 episódio curto.
-- `env.step()` não quebra.
-- A ação enviada ao ns-3 aparece no log.
-- Reward e KPIs aparecem no CSV.
-
-====================================================================
-9. CORRIGIR SCRIPTS DE TREINO DDQN
-====================================================================
-
-Arquivo:
-    ns-o-ran-gym/examples/rslaq_train_ddqn.py
-
-Tarefas:
-- Usar `RslaqEnv(action_mode="discrete", observation_mode="paper")`.
-- Criar `ACTION_TABLE` com resolução 0.1.
-- O agente deve escolher `action_idx`.
-- `env.step(action_idx)` converte internamente para PRB.
-- Corrigir rede DDQN para entrada `4x4`.
-
-Se usar CNN:
-- entrada: `(batch, 1, 4, 4)`
-
-Cuidado com BatchNorm:
-- durante inferência/act(), usar:
-
-    network.eval()
-    with torch.no_grad()
-    network.train()
-
-Ou substituir BatchNorm por LayerNorm/GroupNorm se batch pequeno causar instabilidade.
-
-Implementar:
-- replay buffer;
-- target network;
-- epsilon-greedy;
-- epsilon decay;
-- update target a cada `target_update_steps`;
-- gradient clipping;
-- checkpoint;
-- CSV de treino.
-
-Hiperparâmetros iniciais:
-- lr = 1e-3
-- gamma = 0.80 ou 0.90
-- epsilon_start = 1.0
-- epsilon_min = 0.05
-- epsilon_decay = 0.998
-- replay buffer = 500 ou 10000
-- batch size = 128/256
-- target update = 200 steps
-
-Critérios de aceite:
-- DDQN usa `spaces.Discrete`.
-- A tabela discreta tem tamanho esperado.
-- Nenhum softmax é aplicado em ação discreta.
-- O scheduler_id é ignorado ou enviado corretamente conforme configuração.
-
-====================================================================
-10. TREINAMENTO POR CENÁRIO E MODELO GENERALISTA
-====================================================================
-
-Implementar dois modos:
-
-1. Specialist training:
-    treina um modelo por cenário.
-
-2. Generalist training:
-    a cada episódio, escolhe cenário aleatório entre:
-    - normal
-    - congestion
-    - stressed
-    - insufficient_resources
-    - low_traffic, opcional
-
-Adicionar CLI:
-
-    --scenario normal
-    --scenario random
-    --scenarios normal,congestion,stressed
-    --seed 1
-    --episodes 100
-    --simTime 4.0
-    --periodMs 10
-    --appStart 0.5
-
-Critérios de aceite:
-- SAC e DDQN conseguem treinar em cenário fixo.
-- O modo random escolhe cenário por episódio.
-- O cenário usado aparece nos logs.
-
-====================================================================
-11. AVALIAÇÃO E BASELINES
-====================================================================
-
-Criar script:
-
-    ns-o-ran-gym/examples/rslaq_eval_policy.py
-
-Ele deve:
-- carregar modelo SAC ou DDQN;
-- rodar N episódios;
-- salvar KPIs por episódio;
-- salvar ações;
-- comparar contra baseline fixo.
-
-Baselines mínimos:
-- pesos fixos atuais: `[0.3333, 0.4000, 0.2667]`;
-- all eMBB-biased;
-- all URLLC-biased;
-- all MTC-biased, se fizer sentido;
-- round-robin action, se aplicável.
-
-Métricas:
-- throughput por slice;
-- effective_pdr por slice;
-- effective_lost por slice;
-- delay médio por slice;
-- outage por slice;
-- reward total;
-- allocated share médio;
-- ação média.
-
-Critérios de aceite:
-- O script gera CSV comparativo.
-- O script não mistura resultados de diferentes runs.
-- Cada execução tem `run_id`, `scenario`, `seed`.
-
-====================================================================
-12. ROBUSTEZ DE ENGENHARIA
-====================================================================
-
-Aplicar boas práticas:
-- type hints;
-- dataclasses para configs;
-- funções puras para reward/action conversion;
-- logs claros;
-- exceções informativas;
-- validação de shapes;
-- seeds reprodutíveis;
-- salvar configs em JSON;
-- evitar caminhos hardcoded;
-- não depender do diretório corrente sem documentar.
-
-Adicionar testes simples, se possível:
-- teste da action table;
-- teste da conversão continuous;
-- teste da reward;
-- teste de shape da observação;
-- teste de sliceId normalization.
-
-====================================================================
-13. RELATÓRIO FINAL
-====================================================================
-
-Ao final, gerar relatório Markdown:
-
-    ns-o-ran-gym/RSLAQ_DRL_IMPLEMENTATION_REPORT.md
-
-Com:
-- resumo executivo;
-- arquivos alterados;
-- arquitetura final;
-- como rodar SAC;
-- como rodar DDQN;
-- como rodar avaliação;
-- quais partes reproduzem o artigo;
-- quais partes ainda são aproximações;
-- limitações conhecidas;
-- próximos passos;
-- comandos testados;
-- status de build/teste.
-
-====================================================================
-14. COMANDOS ESPERADOS
-====================================================================
-
-Depois de implementar, documentar comandos similares a:
-
-Instalar pacote:
-    cd ns-o-ran-gym
-    pip install -e .
-
-Treinar SAC:
-    python examples/rslaq_train_sac.py \
-        --scenario normal \
-        --episodes 10 \
-        --simTime 4.0 \
-        --periodMs 10 \
-        --observation_mode paper \
-        --action_mode continuous
-
-Treinar DDQN:
-    python examples/rslaq_train_ddqn.py \
-        --scenario normal \
-        --episodes 10 \
-        --simTime 4.0 \
-        --periodMs 10 \
-        --observation_mode paper \
-        --action_mode discrete
-
-Avaliar:
-    python examples/rslaq_eval_policy.py \
-        --algo sac \
-        --checkpoint results/sac_normal_seed1.pt \
-        --scenario normal \
-        --episodes 5
-
-====================================================================
-15. CRITÉRIOS DE ACEITE FINAL
-====================================================================
-
-A tarefa só está concluída se:
-
-- `sliceId` estiver padronizado como 0/1/2 no Python.
-- `RslaqEnv` suportar `action_mode="continuous"` e `"discrete"`.
-- `RslaqEnv` suportar `observation_mode="paper"` com shape `(4,4)`.
-- SAC enviar ação contínua sem conversão duplicada.
-- DDQN enviar índice discreto, não matriz.
-- A reward SLA-aware estiver isolada em módulo próprio.
-- A reward usar configuração por cenário.
-- O max_steps for calculado corretamente a partir de `simTime`, `appStart` e `periodMs`.
-- O ambiente retornar `info` rico com KPIs, ação final e flags de SLA.
-- Scripts SAC e DDQN rodarem pelo menos um episódio curto sem quebrar.
-- Os resultados forem salvos com run_id/scenario/seed.
-- O relatório final explicar claramente o que está implementado e o que ainda é aproximação.
-
-Importante:
-Não declare que o RSLAQ completo foi reproduzido se:
-- a escolha de scheduler RR/PF/BCQI ainda não estiver integrada ao C++;
-- `bfs` ou `tdp` forem proxies;
-- a reward ainda for uma aproximação.
-
-Nesse caso, declare corretamente:
-"Implementação DRL resource-only inspirada no RSLAQ, com estado/reward alinhados parcialmente ao artigo e preparada para extensão scheduler-aware."
+Atue como engenheiro sênior em C++, ns-3, 5G-LENA e redes 5G. Revise e corrija o arquivo `/home/elioth/Documentos/artigo_jussi/ns-3-dev/scratch/our_paper/slice-aware-sim.cc`.
+
+Objetivo:
+Remover completamente o conceito de `baseline` e deixar a simulação configurada exclusivamente para representar a Benetel RAN650 n78. A simulação não deve mais ter `radioProfile=baseline`, nem opção `--radioProfile`. O código deve sempre usar o perfil RAN650 n78 como padrão único.
+
+Parâmetros fixos da simulação RAN650 n78:
+- Banda: n78
+- Frequência central: 3.55e9 Hz
+- Largura de banda: 100e6 Hz
+- Numerologia: 1
+- SCS: 30 kHz
+- Potência TX default: 43.0 dBm
+- Interpretação da potência: potência total equivalente aproximada para 4 portas de 37 dBm cada
+- gNB antenna rows: 2
+- gNB antenna columns: 2
+- UE antenna rows: 1
+- UE antenna columns: 1
+- AntennaElement: manter IsotropicAntennaModel, salvo se a API local confirmar suporte a modelo direcional compatível
+- Não modelar explicitamente O-RAN Split 7.2x, fronthaul eCPRI, M-plane, GPS/PTP real, alarmes ou consumo energético
+
+Tarefas obrigatórias:
+
+1. Remover completamente `baseline`
+   - Remova `radioProfile`.
+   - Remova `RadioProfileConfig` se ele só existir para escolher entre baseline e ran650_n78.
+   - Remova `GetRadioProfileConfig()`, caso sua única função seja escolher entre perfis.
+   - Remova qualquer lógica condicional do tipo:
+     - if radioProfile == "baseline"
+     - if radioProfile == "ran650_n78"
+   - A simulação deve sempre rodar como RAN650 n78.
+
+2. Manter apenas overrides úteis via CLI
+   A simulação deve continuar permitindo sobrescrever alguns parâmetros por linha de comando, mas o default sempre deve ser RAN650 n78.
+
+   Manter ou criar estes argumentos:
+   - `--centralFrequency`, default efetivo 3.55e9
+   - `--bandwidth`, default efetivo 100e6
+   - `--numerology`, default efetivo 1
+   - `--txPower`, default efetivo 43.0
+   - `--deploymentScenario`
+   - `--enableShadowing`
+   - `--ueAreaRadius`
+   - `--gnbHeight`
+   - `--ueHeight`
+
+   Não usar `--txPowerOverride`.
+   Use apenas `--txPower`.
+
+3. Corrigir a ambiguidade entre `--txPower` e `--txPowerOverride`
+   O código não deve ter os dois.
+   Use apenas:
+
+   - variável interna: `double txPowerDbm = 43.0;`
+   - CLI: `cmd.AddValue("txPower", "gNB TX power in dBm", txPowerDbm);`
+
+   O valor default deve ser 43.0 dBm.
+   Adicione comentário explicando:
+
+   - RAN650: 37 dBm por porta
+   - 4 portas × 5 W = 20 W
+   - 20 W ≈ 43 dBm
+   - portanto, 43 dBm é usado como potência total equivalente aproximada no modelo 5G-LENA
+
+4. Corrigir `ueHeight`
+   O argumento `--ueHeight` deve realmente ser aplicado à mobilidade dos UEs.
+   Se o código hoje lê `ueHeight`, mas não aplica em `deployConfig.ueHeight`, corrija isso.
+
+   Use default:
+   - `ueHeight = 1.5`
+
+   E aplique a altura na posição dos UEs:
+   - X uniforme em `[-ueAreaRadius, +ueAreaRadius]`
+   - Y uniforme em `[-ueAreaRadius, +ueAreaRadius]`
+   - Z = `ueHeight`
+
+5. Corrigir shadowing
+   Substitua `bool enableShadowing` por um override tri-state:
+
+   - `enableShadowing = -1`: usar default do deploymentScenario
+   - `enableShadowing = 0`: shadowing desabilitado
+   - `enableShadowing = 1`: shadowing habilitado
+
+   Exemplo:
+
+   ```cpp
+   int enableShadowing = -1;
+   cmd.AddValue("enableShadowing",
+                "Shadowing override: -1=deployment default, 0=disabled, 1=enabled",
+                enableShadowing);
