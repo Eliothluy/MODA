@@ -1,0 +1,1 @@
+episode,scenario,total_reward,avg_reward,outage_count,soft_count,steps,actor_loss,critic_loss,final_embb_thr,final_urllc_plr,final_mtc_lost,action_embb,action_urllc,action_mtc
