@@ -1,0 +1,44 @@
+ Resumo da Implementação — Etapa 1
+
+     Arquivos Modificados
+
+     1. scratch/our_paper/mac-scheduler.h — Refatoração completa
+     2. scratch/our_paper/mac-scheduler.cc — Refatoração completa
+
+     Mudanças Principais
+
+     Novos tipos e structs:
+     - SlicePolicy — com sliceId, weight, minShare, maxShare, priority, allowBorrowing
+     - MacScheduler::SliceBudgetResult — com effectiveWeight, budgetRbg, borrowedInRbg, borrowedOutRbg, reservedRbg, flags de demanda/UE ativo/configurado
+     - UeVec, UeVec2D — aliases para std::vector<UePtrAndBufferReq> e aninhado
+
+     Novos métodos:
+     - SetSlicePolicies() — configura slices via SlicePolicy, com validação
+     - ValidateSliceConfig() — valida peso ≥ 0, minShare ≤ maxShare, soma > 0, IDs únicos, sem NaN/Inf
+     - GroupActiveUesBySlice() — particiona UEs por RNTI → slice, loga UNMAPPED_RNTI
+     - ComputeSliceBudgets() — orçamento por peso com largest fractional remainder + borrowing controlado por allowBorrowing
+     - SortUeVectorByAlgorithmUl() — comparadores UL (para Etapa 2)
+     - AssignULRBG() override — fallback para NrMacSchedulerOfdmaRR::AssignULRBG quando EnableUlSliceScheduling=false
+     - GetNextUlCallId(), GetUeUlBufferSize(), LogActiveUlDiagnostic()
+
+     Novo atributo TypeId:
+     - EnableUlSliceScheduling (bool, default false) — flag de segurança para UL slicing
+
+     Mudanças em AssignDLRBG:
+     - Refatorado para usar GroupActiveUesBySlice() e ComputeSliceBudgets()
+     - Orçamento agora usa largest fractional remainder (não mais remainder para o último slice)
+     - Borrowing controlado por SlicePolicy.allowBorrowing
+     - Reason codes padronizados: HAS_DEMAND, ACTIVE_UE_NO_DEMAND, NO_ACTIVE_UE, UNCONFIGURED_SLICE, FULL_ALLOC, PARTIAL_ALLOC, ALL_UE_DEMAND_SATISFIED, BORROWED_OUT, RESERVED_NO_DEMAND, UNMAPPED_RNTI
+     - CSV headers melhorados: adicionados campos hasActiveUe, hasDemand, totalRbg, borrowedIn, borrowedOut, reserved
+
+     Compatibilidade com slice-aware-sim.cc:
+     - SetSliceConfiguration() agora é wrapper de SetSlicePolicies()
+     - SetSliceUeMapping() inicializa SlicePolicy com allowBorrowing=true
+     - Nenhuma API pública foi removida ou teve assinatura alterada
+     - Cenário existente (3 slices: eMBB/URLLC/MTC) roda sem abort
+
+     Resultados do Smoke Test
+
+     low_traffic: eMBB PDR=1.0000, URLLC PDR=0.9960, MTC PDR=0.9967
+     Reason codes: NO_ACTIVE_UE, FULL_ALLOC
+     Unmapped RNTIs: 0
