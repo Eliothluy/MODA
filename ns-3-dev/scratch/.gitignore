@@ -4,5 +4,7 @@
 
 !nested-subdir/
 !subdir/
+!our_paper/
+!our_paper/**
 !scratch-simulator.cc
 !CMakeLists.txt

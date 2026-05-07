@@ -4,39 +4,49 @@
 set -e
 
 NS3_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev"
-RESULTS_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev/results_greenran"
-SCENARIOS=("greenran_low" "greenran_normal" "greenran_video_heavy" "greenran_mmtc_massive" "greenran_congestion" "greenran_night_energy")
+RESULTS_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev/results_sliceaware_scenarios"
+SCENARIOS=("greenran_low" "greenran_normal" "greenran_video_heavy" "greenran_mmtc_massive" "greenran_congestion" "greenran_night_energy" "greenran_balanced")
 
-SIM_TIME=10
+SIM_TIME=3
 SEED_BASE=42
-WEIGHTS="0.8,0.2"
 
 mkdir -p "$RESULTS_DIR"
 cd "$NS3_DIR"
+./ns3 build slice-aware-sim
 
-echo "Starting GreenRAN batch simulations at $(date)"
+LOG_FILE="$RESULTS_DIR/run_$(date +%Y%m%d_%H%M%S).log"
+echo "Starting GreenRAN batch simulations at $(date)" | tee "$LOG_FILE"
 
 i=0
 for scenario in "${SCENARIOS[@]}"; do
     SEED=$((SEED_BASE + i))
     OUTDIR="$RESULTS_DIR/$scenario"
+    SCENARIO_LOG="$OUTDIR/${scenario}_console.log"
 
-    echo "============================================="
-    echo "Running scenario: $scenario (simTime=${SIM_TIME}s, seed=${SEED})"
-    echo "Results dir: $OUTDIR"
-    echo "============================================="
+    echo "" | tee -a "$LOG_FILE"
+    echo "=============================================" | tee -a "$LOG_FILE"
+    echo "Running scenario: $scenario (simTime=${SIM_TIME}s, seed=${SEED})" | tee -a "$LOG_FILE"
+    echo "Results dir: $OUTDIR" | tee -a "$LOG_FILE"
+    echo "=============================================" | tee -a "$LOG_FILE"
 
     mkdir -p "$OUTDIR"
+
     ./ns3 run "scratch/our_paper/slice-aware-sim" -- \
-        --scenario=$scenario \
+        --scenario="$scenario" \
         --simTime=$SIM_TIME \
         --seed=$SEED \
-        --weights=$WEIGHTS \
         --EnableUlSliceScheduling=true \
-        --outputDir="$OUTDIR" 2>&1 | grep -E "(GreenRAN|Throughput|Avg delay|PDR|TX/RX pkts|CSV|IPC|WARNING)"
+        --outputDir="$OUTDIR" 2>&1 | tee "$SCENARIO_LOG"
 
-    echo ""
+    if [ $? -eq 0 ]; then
+        echo "[OK] $scenario completed successfully." | tee -a "$LOG_FILE"
+    else
+        echo "[FAIL] $scenario failed! Check $SCENARIO_LOG" | tee -a "$LOG_FILE"
+    fi
+
     i=$((i + 1))
 done
 
-echo "All GreenRAN scenarios complete at $(date). Results in: $RESULTS_DIR"
+echo "" | tee -a "$LOG_FILE"
+echo "All scenarios complete at $(date)." | tee -a "$LOG_FILE"
+echo "Results in: $RESULTS_DIR" | tee -a "$LOG_FILE"

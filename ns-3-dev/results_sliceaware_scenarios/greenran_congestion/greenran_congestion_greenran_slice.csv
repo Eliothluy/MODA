@@ -1,0 +1,5 @@
+slice_id,slice_name,num_ues,direction,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,effective_lost_packets,throughput_mbps,avg_delay_ms,pdr,effective_pdr
+0,VIDEO_EMBB,5,UL,39841200,32749752,27900,22934,0,4966,104.7992,166.722,0.8220,0.8220
+0,VIDEO_EMBB,5,DL,127360,127360,995,995,0,0,0.4076,2.697,1.0000,1.0000
+1,SENSOR_MMTC,100,UL,19993600,0,156200,0,0,156200,0.0000,0.000,0.0000,0.0000
+1,SENSOR_MMTC,100,DL,2547200,2547200,19900,19900,0,0,8.1510,6.777,1.0000,1.0000
