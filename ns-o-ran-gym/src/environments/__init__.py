@@ -17,3 +17,8 @@ register(
     id="RslaqEnv",
     entry_point="environments.rslaq_env:RslaqEnv",
 )
+
+register(
+    id="GreenRanEnv",
+    entry_point="environments.greenran_env:GreenRanEnv",
+)

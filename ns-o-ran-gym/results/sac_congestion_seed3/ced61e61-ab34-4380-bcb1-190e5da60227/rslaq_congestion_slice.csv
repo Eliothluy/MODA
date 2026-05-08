@@ -1,4 +1,0 @@
-slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,effective_lost_packets,throughput_mbps,avg_delay_ms,pdr,effective_pdr
-eMBB,120964120,12356936,79165,8087,0,71078,10.4058,4262.314,0.1022,0.1022
-URLLC,1852110,1851330,23745,23735,0,10,1.5590,5.009,0.9996,0.9996
-MTC,151998720,23114368,1187490,180581,0,1006909,19.4647,4035.549,0.1521,0.1521
