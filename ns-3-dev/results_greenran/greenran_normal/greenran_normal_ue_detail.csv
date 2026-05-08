@@ -1,1 +1,0 @@
-callId,timeMs,scenario,slot,bwpId,beamId,sliceId,rnti,bufQueueSize,dlTbSizeBefore,hasDemand,demandPassed,rbgAllocated,uniqueRbgs,tbSizeBytes,mcs,rank,numRbPerRbg,reason

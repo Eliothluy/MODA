@@ -48,20 +48,23 @@ using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("GreenRanSim");
 
-static const uint32_t NUM_SLICES = 2;
+static const uint32_t NUM_SLICES = 3;
 static const uint32_t VIDEO_EMBB_SLICE = 0;
 static const uint32_t SENSOR_MMTC_SLICE = 1;
+static const uint32_t GENERIC_EMBB_SLICE = 2;
 
 struct GreenRanScenarioConfig
 {
     std::string name;
     uint32_t videoUes;
     uint32_t sensorUes;
+    uint32_t genericUes;
     double videoDlRateMbps;
     uint32_t videoPktSize;
     uint32_t sensorPktSize;
     double sensorIntervalSec;
     double videoUlFeedbackRateKbps;
+    double genericDlRateMbps;
     std::vector<double> weights;
 };
 
@@ -127,13 +130,12 @@ static std::map<std::string, GreenRanScenarioConfig>
 InitGreenRanScenarios()
 {
     std::map<std::string, GreenRanScenarioConfig> m;
-    m["greenran_low"] = {"greenran_low", 5, 10, 10.0, 1200, 80, 30.0, 64.0, {0.8, 0.2}};
-    m["greenran_normal"] = {"greenran_normal", 5, 25, 15.0, 1200, 80, 10.0, 128.0, {0.8, 0.2}};
-    m["greenran_video_heavy"] = {"greenran_video_heavy", 5, 25, 25.0, 1400, 80, 10.0, 128.0, {0.85, 0.15}};
-    m["greenran_mmtc_massive"] = {"greenran_mmtc_massive", 5, 100, 10.0, 1200, 60, 30.0, 64.0, {0.65, 0.35}};
-    m["greenran_congestion"] = {"greenran_congestion", 5, 100, 25.0, 1400, 100, 5.0, 128.0, {0.7, 0.3}};
-    m["greenran_night_energy"] = {"greenran_night_energy", 5, 10, 10.0, 1200, 80, 60.0, 64.0, {0.5, 0.5}};
-    m["greenran_balanced"] = {"greenran_balanced", 5, 30, 15.0, 1200, 80, 20.0, 64.0, {0.5, 0.5}};
+    m["greenran_low"] = {"greenran_low", 5, 8, 5, 10.0, 1200, 80, 30.0, 64.0, 5.0, {0.5, 0.2, 0.3}};
+    m["greenran_normal"] = {"greenran_normal", 5, 8, 20, 15.0, 1200, 80, 10.0, 128.0, 5.0, {0.4, 0.15, 0.45}};
+    m["greenran_video_heavy"] = {"greenran_video_heavy", 5, 8, 15, 25.0, 1400, 80, 10.0, 128.0, 8.0, {0.5, 0.1, 0.4}};
+    m["greenran_congestion"] = {"greenran_congestion", 5, 8, 50, 25.0, 1400, 100, 5.0, 128.0, 5.0, {0.35, 0.1, 0.55}};
+    m["greenran_night_energy"] = {"greenran_night_energy", 5, 8, 3, 10.0, 1200, 80, 60.0, 64.0, 3.0, {0.4, 0.3, 0.3}};
+    m["greenran_balanced"] = {"greenran_balanced", 5, 8, 25, 15.0, 1200, 80, 20.0, 64.0, 5.0, {0.35, 0.15, 0.5}};
     return m;
 }
 
@@ -204,7 +206,8 @@ MakeLiteOnFlexFiIndoorProfile()
 }
 
 static std::vector<ProjectSliceProfile>
-MakeUfpaGreenRanSliceProfiles(double videoRateMbps, uint32_t videoUes)
+MakeUfpaGreenRanSliceProfiles(double videoRateMbps, uint32_t videoUes,
+                               double genericRateMbps, uint32_t genericUes)
 {
     std::vector<ProjectSliceProfile> profiles(NUM_SLICES);
     profiles[VIDEO_EMBB_SLICE] = {VIDEO_EMBB_SLICE,
@@ -231,6 +234,18 @@ MakeUfpaGreenRanSliceProfiles(double videoRateMbps, uint32_t videoUes)
                                    5000.0,
                                    0.95,
                                    "Aproxima 5QI 70 para dados criticos/monitoramento; foco em PDR, escala e uso eficiente de PRBs."};
+    profiles[GENERIC_EMBB_SLICE] = {GENERIC_EMBB_SLICE,
+                                    "GENERIC_EMBB",
+                                    "App3-Usuarios",
+                                    "Campus UFPA: usuarios comuns com streaming e VoIP",
+                                    "eMBB mixed traffic",
+                                    "DL+UL",
+                                    NrQosFlow::NGBR_VIDEO_TCP_PREMIUM,
+                                    0.9 * genericRateMbps * genericUes,
+                                    0.064 * genericUes,
+                                    150.0,
+                                    0.98,
+                                    "Aproxima 5QI 4 para streaming e 5QI 1 para VoIP; trafego misto de usuarios de campus."};
     return profiles;
 }
 
@@ -414,7 +429,10 @@ ValidateDatasheetConfig(const RadioUnitProfile& radio,
 static std::string
 SliceName(uint32_t idx)
 {
-    return (idx == VIDEO_EMBB_SLICE) ? "VIDEO_EMBB" : "SENSOR_MMTC";
+    if (idx == VIDEO_EMBB_SLICE) return "VIDEO_EMBB";
+    if (idx == SENSOR_MMTC_SLICE) return "SENSOR_MMTC";
+    if (idx == GENERIC_EMBB_SLICE) return "GENERIC_EMBB";
+    return "UNKNOWN";
 }
 
 enum class Direction
@@ -1118,7 +1136,9 @@ main(int argc, char* argv[])
 
     uint32_t videoUes = 0;
     uint32_t sensorUes = 0;
+    uint32_t genericUes = 0;
     double videoRateMbps = 0.0;
+    double genericRateMbps = 0.0;
     uint32_t videoPacketSize = 0;
     uint32_t sensorPacketSize = 0;
     double sensorIntervalSec = 0.0;
@@ -1152,7 +1172,7 @@ main(int argc, char* argv[])
     cmd.AddValue("simTime", "Total sim time (s)", simTimeSec);
     cmd.AddValue("seed", "RNG seed", seed);
     cmd.AddValue("outputDir", "Output directory", outputDir);
-    cmd.AddValue("weights", "Optional override slice weights (VIDEO_EMBB,SENSOR_MMTC)", weightsStr);
+    cmd.AddValue("weights", "Optional override slice weights (VIDEO_EMBB,SENSOR_MMTC,GENERIC_EMBB)", weightsStr);
     cmd.AddValue("simId", "Simulation UUID for IPC semaphores", simId);
     cmd.AddValue("periodMs", "FlowMonitor stats/KPM period in ms (scientific CSV default: 100)", indicationPeriodMs);
     cmd.AddValue("LogAllMacSlots", "Log every MAC scheduling call", logAllMacSlots);
@@ -1169,7 +1189,9 @@ main(int argc, char* argv[])
     cmd.AddValue("ueHeight", "UE height (m)", ueHeight);
     cmd.AddValue("videoUes", "Override num VIDEO_EMBB UEs", videoUes);
     cmd.AddValue("sensorUes", "Override num SENSOR_MMTC UEs", sensorUes);
+    cmd.AddValue("genericUes", "Override num GENERIC_EMBB UEs", genericUes);
     cmd.AddValue("videoRateMbps", "Override video rate (Mbps)", videoRateMbps);
+    cmd.AddValue("genericRateMbps", "Override generic streaming rate (Mbps)", genericRateMbps);
     cmd.AddValue("videoPacketSize", "Override video packet size (B)", videoPacketSize);
     cmd.AddValue("sensorPacketSize", "Override sensor packet size (B)", sensorPacketSize);
     cmd.AddValue("sensorIntervalSec", "Override sensor interval (s)", sensorIntervalSec);
@@ -1205,19 +1227,23 @@ main(int argc, char* argv[])
     g_enableDrlControl = enableDrlControl;
     // Resolve scenario parameters
     double videoRateMbpsVal = 15.0;
+    double genericRateMbpsVal = 5.0;
     uint32_t videoPacketSizeVal = 1400;
     uint32_t sensorPacketSizeVal = 100;
     double sensorIntervalSecVal = 10.0;
     double videoUlFeedbackRateKbps = 64.0;
-    uint32_t videoUesVal = 4;
-    uint32_t sensorUesVal = 50;
+    uint32_t videoUesVal = 5;
+    uint32_t sensorUesVal = 8;
+    uint32_t genericUesVal = 20;
 
     if (grScenarios.find(scenarioName) != grScenarios.end())
     {
         auto& sc = grScenarios[scenarioName];
         videoUesVal = sc.videoUes;
         sensorUesVal = sc.sensorUes;
+        genericUesVal = sc.genericUes;
         videoRateMbpsVal = sc.videoDlRateMbps;
+        genericRateMbpsVal = sc.genericDlRateMbps;
         videoPacketSizeVal = sc.videoPktSize;
         sensorPacketSizeVal = sc.sensorPktSize;
         sensorIntervalSecVal = sc.sensorIntervalSec;
@@ -1229,20 +1255,23 @@ main(int argc, char* argv[])
     }
     else if (!weightsOverrideProvided)
     {
-        weightsStr = "0.8,0.2";
+        weightsStr = "0.4,0.15,0.45";
     }
 
     if (videoUes > 0) videoUesVal = videoUes;
     if (sensorUes > 0) sensorUesVal = sensorUes;
+    if (genericUes > 0) genericUesVal = genericUes;
     if (videoRateMbps > 0.0) videoRateMbpsVal = videoRateMbps;
+    if (genericRateMbps > 0.0) genericRateMbpsVal = genericRateMbps;
     if (videoPacketSize > 0) videoPacketSizeVal = videoPacketSize;
     if (sensorPacketSize > 0) sensorPacketSizeVal = sensorPacketSize;
     if (sensorIntervalSec > 0.0) sensorIntervalSecVal = sensorIntervalSec;
 
-    uint32_t numUeTotal = videoUesVal + sensorUesVal;
+    uint32_t numUeTotal = videoUesVal + sensorUesVal + genericUesVal;
     double appStartSec = 0.5;
     std::vector<ProjectSliceProfile> projectSlices =
-        MakeUfpaGreenRanSliceProfiles(videoRateMbpsVal, videoUesVal);
+        MakeUfpaGreenRanSliceProfiles(videoRateMbpsVal, videoUesVal,
+                                       genericRateMbpsVal, genericUesVal);
 
     std::vector<double> sliceWeights = ParseWeights(weightsStr);
     ValidateWeights(sliceWeights);
@@ -1602,9 +1631,15 @@ main(int argc, char* argv[])
         for (uint32_t i = 0; i < numUeTotal; ++i)
         {
             uint16_t ueId = static_cast<uint16_t>(i + 1);
-            uint32_t sliceIdx = (i < videoUesVal) ? VIDEO_EMBB_SLICE : SENSOR_MMTC_SLICE;
+            uint32_t sliceIdx;
+            if (i < videoUesVal) sliceIdx = VIDEO_EMBB_SLICE;
+            else if (i < videoUesVal + sensorUesVal) sliceIdx = SENSOR_MMTC_SLICE;
+            else sliceIdx = GENERIC_EMBB_SLICE;
+
             const ProjectSliceProfile& profile = projectSlices.at(sliceIdx);
             Ipv4Address ueAddr = ueIpIfaces.GetAddress(i);
+
+            // Primary QoS flow (per-slice default)
             NrQosFlow qosFlow(profile.fiveQi);
             Ptr<NrQosRule> qosRule =
                 MakeUeAddressScopedQosRule(remoteHostAddr, ueAddr, static_cast<uint8_t>(20 + sliceIdx));
@@ -1619,12 +1654,31 @@ main(int argc, char* argv[])
                       << " 5QI=" << FiveQiToNumber(profile.fiveQi)
                       << " QFI=" << static_cast<uint32_t>(qfi)
                       << " rule=UE-address scoped\n";
+
+            // Generic UEs: second QoS flow for VoIP (GBR voice)
+            if (sliceIdx == GENERIC_EMBB_SLICE)
+            {
+                NrQosFlow qosFlowVoip(NrQosFlow::GBR_CONV_VOICE);
+                Ptr<NrQosRule> qosRuleVoip =
+                    MakeUeAddressScopedQosRule(remoteHostAddr, ueAddr, static_cast<uint8_t>(40 + sliceIdx));
+                uint8_t qfi2 = nrHelper->ActivateDedicatedQosFlow(ueNetDev.Get(i), qosFlowVoip, qosRuleVoip);
+                qosCsv << ueId << "," << ueAddr << "," << sliceIdx << "," << profile.sliceName << ","
+                       << "VoIP" << "," << "GBR voice" << ",UL,"
+                       << FiveQiToNumber(NrQosFlow::GBR_CONV_VOICE) << ","
+                       << static_cast<uint32_t>(qfi2) << ",ue_address_bidirectional\n";
+                std::cout << "UE " << std::setw(3) << ueId << " -> " << profile.sliceName
+                          << " app=VoIP 5QI=" << FiveQiToNumber(NrQosFlow::GBR_CONV_VOICE)
+                          << " QFI=" << static_cast<uint32_t>(qfi2)
+                          << " rule=UE-address scoped\n";
+            }
         }
         qosCsv.close();
         std::cout << "[GreenRAN] Slice/QoS mapping written to: " << qosPath << "\n";
     }
 
+    // ---- Attach all UEs immediately (5G-LENA does not support dynamic attach safely) ----
     nrHelper->AttachToClosestGnb(ueNetDev, gnbNetDev);
+    std::cout << "[GreenRAN] Attached all " << numUeTotal << " UEs\n";
 
     // ---- Configure scheduler ----
     Ptr<NrMacScheduler> schedBase = NrHelper::GetScheduler(gnbNetDev.Get(0), 0);
@@ -1647,7 +1701,7 @@ main(int argc, char* argv[])
 
     std::map<uint16_t, uint16_t> portToUeId;
 
-    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &sliceWeights, &outputDir, &scenarioName, videoUesVal, sensorUesVal, numUeTotal, &portToUeId]() {
+    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &sliceWeights, &outputDir, &scenarioName, videoUesVal, sensorUesVal, genericUesVal, numUeTotal, &portToUeId]() {
         std::vector<std::vector<uint32_t>> sliceRntis(NUM_SLICES);
         std::cout << "\n=== GreenRAN UE Mapping (RNTI) ===\n"
                   << std::setw(4) << "Idx" << " | "
@@ -1658,7 +1712,10 @@ main(int argc, char* argv[])
         for (uint32_t i = 0; i < numUeTotal; ++i)
         {
             uint16_t ueId = static_cast<uint16_t>(i + 1);
-            uint32_t sliceIdx = (i < videoUesVal) ? 0 : 1;
+            uint32_t sliceIdx;
+            if (i < videoUesVal) sliceIdx = VIDEO_EMBB_SLICE;
+            else if (i < videoUesVal + sensorUesVal) sliceIdx = SENSOR_MMTC_SLICE;
+            else sliceIdx = GENERIC_EMBB_SLICE;
 
             Ptr<NrUeNetDevice> ueDev = DynamicCast<NrUeNetDevice>(ueNetDev.Get(i));
             uint16_t rnti = UINT16_MAX;
@@ -1684,7 +1741,8 @@ main(int argc, char* argv[])
 
         std::vector<MacScheduler::IntraSliceAlgorithm> algos = {
             MacScheduler::IntraSliceAlgorithm::PF,
-            MacScheduler::IntraSliceAlgorithm::RR
+            MacScheduler::IntraSliceAlgorithm::RR,
+            MacScheduler::IntraSliceAlgorithm::PF
         };
         scheduler->SetSliceConfiguration(sliceWeights, algos);
 
@@ -1697,7 +1755,10 @@ main(int argc, char* argv[])
         for (uint32_t i = 0; i < numUeTotal; ++i)
         {
             uint16_t ueId = static_cast<uint16_t>(i + 1);
-            uint32_t sliceIdx = (i < videoUesVal) ? 0 : 1;
+            uint32_t sliceIdx;
+            if (i < videoUesVal) sliceIdx = VIDEO_EMBB_SLICE;
+            else if (i < videoUesVal + sensorUesVal) sliceIdx = SENSOR_MMTC_SLICE;
+            else sliceIdx = GENERIC_EMBB_SLICE;
             std::string sn = SliceName(sliceIdx);
             uint16_t rnti = 0;
             Ptr<NrUeNetDevice> ueDev = DynamicCast<NrUeNetDevice>(ueNetDev.Get(i));
@@ -1717,21 +1778,24 @@ main(int argc, char* argv[])
     for (uint32_t i = 0; i < numUeTotal; ++i)
     {
         uint16_t ueId = static_cast<uint16_t>(i + 1);
-        uint32_t sliceIdx = (i < videoUesVal) ? 0 : 1;
+        uint32_t sliceIdx;
+        if (i < videoUesVal) sliceIdx = VIDEO_EMBB_SLICE;
+        else if (i < videoUesVal + sensorUesVal) sliceIdx = SENSOR_MMTC_SLICE;
+        else sliceIdx = GENERIC_EMBB_SLICE;
         Ipv4Address ueAddr = ueIpIfaces.GetAddress(i);
 
-        // UL endpoint: remoteHost receives video feedback and sensor reports.
+        // UL endpoint
         uint16_t ulPort = 30000 + ueId;
         UdpServerHelper ulServer(ulPort);
         serverApps.Add(ulServer.Install(remoteHostContainer.Get(0)));
 
-        if (sliceIdx == 0)
+        if (sliceIdx == VIDEO_EMBB_SLICE)
         {
             OnOffHelper ulFeedback("ns3::UdpSocketFactory", InetSocketAddress(remoteHostAddr, ulPort));
             ulFeedback.SetConstantRate(DataRate(videoUlFeedbackRateKbps * 1000.0), 100);
             clientApps.Add(ulFeedback.Install(ueNodes.Get(i)));
         }
-        else
+        else if (sliceIdx == SENSOR_MMTC_SLICE)
         {
             UdpClientHelper sensorClient(remoteHostAddr, ulPort);
             sensorClient.SetAttribute("MaxPackets",
@@ -1746,13 +1810,19 @@ main(int argc, char* argv[])
             app.Stop(Seconds(simTimeSec));
             staggeredSensorApps.Add(app);
         }
+        else // GENERIC_EMBB_SLICE
+        {
+            // VoIP UL traffic
+            OnOffHelper ulVoip("ns3::UdpSocketFactory", InetSocketAddress(remoteHostAddr, ulPort));
+            ulVoip.SetConstantRate(DataRate(64000), 160);  // 64 kbps, 20ms packets
+            clientApps.Add(ulVoip.Install(ueNodes.Get(i)));
+        }
 
         portToUeId[ulPort] = ueId;
 
         uint16_t dlPort = 40000 + ueId;
-        if (sliceIdx == 0)
+        if (sliceIdx == VIDEO_EMBB_SLICE)
         {
-            // DL primary VIDEO_EMBB traffic: remoteHost -> UE.
             UdpServerHelper dlServer(dlPort);
             serverApps.Add(dlServer.Install(ueNodes.Get(i)));
 
@@ -1762,25 +1832,60 @@ main(int argc, char* argv[])
 
             portToUeId[dlPort] = ueId;
         }
+        else if (sliceIdx == GENERIC_EMBB_SLICE)
+        {
+            UdpServerHelper dlServer(dlPort);
+            serverApps.Add(dlServer.Install(ueNodes.Get(i)));
+
+            // Staggered entry for generic users: traffic starts at different times
+            uint32_t genericIdx = i - (videoUesVal + sensorUesVal);
+            double entryWindow = (simTimeSec - appStartSec) * 0.5;
+            double genericStartTime = appStartSec + (entryWindow * genericIdx / std::max(1u, genericUesVal));
+
+            OnOffHelper dlStream("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, dlPort));
+            dlStream.SetConstantRate(DataRate(genericRateMbpsVal * 1e6), 1400);
+            ApplicationContainer streamApp = dlStream.Install(remoteHostContainer.Get(0));
+            streamApp.Start(Seconds(genericStartTime));
+            streamApp.Stop(Seconds(simTimeSec));
+            clientApps.Add(streamApp);
+
+            OnOffHelper ulVoip("ns3::UdpSocketFactory", InetSocketAddress(remoteHostAddr, ulPort));
+            ulVoip.SetConstantRate(DataRate(64000), 160);
+            ApplicationContainer voipApp = ulVoip.Install(ueNodes.Get(i));
+            voipApp.Start(Seconds(genericStartTime));
+            voipApp.Stop(Seconds(simTimeSec));
+            clientApps.Add(voipApp);
+
+            portToUeId[dlPort] = ueId;
+        }
 
         std::cout << "UE " << std::setw(3) << ueId
                   << " [" << std::setw(10) << SliceName(sliceIdx) << "]"
                   << " UL_port=" << ulPort
-                  << " UL_model=" << (sliceIdx == 0 ? "feedback" : "periodic_sensor")
-                  << " UL_rate_or_interval=";
-        if (sliceIdx == 0)
+                  << " UL_model=";
+        if (sliceIdx == VIDEO_EMBB_SLICE)
         {
-            std::cout << std::fixed << std::setprecision(0) << videoUlFeedbackRateKbps << " kbps"
+            std::cout << "feedback"
+                      << " UL_rate=" << std::fixed << std::setprecision(0) << videoUlFeedbackRateKbps << " kbps"
                       << " DL_port=" << dlPort
                       << " DL_rate=" << std::setprecision(2) << videoRateMbpsVal << " Mbps"
                       << " DL_pkt=" << videoPacketSizeVal << " B\n";
         }
-        else
+        else if (sliceIdx == SENSOR_MMTC_SLICE)
         {
             const double estimatedSensorKbps = sensorPacketSizeVal * 8.0 / sensorIntervalSecVal / 1000.0;
-            std::cout << std::fixed << std::setprecision(2) << sensorIntervalSecVal << " s"
+            std::cout << "periodic_sensor"
+                      << " interval=" << std::fixed << std::setprecision(2) << sensorIntervalSecVal << " s"
                       << " sensor_pkt=" << sensorPacketSizeVal << " B"
                       << " est_rate=" << std::setprecision(4) << estimatedSensorKbps << " kbps\n";
+        }
+        else
+        {
+            std::cout << "voip"
+                      << " UL_rate=64 kbps"
+                      << " DL_port=" << dlPort
+                      << " DL_rate=" << std::setprecision(2) << genericRateMbpsVal << " Mbps"
+                      << " DL_pkt=1400 B\n";
         }
     }
 
@@ -1788,7 +1893,10 @@ main(int argc, char* argv[])
     for (uint32_t i = 0; i < numUeTotal; ++i)
     {
         uint16_t ueId = static_cast<uint16_t>(i + 1);
-        uint32_t sliceIdx = (i < videoUesVal) ? 0 : 1;
+        uint32_t sliceIdx;
+        if (i < videoUesVal) sliceIdx = VIDEO_EMBB_SLICE;
+        else if (i < videoUesVal + sensorUesVal) sliceIdx = SENSOR_MMTC_SLICE;
+        else sliceIdx = GENERIC_EMBB_SLICE;
         g_ueToSliceIdx[ueId] = sliceIdx;
     }
 
@@ -1804,7 +1912,8 @@ main(int argc, char* argv[])
             << "  \"simTimeSec\": " << simTimeSec << ",\n"
             << "  \"appStartSec\": " << appStartSec << ",\n"
             << "  \"numUes\": {\"VIDEO_EMBB\": " << videoUesVal
-            << ", \"SENSOR_MMTC\": " << sensorUesVal << "},\n"
+            << ", \"SENSOR_MMTC\": " << sensorUesVal
+            << ", \"GENERIC_EMBB\": " << genericUesVal << "},\n"
             << "  \"traffic\": {\n"
             << "    \"VIDEO_EMBB\": {\"primaryDirection\": \"DL\", \"dlThroughputMbpsPerUe\": "
             << videoRateMbpsVal << ", \"dlPacketBytes\": " << videoPacketSizeVal
@@ -1812,7 +1921,10 @@ main(int argc, char* argv[])
             << "    \"SENSOR_MMTC\": {\"primaryDirection\": \"UL\", \"packetBytes\": "
             << sensorPacketSizeVal << ", \"intervalSecMean\": " << sensorIntervalSecVal
             << ", \"startPhaseJitter\": \"deterministic_uniform\", \"estimatedKbpsPerSensor\": "
-            << (sensorPacketSizeVal * 8.0 / sensorIntervalSecVal / 1000.0) << "}\n"
+            << (sensorPacketSizeVal * 8.0 / sensorIntervalSecVal / 1000.0) << "},\n"
+            << "    \"GENERIC_EMBB\": {\"primaryDirection\": \"DL+UL\", \"dlThroughputMbpsPerUe\": "
+            << genericRateMbpsVal << ", \"dlPacketBytes\": 1400"
+            << ", \"ulVoipKbpsPerUe\": 64}\n"
             << "  },\n"
             << "  \"projectSliceModel\": {\n"
             << "    \"source\": \"projetoUFPA/19175_Proposta_Ajustada (4).md\",\n"
@@ -1870,7 +1982,7 @@ main(int argc, char* argv[])
             << "    \"isolationDb\": " << antenna.isolationDb << "\n"
             << "  },\n"
             << "  \"weights\": {\"source\": \"" << weightsSource << "\", \"values\": ["
-            << sliceWeights[0] << ", " << sliceWeights[1] << "]},\n"
+            << sliceWeights[0] << ", " << sliceWeights[1] << ", " << sliceWeights[2] << "]},\n"
             << "  \"nr\": {\"centralFrequencyHz\": " << centralFrequency
             << ", \"bandwidthHz\": " << bandwidth
             << ", \"numerology\": " << numerology
@@ -1987,6 +2099,10 @@ main(int argc, char* argv[])
                << "- App2-Monitoramento: SENSOR_MMTC, sensores ambientais/solo, 5QI "
                << FiveQiToNumber(projectSlices[SENSOR_MMTC_SLICE].fiveQi)
                << ", trafego UL esporadico e foco em PDR/congestionamento/uso eficiente de PRBs.\n"
+               << "- App3-Usuarios: GENERIC_EMBB, streaming + VoIP, 5QI "
+               << FiveQiToNumber(projectSlices[GENERIC_EMBB_SLICE].fiveQi)
+               << " (streaming) + 5QI 1 (VoIP), SLA DL " << projectSlices[GENERIC_EMBB_SLICE].dlThroughputSlaMbps
+               << " Mbps agregado e delay < " << projectSlices[GENERIC_EMBB_SLICE].delaySlaMs << " ms.\n"
                << "- DRL/POSIX: semaforos POSIX ficam habilitados por padrao quando `enablePosixSync=true`; "
                << "o controle de pesos de PRB usa `rslaq_actions_for_ns3.csv` no formato "
                << "`timestamp,sliceId,dedicatedPRB,minPRB,maxPRB` e leitura nao bloqueante com `sem_trywait`.\n"
@@ -2183,7 +2299,10 @@ main(int argc, char* argv[])
         for (uint32_t s = 0; s < NUM_SLICES; ++s)
         {
             std::string sn = SliceName(s);
-            uint32_t nUes = (s == 0) ? videoUesVal : sensorUesVal;
+            uint32_t nUes = 0;
+            if (s == VIDEO_EMBB_SLICE) nUes = videoUesVal;
+            else if (s == SENSOR_MMTC_SLICE) nUes = sensorUesVal;
+            else if (s == GENERIC_EMBB_SLICE) nUes = genericUesVal;
 
             auto writeAgg = [&](const DirAgg& agg, const std::string& dirStr)
             {

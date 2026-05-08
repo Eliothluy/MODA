@@ -3,8 +3,8 @@
 # Results are saved in separate folders per scenario
 set -e
 
-NS3_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev"
-RESULTS_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev/results_sliceaware_scenarios"
+NS3_DIR="/home/eliothluy/Documentos/artigo_jussi/ns-3-dev"
+RESULTS_DIR="/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/results_sliceaware_scenarios"
 SCENARIOS=("greenran_low" "greenran_normal" "greenran_video_heavy" "greenran_mmtc_massive" "greenran_congestion" "greenran_night_energy" "greenran_balanced")
 
 SIM_TIME=3
@@ -17,9 +17,8 @@ cd "$NS3_DIR"
 LOG_FILE="$RESULTS_DIR/run_$(date +%Y%m%d_%H%M%S).log"
 echo "Starting GreenRAN batch simulations at $(date)" | tee "$LOG_FILE"
 
-i=0
+SEED=$SEED_BASE
 for scenario in "${SCENARIOS[@]}"; do
-    SEED=$((SEED_BASE + i))
     OUTDIR="$RESULTS_DIR/$scenario"
     SCENARIO_LOG="$OUTDIR/${scenario}_console.log"
 
@@ -43,8 +42,6 @@ for scenario in "${SCENARIOS[@]}"; do
     else
         echo "[FAIL] $scenario failed! Check $SCENARIO_LOG" | tee -a "$LOG_FILE"
     fi
-
-    i=$((i + 1))
 done
 
 echo "" | tee -a "$LOG_FILE"
