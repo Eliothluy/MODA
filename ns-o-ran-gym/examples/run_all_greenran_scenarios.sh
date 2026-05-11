@@ -20,13 +20,14 @@ SEED_CYCLE=99999
 
 # ── Training ──────────────────────────────────────────────
 SAC_EPISODES=300
-DDQN_EPISODES=50
+DDQN_EPISODES=250
 
 # GreenRAN uses periodMs=100 (see greenran_use_case.json).
 # appStart is fixed at 0.5s in GreenRan-slice.cc.
 PERIOD_MS=100
 APP_START=0.5
-CONSECUTIVE_OUTAGE_STEPS=5
+CONSECUTIVE_OUTAGE_STEPS=50   # increased to avoid premature termination
+WARMUP_STEPS=10               # increased to avoid instant outage evaluation
 
 # SAC: longer episodes to observe steady-state behaviour
 SAC_SIM_TIME=10.0
@@ -38,23 +39,23 @@ DDQN_SIM_TIME=12.0
 DDQN_NTSR=100
 DDQN_MAX_STEPS=$(python3 -c "print(int((${DDQN_SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
 
-# ── SAC hyperparameters ───────────────────────────────────
-SAC_BUFFER_SIZE=50000
-SAC_BATCH_SIZE=256
+# ── SAC hyperparameters (corrected) ───────────────────────
+SAC_BUFFER_SIZE=100000
+SAC_BATCH_SIZE=512
 SAC_LR=0.001
 SAC_GAMMA=0.99
 SAC_TAU=0.005
 SAC_ALPHA=0.1
 
-# ── DDQN hyperparameters ──────────────────────────────────
-DDQN_BUFFER_SIZE=128
-DDQN_BATCH_SIZE=32
-DDQN_LR=0.001
-DDQN_GAMMA=0.80
+# ── DDQN hyperparameters (tuned for convergence) ──────────
+DDQN_BUFFER_SIZE=50000
+DDQN_BATCH_SIZE=256
+DDQN_LR=0.0005            # reduced for gradient stability
+DDQN_GAMMA=0.99
 DDQN_EPS_START=1.0
 DDQN_EPS_MIN=0.05
-DDQN_EPS_DECAY=0.998
-DDQN_TARGET_UPDATE=200
+DDQN_EPS_DECAY=0.9997     # slower per-step decay: explores ~100 eps, then exploits
+DDQN_TARGET_UPDATE=1000   # sync every ~10 episodes (1000 steps) for stability
 
 # ── Scenarios (must match InitGreenRanScenarios in GreenRan-slice.cc) ──
 SCENARIOS=(
@@ -115,6 +116,7 @@ for scenario in "${SCENARIOS[@]}"; do
         --max_steps "${SAC_MAX_STEPS}" \
         --observation_mode paper \
         --action_mode continuous \
+        --warmup_steps "${WARMUP_STEPS}" \
         --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
         --buffer_size "${SAC_BUFFER_SIZE}" \
         --batch_size "${SAC_BATCH_SIZE}" \
@@ -133,10 +135,11 @@ for scenario in "${SCENARIOS[@]}"; do
         --seed_cycle "${SEED_CYCLE}" \
         --simTime "${DDQN_SIM_TIME}" \
         --periodMs "${PERIOD_MS}" \
-        --max_steps "${DDQN_MAX_STEPS}" \
+        --max_steps auto \
         --ntsr "${DDQN_NTSR}" \
         --observation_mode paper \
         --action_mode discrete \
+        --warmup_steps "${WARMUP_STEPS}" \
         --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
         --buffer_size "${DDQN_BUFFER_SIZE}" \
         --batch_size "${DDQN_BATCH_SIZE}" \
@@ -146,6 +149,7 @@ for scenario in "${SCENARIOS[@]}"; do
         --epsilon_min "${DDQN_EPS_MIN}" \
         --epsilon_decay "${DDQN_EPS_DECAY}" \
         --target_update "${DDQN_TARGET_UPDATE}" \
+        --log_interval 10 \
         --output "${RESULTS_DIR}/ddqn_${scenario}_seed${FIXED_SEED}" &
 
     echo "  Waiting for both to finish..."

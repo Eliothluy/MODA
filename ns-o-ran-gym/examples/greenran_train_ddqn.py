@@ -19,11 +19,17 @@ import argparse
 import csv
 import json
 import random
+import time
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 from environments.greenran_env import GreenRanEnv
 from environments.greenran_action_spaces import build_discrete_action_table
@@ -306,12 +312,18 @@ def train_ddqn(args):
                 "action_video",
                 "action_sensor",
                 "action_generic",
+                "wall_time_sec",
+                "cpu_percent",
+                "ram_mb",
+                "gpu_mem_mb",
             ]
         )
 
     best_avg = -float("inf")
     all_rewards = []
     avg100 = 0.0
+    process = psutil.Process() if psutil else None
+    training_start = time.perf_counter()
 
     for ep in range(args.episodes):
         chosen_scenario = choose_scenario(ep, mode, scenario_list)
@@ -325,6 +337,7 @@ def train_ddqn(args):
         ep_soft = 0
         ep_losses = []
         step = 0
+        ep_start = time.perf_counter()
 
         ep_max_steps = min(args.ntsr, env.max_steps)
 
@@ -351,6 +364,7 @@ def train_ddqn(args):
             if done:
                 break
 
+        ep_wall = time.perf_counter() - ep_start
         all_rewards.append(ep_reward)
         avg100 = (
             np.mean(all_rewards[-100:])
@@ -363,6 +377,13 @@ def train_ddqn(args):
         final_generic_thr = info.get("slice_2_GENERIC_EMBB", {}).get("throughput_mbps", 0.0)
         action_info = info.get("action_info", {})
         prb_pct = action_info.get("prb_pct", [0.0, 0.0, 0.0])
+
+        # Resource profiling
+        cpu_pct = process.cpu_percent() if process else 0.0
+        ram_mb = process.memory_info().rss / (1024 * 1024) if process else 0.0
+        gpu_mem_mb = 0.0
+        if torch.cuda.is_available():
+            gpu_mem_mb = torch.cuda.memory_allocated() / (1024 * 1024)
 
         with open(log_path, "a", newline="") as f:
             writer = csv.writer(f)
@@ -383,6 +404,10 @@ def train_ddqn(args):
                     f"{prb_pct[0]:.2f}",
                     f"{prb_pct[1]:.2f}",
                     f"{prb_pct[2]:.2f}",
+                    f"{ep_wall:.2f}",
+                    f"{cpu_pct:.1f}",
+                    f"{ram_mb:.1f}",
+                    f"{gpu_mem_mb:.1f}",
                 ]
             )
 
@@ -390,7 +415,8 @@ def train_ddqn(args):
             print(
                 f"Ep {ep + 1}/{args.episodes} | Scenario: {chosen_scenario} | "
                 f"Reward: {ep_reward:.4f} | Avg100: {avg100:.4f} | "
-                f"Outages: {ep_outages} | Soft: {ep_soft} | Eps: {agent.epsilon:.4f}"
+                f"Outages: {ep_outages} | Soft: {ep_soft} | Eps: {agent.epsilon:.4f} | "
+                f"Time: {ep_wall:.1f}s"
             )
 
         if avg100 > best_avg:
@@ -399,6 +425,7 @@ def train_ddqn(args):
 
     agent.save(os.path.join(args.output, "greenran_ddqn_final.pt"))
 
+    total_training_time = time.perf_counter() - training_start
     summary = {
         "method": "ddqn",
         "scenario_mode": mode,
@@ -407,6 +434,8 @@ def train_ddqn(args):
         "ntsr": args.ntsr,
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
+        "total_training_time_sec": round(total_training_time, 2),
+        "mean_episode_time_sec": round(total_training_time / max(args.episodes, 1), 2),
     }
     with open(os.path.join(args.output, "greenran_ddqn_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -429,7 +458,8 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--seed_cycle", type=int, default=100)
     parser.add_argument("--episodes", type=int, default=35)
-    parser.add_argument("--simTime", type=float, default=2.0)
+    parser.add_argument("--simTime", type=float, default=10.0,
+                        help="Simulation time in seconds (increased to allow longer episodes)")
     parser.add_argument("--periodMs", type=int, default=100)
     parser.add_argument("--ntsr", type=int, default=100,
                         help="Steps per episode before periodic reset")
@@ -441,10 +471,14 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.80)
     parser.add_argument("--epsilon_start", type=float, default=1.0)
     parser.add_argument("--epsilon_min", type=float, default=0.05)
-    parser.add_argument("--epsilon_decay", type=float, default=0.998)
-    parser.add_argument("--buffer_size", type=int, default=128)
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--target_update", type=int, default=200)
+    parser.add_argument("--epsilon_decay", type=float, default=0.95,
+                        help="Faster epsilon decay for quicker convergence")
+    parser.add_argument("--buffer_size", type=int, default=50000,
+                        help="Replay buffer size")
+    parser.add_argument("--batch_size", type=int, default=256,
+                        help="Mini-batch size")
+    parser.add_argument("--target_update", type=int, default=100,
+                        help="Target network update frequency")
     parser.add_argument("--log_interval", type=int, default=1)
     parser.set_defaults(apply_p_sta=True)
     parser.add_argument("--no-apply-p-sta", action="store_false", dest="apply_p_sta",
@@ -453,8 +487,10 @@ def main():
     parser.add_argument("--no-include-scheduler", action="store_false", dest="include_scheduler",
                         help="Disable scheduler selection in action space")
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0)
-    parser.add_argument("--warmup_steps", type=int, default=5)
-    parser.add_argument("--consecutive_outage_steps", type=int, default=5)
+    parser.add_argument("--warmup_steps", type=int, default=10,
+                        help="Warmup steps before evaluating outages")
+    parser.add_argument("--consecutive_outage_steps", type=int, default=50,
+                        help="Outage streak required to trigger terminal (increased to avoid premature episode termination)")
     parser.add_argument("--lambda_plr", type=float, default=0.5,
                         help="PLR penalty weight in reward")
     args = parser.parse_args()

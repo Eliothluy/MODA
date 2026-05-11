@@ -31,11 +31,9 @@ ALPHA = 0.40   # omega_0: VIDEO_EMBB
 BETA = 0.25    # omega_1: SENSOR_MMTC
 GAMMA = 0.35   # omega_2: GENERIC_EMBB
 
-# Throughput normalization caps (Mbps) — used for h_1 / h_3 scaling
-DEFAULT_MAX_THR_MBPS = 150.0
-
-# Buffer normalization (bytes) for h_2 exp decay
-DEFAULT_BUFFER_NORM_BYTES = 10000.0
+# Soft-cap penalty coefficient — penalises over-allocation proportionally
+# instead of terminating the episode
+SOFT_PENALTY_COEFF = 0.3
 
 # Default PLR threshold (%) above which we start penalising
 DEFAULT_PLR_THRESHOLD = 5.0
@@ -187,6 +185,31 @@ def _evaluate_soft_conditions(
     return flags
 
 
+def _compute_soft_penalty(
+    metrics: Dict[int, Dict[str, Any]],
+    sla: Dict[str, Any],
+    coeff: float,
+) -> float:
+    """
+    Compute a proportional penalty for over-allocation (soft cap exceedance).
+    Returns a negative value proportional to how far each slice exceeds its
+    soft_max threshold.
+    """
+    penalty = 0.0
+
+    video_thr = float(metrics.get(0, {}).get("throughputMbps_sum", 0.0))
+    soft_max_video = sla.get("video_soft_max_throughput_mbps")
+    if soft_max_video is not None and soft_max_video > 0 and video_thr > soft_max_video:
+        penalty -= coeff * (video_thr - soft_max_video) / soft_max_video
+
+    generic_thr = float(metrics.get(2, {}).get("throughputMbps_sum", 0.0))
+    soft_max_generic = sla.get("generic_soft_max_throughput_mbps")
+    if soft_max_generic is not None and soft_max_generic > 0 and generic_thr > soft_max_generic:
+        penalty -= coeff * (generic_thr - soft_max_generic) / soft_max_generic
+
+    return penalty
+
+
 def compute_greenran_reward(
     metrics: Dict[int, Dict[str, Any]],
     scenario: str,
@@ -199,12 +222,13 @@ def compute_greenran_reward(
     Compute the SLA-aware reward for GreenRAN.
 
     Structure:
-        - h_1: VIDEO_EMBB throughput / max_cap  (saturado em 1.0)
-        - h_2: exp(-max_sensor_buffer / norm)    (latência/congestão proxy)
-        - h_3: GENERIC_EMBB throughput / max_cap (saturado em 1.0)
+        - h_1: VIDEO_EMBB total throughput / scenario soft_max  (saturado em 1.0)
+        - h_2: SENSOR_MMTC PLR quality (1 - plr/threshold), fallback exp(-buffer/max_buffer)
+        - h_3: GENERIC_EMBB total throughput / scenario soft_max (saturado em 1.0)
         - Base: alpha*h_1 + beta*h_2 + gamma*h_3
-        - Penalidade PLR: -lambda_plr * mean(plr_i / 100)
-        - Terminal: outage por N passos consecutivos ou soft violation
+        - PLR penalty: -lambda_plr * mean(plr_i / 100)
+        - Soft penalty: -coeff * exceedance_ratio (progressive, no termination)
+        - Terminal: only on hard outage after N consecutive steps
     """
     if config is None:
         config = {}
@@ -217,8 +241,12 @@ def compute_greenran_reward(
     beta = config.get("beta", BETA)
     gamma_val = config.get("gamma", GAMMA)
     lambda_plr = config.get("lambda_plr", 0.5)
-    buffer_norm = config.get("buffer_norm_bytes", DEFAULT_BUFFER_NORM_BYTES)
-    max_thr_cap = config.get("max_thr_mbps", DEFAULT_MAX_THR_MBPS)
+    soft_coeff = config.get("soft_penalty_coeff", SOFT_PENALTY_COEFF)
+
+    # Throughput caps derived from scenario SLA (soft_max values)
+    # This ensures h_1 and h_3 use the full [0, 1] range at operating points
+    video_cap = sla.get("video_soft_max_throughput_mbps", 150.0)
+    generic_cap = sla.get("generic_soft_max_throughput_mbps", 150.0)
 
     result = RewardResult()
     result.outage_flags = {sid: False for sid in range(get_num_slices())}
@@ -228,22 +256,25 @@ def compute_greenran_reward(
     sensor_metrics = metrics.get(1, {})
     generic_metrics = metrics.get(2, {})
 
-    # ---- h_1: VIDEO_EMBB throughput term ----
+    # ---- h_1: VIDEO_EMBB throughput term (total, not per-UE) ----
     video_thr = float(video_metrics.get("throughputMbps_sum", 0.0))
-    video_ue_count = float(video_metrics.get("ue_count", 1))
-    avg_video_thr = video_thr / max(video_ue_count, 1.0)
-    h_1 = min(avg_video_thr / max_thr_cap, 1.0) if max_thr_cap > 0 else 0.0
+    h_1 = min(video_thr / video_cap, 1.0) if video_cap > 0 else 0.0
 
-    # ---- h_2: SENSOR_MMTC buffer/latency proxy ----
-    sensor_max_buffer = float(sensor_metrics.get("bufferBytes_max", 0.0))
-    normalized_buffer = sensor_max_buffer / buffer_norm if buffer_norm > 0 else sensor_max_buffer
-    h_2 = math.exp(-normalized_buffer)
+    # ---- h_2: SENSOR_MMTC quality (PLR-based with buffer fallback) ----
+    sensor_plr = float(sensor_metrics.get("plr_mean", 0.0))
+    sensor_plr_threshold = sla.get("sensor_plr_threshold", DEFAULT_PLR_THRESHOLD)
+    if sensor_plr_threshold > 0 and sensor_plr > 0:
+        h_2 = max(0.0, 1.0 - min(sensor_plr / sensor_plr_threshold, 1.0))
+    else:
+        # Fallback: buffer-based using scenario threshold as normaliser
+        sensor_max_buffer = float(sensor_metrics.get("bufferBytes_max", 0.0))
+        buffer_norm = sla.get("sensor_max_buffer_bytes", 10000.0)
+        normalized_buffer = sensor_max_buffer / buffer_norm if buffer_norm > 0 else 0.0
+        h_2 = math.exp(-normalized_buffer)
 
-    # ---- h_3: GENERIC_EMBB throughput term ----
+    # ---- h_3: GENERIC_EMBB throughput term (total, not per-UE) ----
     generic_thr = float(generic_metrics.get("throughputMbps_sum", 0.0))
-    generic_ue_count = float(generic_metrics.get("ue_count", 1))
-    avg_generic_thr = generic_thr / max(generic_ue_count, 1.0)
-    h_3 = min(avg_generic_thr / max_thr_cap, 1.0) if max_thr_cap > 0 else 0.0
+    h_3 = min(generic_thr / generic_cap, 1.0) if generic_cap > 0 else 0.0
 
     # ---- Base optimization reward ----
     opt_reward = alpha * h_1 + beta * h_2 + gamma_val * h_3
@@ -256,13 +287,21 @@ def compute_greenran_reward(
         plr_penalty += plr / 100.0
     plr_penalty = lambda_plr * (plr_penalty / max(get_num_slices(), 1))
 
-    base_reward = opt_reward - plr_penalty
+    # ---- Soft cap penalty (progressive, does NOT terminate episode) ----
+    soft_penalty = _compute_soft_penalty(metrics, sla, soft_coeff)
 
-    # ---- Terminal conditions ----
+    # ---- Mark soft flags for logging (no termination) ----
     in_warmup = step_count < warmup_steps
+    if not in_warmup:
+        current_soft_conditions = _evaluate_soft_conditions(metrics, sla)
+        for sid in range(get_num_slices()):
+            if current_soft_conditions[sid]:
+                result.soft_flags[sid] = True
 
+    base_reward = opt_reward + soft_penalty - plr_penalty
+
+    # ---- Terminal conditions (only hard outages) ----
     current_outage_conditions = _evaluate_outage_conditions(metrics, sla, config)
-    current_soft_conditions = _evaluate_soft_conditions(metrics, sla)
 
     # Consecutive-period confirmation for outage
     history = kpi_history if kpi_history is not None else []
@@ -278,24 +317,17 @@ def compute_greenran_reward(
             if streak >= consecutive_outage_steps and not in_warmup:
                 result.outage_flags[sid] = True
 
-    if not in_warmup:
-        for sid in range(get_num_slices()):
-            if current_soft_conditions[sid]:
-                result.soft_flags[sid] = True
-
     outage_slices = [sid for sid, flag in result.outage_flags.items() if flag]
-    soft_slices = [sid for sid, flag in result.soft_flags.items() if flag]
 
     if outage_slices:
         weights_map = {0: alpha, 1: beta, 2: gamma_val}
         result.reward = -sum(weights_map[sid] for sid in outage_slices)
         result.terminated = True
-    elif soft_slices:
-        result.reward = 0.0
-        result.terminated = True
     else:
         result.reward = base_reward
         result.terminated = False
+
+    soft_slices = [sid for sid, flag in result.soft_flags.items() if flag]
 
     result.optimization_terms = {
         "h_1_video": h_1,
@@ -303,8 +335,13 @@ def compute_greenran_reward(
         "h_3_generic": h_3,
         "opt_reward": opt_reward,
         "plr_penalty": plr_penalty,
+        "soft_penalty": soft_penalty,
         "base_reward": base_reward,
     }
+
+    sensor_max_buffer = float(sensor_metrics.get("bufferBytes_max", 0.0))
+    video_ue_count = float(video_metrics.get("ue_count", 1))
+    generic_ue_count = float(generic_metrics.get("ue_count", 1))
 
     result.debug_info = {
         "scenario": scenario,
@@ -317,9 +354,10 @@ def compute_greenran_reward(
         "outage_slices": outage_slices,
         "soft_slices": soft_slices,
         "action_info": action_info or {},
-        "avg_video_thr_per_ue": avg_video_thr,
-        "avg_generic_thr_per_ue": avg_generic_thr,
-        "normalized_buffer": normalized_buffer,
+        "avg_video_thr_per_ue": video_thr / max(video_ue_count, 1.0),
+        "avg_generic_thr_per_ue": generic_thr / max(generic_ue_count, 1.0),
+        "video_cap": video_cap,
+        "generic_cap": generic_cap,
     }
 
     return result

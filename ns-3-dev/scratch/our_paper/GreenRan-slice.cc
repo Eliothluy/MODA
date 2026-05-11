@@ -763,7 +763,8 @@ static std::string g_lastDrlActionStatus = "not_started";
 
 static const std::vector<MacScheduler::IntraSliceAlgorithm> g_defaultSliceAlgorithms = {
     MacScheduler::IntraSliceAlgorithm::PF,
-    MacScheduler::IntraSliceAlgorithm::RR
+    MacScheduler::IntraSliceAlgorithm::RR,
+    MacScheduler::IntraSliceAlgorithm::PF
 };
 
 struct KpmPrevValues

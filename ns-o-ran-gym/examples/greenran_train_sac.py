@@ -21,11 +21,17 @@ import argparse
 import csv
 import json
 import random
+import time
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 from environments.greenran_env import GreenRanEnv
 
@@ -320,12 +326,19 @@ def train_sac(args):
                 "action_video",
                 "action_sensor",
                 "action_generic",
+                "wall_time_sec",
+                "cpu_percent",
+                "ram_mb",
+                "gpu_mem_mb",
             ]
         )
 
     best_avg = -float("inf")
     all_rewards = []
     avg100 = 0.0
+
+    process = psutil.Process() if psutil else None
+    training_start = time.perf_counter()
 
     for ep in range(args.episodes):
         chosen_scenario = choose_scenario(ep, mode, scenario_list)
@@ -340,6 +353,7 @@ def train_sac(args):
         ep_actor_losses = []
         ep_critic_losses = []
         step = 0
+        ep_start = time.perf_counter()
 
         for step in range(env.max_steps):
             action_cont = agent.act(state)
@@ -366,6 +380,7 @@ def train_sac(args):
             if done:
                 break
 
+        ep_wall = time.perf_counter() - ep_start
         all_rewards.append(ep_reward)
         avg100 = np.mean(all_rewards[-100:]) if len(all_rewards) >= 100 else np.mean(all_rewards)
 
@@ -374,6 +389,13 @@ def train_sac(args):
         final_generic_thr = info.get("slice_2_GENERIC_EMBB", {}).get("throughput_mbps", 0.0)
         action_info = info.get("action_info", {})
         prb_pct = action_info.get("prb_pct", [0.0, 0.0, 0.0])
+
+        # Resource profiling
+        cpu_pct = process.cpu_percent() if process else 0.0
+        ram_mb = process.memory_info().rss / (1024 * 1024) if process else 0.0
+        gpu_mem_mb = 0.0
+        if torch.cuda.is_available():
+            gpu_mem_mb = torch.cuda.memory_allocated() / (1024 * 1024)
 
         with open(log_path, "a", newline="") as f:
             writer = csv.writer(f)
@@ -394,6 +416,10 @@ def train_sac(args):
                     f"{prb_pct[0]:.2f}",
                     f"{prb_pct[1]:.2f}",
                     f"{prb_pct[2]:.2f}",
+                    f"{ep_wall:.2f}",
+                    f"{cpu_pct:.1f}",
+                    f"{ram_mb:.1f}",
+                    f"{gpu_mem_mb:.1f}",
                 ]
             )
 
@@ -401,7 +427,8 @@ def train_sac(args):
             print(
                 f"Ep {ep + 1}/{args.episodes} | Scenario: {chosen_scenario} | "
                 f"Reward: {ep_reward:.4f} | Avg100: {avg100:.4f} | "
-                f"Outages: {ep_outages} | Soft: {ep_soft}"
+                f"Outages: {ep_outages} | Soft: {ep_soft} | "
+                f"Time: {ep_wall:.1f}s"
             )
 
         if avg100 > best_avg:
@@ -410,6 +437,7 @@ def train_sac(args):
 
     agent.save(os.path.join(args.output, "greenran_sac_final.pt"))
 
+    total_training_time = time.perf_counter() - training_start
     summary = {
         "method": "sac",
         "scenario_mode": mode,
@@ -417,6 +445,8 @@ def train_sac(args):
         "episodes": args.episodes,
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
+        "total_training_time_sec": round(total_training_time, 2),
+        "mean_episode_time_sec": round(total_training_time / max(args.episodes, 1), 2),
     }
     with open(os.path.join(args.output, "greenran_sac_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -440,7 +470,8 @@ def main():
     parser.add_argument("--seed_cycle", type=int, default=100,
                         help="Change seed every N episodes (default: 100)")
     parser.add_argument("--episodes", type=int, default=10)
-    parser.add_argument("--simTime", type=float, default=4.0)
+    parser.add_argument("--simTime", type=float, default=10.0,
+                        help="Simulation time in seconds (increased to allow longer episodes)")
     parser.add_argument("--periodMs", type=int, default=100)
     parser.add_argument("--max_steps", type=str, default="auto",
                         help="Max steps per episode or 'auto'")
@@ -450,15 +481,19 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--alpha", type=float, default=0.1)
-    parser.add_argument("--buffer_size", type=int, default=10000)
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--buffer_size", type=int, default=100000,
+                        help="Replay buffer size")
+    parser.add_argument("--batch_size", type=int, default=512,
+                        help="Mini-batch size for network updates")
     parser.add_argument("--log_interval", type=int, default=1)
     parser.set_defaults(apply_p_sta=True)
     parser.add_argument("--no-apply-p-sta", action="store_false", dest="apply_p_sta",
                         help="Disable P_STA decomposition in Python (ns-3 handles it)")
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0)
-    parser.add_argument("--warmup_steps", type=int, default=5)
-    parser.add_argument("--consecutive_outage_steps", type=int, default=5)
+    parser.add_argument("--warmup_steps", type=int, default=10,
+                        help="Warmup steps before evaluating outages")
+    parser.add_argument("--consecutive_outage_steps", type=int, default=50,
+                        help="Outage streak required to trigger terminal (increased to avoid premature episode termination)")
     parser.add_argument("--lambda_plr", type=float, default=0.5,
                         help="PLR penalty weight in reward")
     args = parser.parse_args()

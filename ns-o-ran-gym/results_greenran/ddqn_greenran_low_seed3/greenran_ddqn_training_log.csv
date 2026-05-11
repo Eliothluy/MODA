@@ -1,0 +1,2 @@
+episode,scenario,total_reward,avg_reward,outage_count,soft_count,steps,loss,epsilon,final_video_thr,final_sensor_plr,final_generic_thr,action_video,action_sensor,action_generic,wall_time_sec,cpu_percent,ram_mb,gpu_mem_mb
+1,greenran_low,80.6356,80.6356,0,55,100,,1.0000,38.3423,0.0000,33.8633,21.66,45.00,33.33,564.07,0.0,453.0,0.0
