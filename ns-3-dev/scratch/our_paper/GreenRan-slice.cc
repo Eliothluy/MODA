@@ -6,8 +6,8 @@
  * via file exchange (rslaq-kpms.txt, rslaq_actions_for_ns3.csv).
  *
  * Topology: 1 gNB, N UEs (VIDEO_EMBB + SENSOR_MMTC)
- * VIDEO_EMBB is modeled as downlink-heavy video streaming with light uplink
- * feedback. SENSOR_MMTC is modeled as small periodic sensor reports.
+ * VIDEO_EMBB is modeled as uplink-heavy video streaming (cameras to server)
+ * with light downlink feedback. SENSOR_MMTC is modeled as small periodic sensor reports.
  *
  * Model scope: this is RAN-side / MAC-level slicing by UE/RNTI in the NR
  * scheduler. It approximates end-to-end service separation through application
@@ -59,11 +59,11 @@ struct GreenRanScenarioConfig
     uint32_t videoUes;
     uint32_t sensorUes;
     uint32_t genericUes;
-    double videoDlRateMbps;
+    double videoUlRateMbps;
     uint32_t videoPktSize;
     uint32_t sensorPktSize;
     double sensorIntervalSec;
-    double videoUlFeedbackRateKbps;
+    double videoDlFeedbackRateKbps;
     double genericDlRateMbps;
     std::vector<double> weights;
 };
@@ -206,7 +206,7 @@ MakeLiteOnFlexFiIndoorProfile()
 }
 
 static std::vector<ProjectSliceProfile>
-MakeUfpaGreenRanSliceProfiles(double videoRateMbps, uint32_t videoUes,
+MakeUfpaGreenRanSliceProfiles(double videoRateMbps, double videoFeedbackKbps, uint32_t videoUes,
                                double genericRateMbps, uint32_t genericUes)
 {
     std::vector<ProjectSliceProfile> profiles(NUM_SLICES);
@@ -215,10 +215,10 @@ MakeUfpaGreenRanSliceProfiles(double videoRateMbps, uint32_t videoUes,
                                   "App1-Vigilancia",
                                   "Campus UFPA Belem: video 4K/H.265 e IA para seguranca publica",
                                   "eMBB low-latency video",
-                                  "DL",
+                                  "UL",
                                   NrQosFlow::NGBR_LOW_LAT_EMBB,
+                                  0.95 * videoFeedbackKbps * videoUes / 1000.0,
                                   0.95 * videoRateMbps * videoUes,
-                                  0.0,
                                   100.0,
                                   0.99,
                                   "Aproxima 5QI 80 para eMBB de baixa latencia; cameras 4K requerem cerca de 25 Mbps e <100 ms."};
@@ -979,13 +979,14 @@ KpmAndControlCallback()
                                  ? (static_cast<double>(dRxBytes) * 8.0 / periodSec / 1e6)
                                  : 0.0;
 
-            uint32_t bufferBytes = (g_schedulerPtr && g_ueIdToRnti.count(ueId))
-                                       ? g_schedulerPtr->GetUeDlBufferSize(g_ueIdToRnti[ueId])
-                                       : 0;
-            uint32_t dlBufferBytes = bufferBytes;
+            // Directional buffer: UL for VIDEO_EMBB/SENSOR_MMTC, DL for GENERIC_EMBB
+            uint32_t dlBufferBytes = (g_schedulerPtr && g_ueIdToRnti.count(ueId))
+                                         ? g_schedulerPtr->GetUeDlBufferSize(g_ueIdToRnti[ueId])
+                                         : 0;
             uint32_t ulBufferBytes = (g_schedulerPtr && g_ueIdToRnti.count(ueId))
                                          ? g_schedulerPtr->GetUeUlBufferSize(g_ueIdToRnti[ueId])
                                          : 0;
+            uint32_t bufferBytes = (sliceIdx == GENERIC_EMBB_SLICE) ? dlBufferBytes : ulBufferBytes;
             uint32_t macBufferBytes = dlBufferBytes + ulBufferBytes;
             double congestionPct = std::min(100.0, static_cast<double>(macBufferBytes) / 10485760.0 * 100.0);
 
@@ -1191,7 +1192,7 @@ main(int argc, char* argv[])
     cmd.AddValue("videoUes", "Override num VIDEO_EMBB UEs", videoUes);
     cmd.AddValue("sensorUes", "Override num SENSOR_MMTC UEs", sensorUes);
     cmd.AddValue("genericUes", "Override num GENERIC_EMBB UEs", genericUes);
-    cmd.AddValue("videoRateMbps", "Override video rate (Mbps)", videoRateMbps);
+    cmd.AddValue("videoRateMbps", "Override video UL rate (Mbps)", videoRateMbps);
     cmd.AddValue("genericRateMbps", "Override generic streaming rate (Mbps)", genericRateMbps);
     cmd.AddValue("videoPacketSize", "Override video packet size (B)", videoPacketSize);
     cmd.AddValue("sensorPacketSize", "Override sensor packet size (B)", sensorPacketSize);
@@ -1232,7 +1233,7 @@ main(int argc, char* argv[])
     uint32_t videoPacketSizeVal = 1400;
     uint32_t sensorPacketSizeVal = 100;
     double sensorIntervalSecVal = 10.0;
-    double videoUlFeedbackRateKbps = 64.0;
+    double videoDlFeedbackRateKbps = 64.0;
     uint32_t videoUesVal = 5;
     uint32_t sensorUesVal = 8;
     uint32_t genericUesVal = 20;
@@ -1243,12 +1244,12 @@ main(int argc, char* argv[])
         videoUesVal = sc.videoUes;
         sensorUesVal = sc.sensorUes;
         genericUesVal = sc.genericUes;
-        videoRateMbpsVal = sc.videoDlRateMbps;
+        videoRateMbpsVal = sc.videoUlRateMbps;
         genericRateMbpsVal = sc.genericDlRateMbps;
         videoPacketSizeVal = sc.videoPktSize;
         sensorPacketSizeVal = sc.sensorPktSize;
         sensorIntervalSecVal = sc.sensorIntervalSec;
-        videoUlFeedbackRateKbps = sc.videoUlFeedbackRateKbps;
+        videoDlFeedbackRateKbps = sc.videoDlFeedbackRateKbps;
         if (!weightsOverrideProvided)
         {
             weightsStr = WeightsToString(sc.weights);
@@ -1271,7 +1272,7 @@ main(int argc, char* argv[])
     uint32_t numUeTotal = videoUesVal + sensorUesVal + genericUesVal;
     double appStartSec = 0.5;
     std::vector<ProjectSliceProfile> projectSlices =
-        MakeUfpaGreenRanSliceProfiles(videoRateMbpsVal, videoUesVal,
+        MakeUfpaGreenRanSliceProfiles(videoRateMbpsVal, videoDlFeedbackRateKbps, videoUesVal,
                                        genericRateMbpsVal, genericUesVal);
 
     std::vector<double> sliceWeights = ParseWeights(weightsStr);
@@ -1418,8 +1419,8 @@ main(int argc, char* argv[])
               << "========================================\n"
               << "Scenario      : " << scenarioName << "\n"
               << "UL slicing    : " << (enableUlSliceScheduling ? "ENABLED" : "DISABLED") << "\n"
-              << "Video UEs     : " << videoUesVal << " (VIDEO_EMBB DL, " << videoRateMbpsVal << " Mbps each; UL feedback "
-              << videoUlFeedbackRateKbps << " kbps each)\n"
+              << "Video UEs     : " << videoUesVal << " (VIDEO_EMBB UL, " << videoRateMbpsVal << " Mbps each; DL feedback "
+              << videoDlFeedbackRateKbps << " kbps each)\n"
               << "Sensor UEs    : " << sensorUesVal << " (SENSOR_MMTC, " << sensorPacketSizeVal << " B every " << sensorIntervalSecVal << "s)\n"
               << "Total UEs     : " << numUeTotal << "\n"
               << "Weights       : " << weightsStr << " (" << weightsSource << ")\n"
@@ -1792,9 +1793,10 @@ main(int argc, char* argv[])
 
         if (sliceIdx == VIDEO_EMBB_SLICE)
         {
-            OnOffHelper ulFeedback("ns3::UdpSocketFactory", InetSocketAddress(remoteHostAddr, ulPort));
-            ulFeedback.SetConstantRate(DataRate(videoUlFeedbackRateKbps * 1000.0), 100);
-            clientApps.Add(ulFeedback.Install(ueNodes.Get(i)));
+            // Video upload from camera (UE) to server (UL)
+            OnOffHelper ulVideo("ns3::UdpSocketFactory", InetSocketAddress(remoteHostAddr, ulPort));
+            ulVideo.SetConstantRate(DataRate(videoRateMbpsVal * 1e6), videoPacketSizeVal);
+            clientApps.Add(ulVideo.Install(ueNodes.Get(i)));
         }
         else if (sliceIdx == SENSOR_MMTC_SLICE)
         {
@@ -1824,12 +1826,13 @@ main(int argc, char* argv[])
         uint16_t dlPort = 40000 + ueId;
         if (sliceIdx == VIDEO_EMBB_SLICE)
         {
+            // Small DL feedback from server to camera
             UdpServerHelper dlServer(dlPort);
             serverApps.Add(dlServer.Install(ueNodes.Get(i)));
 
-            OnOffHelper dlVideo("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, dlPort));
-            dlVideo.SetConstantRate(DataRate(videoRateMbpsVal * 1e6), videoPacketSizeVal);
-            clientApps.Add(dlVideo.Install(remoteHostContainer.Get(0)));
+            OnOffHelper dlFeedback("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, dlPort));
+            dlFeedback.SetConstantRate(DataRate(videoDlFeedbackRateKbps * 1000.0), 100);
+            clientApps.Add(dlFeedback.Install(remoteHostContainer.Get(0)));
 
             portToUeId[dlPort] = ueId;
         }
@@ -1866,11 +1869,11 @@ main(int argc, char* argv[])
                   << " UL_model=";
         if (sliceIdx == VIDEO_EMBB_SLICE)
         {
-            std::cout << "feedback"
-                      << " UL_rate=" << std::fixed << std::setprecision(0) << videoUlFeedbackRateKbps << " kbps"
+            std::cout << "video_upload"
+                      << " UL_rate=" << std::fixed << std::setprecision(2) << videoRateMbpsVal << " Mbps"
                       << " DL_port=" << dlPort
-                      << " DL_rate=" << std::setprecision(2) << videoRateMbpsVal << " Mbps"
-                      << " DL_pkt=" << videoPacketSizeVal << " B\n";
+                      << " DL_rate=" << std::setprecision(0) << videoDlFeedbackRateKbps << " kbps"
+                      << " DL_pkt=100 B\n";
         }
         else if (sliceIdx == SENSOR_MMTC_SLICE)
         {
@@ -1916,9 +1919,9 @@ main(int argc, char* argv[])
             << ", \"SENSOR_MMTC\": " << sensorUesVal
             << ", \"GENERIC_EMBB\": " << genericUesVal << "},\n"
             << "  \"traffic\": {\n"
-            << "    \"VIDEO_EMBB\": {\"primaryDirection\": \"DL\", \"dlThroughputMbpsPerUe\": "
-            << videoRateMbpsVal << ", \"dlPacketBytes\": " << videoPacketSizeVal
-            << ", \"ulFeedbackKbpsPerUe\": " << videoUlFeedbackRateKbps << "},\n"
+            << "    \"VIDEO_EMBB\": {\"primaryDirection\": \"UL\", \"ulThroughputMbpsPerUe\": "
+            << videoRateMbpsVal << ", \"ulPacketBytes\": " << videoPacketSizeVal
+            << ", \"dlFeedbackKbpsPerUe\": " << videoDlFeedbackRateKbps << "},\n"
             << "    \"SENSOR_MMTC\": {\"primaryDirection\": \"UL\", \"packetBytes\": "
             << sensorPacketSizeVal << ", \"intervalSecMean\": " << sensorIntervalSecVal
             << ", \"startPhaseJitter\": \"deterministic_uniform\", \"estimatedKbpsPerSensor\": "
