@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="/home/eliothluy/Documentos/artigo_jussi"
+REPO_ROOT="/home/elioth/Documentos/artigo_jussi"
 NS3_DIR="${REPO_ROOT}/ns-3-dev"
 GYM_DIR="${REPO_ROOT}/ns-o-ran-gym"
 RESULTS_DIR="${GYM_DIR}/results_greenran"
@@ -61,10 +61,7 @@ DDQN_TARGET_UPDATE=1000   # sync every ~10 episodes (1000 steps) for stability
 SCENARIOS=(
     "greenran_low"
     "greenran_normal"
-    "greenran_video_heavy"
-    "greenran_congestion"
     "greenran_night_energy"
-    "greenran_balanced"
 )
 
 echo "============================================"

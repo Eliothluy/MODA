@@ -3,16 +3,16 @@
 # Results are saved in separate folders per scenario
 set -e
 
-NS3_DIR="/home/eliothluy/Documentos/artigo_jussi/ns-3-dev"
-RESULTS_DIR="/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/results_sliceaware_scenarios"
-SCENARIOS=("greenran_low" "greenran_normal" "greenran_video_heavy" "greenran_mmtc_massive" "greenran_congestion" "greenran_night_energy" "greenran_balanced")
+NS3_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev"
+RESULTS_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev/results_sliceaware_scenarios"
+SCENARIOS=("greenran_low" "greenran_normal" "greenran_video_heavy" "greenran_congestion" "greenran_night_energy" "greenran_balanced")
 
-SIM_TIME=3
+SIM_TIME=10
 SEED_BASE=42
 
 mkdir -p "$RESULTS_DIR"
 cd "$NS3_DIR"
-./ns3 build slice-aware-sim
+./ns3 build GreenRan-slice
 
 LOG_FILE="$RESULTS_DIR/run_$(date +%Y%m%d_%H%M%S).log"
 echo "Starting GreenRAN batch simulations at $(date)" | tee "$LOG_FILE"
@@ -30,11 +30,13 @@ for scenario in "${SCENARIOS[@]}"; do
 
     mkdir -p "$OUTDIR"
 
-    ./ns3 run "scratch/our_paper/slice-aware-sim" -- \
+    ./ns3 run "scratch/our_paper/GreenRan-slice" -- \
         --scenario="$scenario" \
         --simTime=$SIM_TIME \
         --seed=$SEED \
         --EnableUlSliceScheduling=true \
+        --enableDrlControl=false \
+        --enablePosixSync=false \
         --outputDir="$OUTDIR" 2>&1 | tee "$SCENARIO_LOG"
 
     if [ $? -eq 0 ]; then

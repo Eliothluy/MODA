@@ -218,7 +218,7 @@ MakeUfpaGreenRanSliceProfiles(double videoRateMbps, double videoFeedbackKbps, ui
                                   "UL",
                                   NrQosFlow::NGBR_LOW_LAT_EMBB,
                                   0.95 * videoFeedbackKbps * videoUes / 1000.0,
-                                  0.95 * videoRateMbps * videoUes,
+                                  25.0,
                                   100.0,
                                   0.99,
                                   "Aproxima 5QI 80 para eMBB de baixa latencia; cameras 4K requerem cerca de 25 Mbps e <100 ms."};
