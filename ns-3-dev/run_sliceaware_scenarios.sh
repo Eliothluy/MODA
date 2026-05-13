@@ -3,11 +3,11 @@
 # Results are saved in separate folders per scenario
 set -e
 
-NS3_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev"
-RESULTS_DIR="/home/elioth/Documentos/artigo_jussi/ns-3-dev/results_sliceaware_scenarios"
+NS3_DIR="/home/eliothluy/Documentos/artigo_jussi/ns-3-dev"
+RESULTS_DIR="/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/results_sliceaware_scenarios"
 SCENARIOS=("greenran_low" "greenran_normal" "greenran_video_heavy" "greenran_congestion" "greenran_night_energy" "greenran_balanced")
 
-SIM_TIME=10
+SIM_TIME=15
 SEED_BASE=42
 
 mkdir -p "$RESULTS_DIR"

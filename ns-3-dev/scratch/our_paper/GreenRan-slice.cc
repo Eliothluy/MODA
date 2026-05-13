@@ -130,12 +130,16 @@ static std::map<std::string, GreenRanScenarioConfig>
 InitGreenRanScenarios()
 {
     std::map<std::string, GreenRanScenarioConfig> m;
-    m["greenran_low"] = {"greenran_low", 5, 8, 5, 10.0, 1200, 80, 30.0, 64.0, 5.0, {0.5, 0.2, 0.3}};
-    m["greenran_normal"] = {"greenran_normal", 5, 8, 20, 15.0, 1200, 80, 10.0, 128.0, 5.0, {0.4, 0.15, 0.45}};
-    m["greenran_video_heavy"] = {"greenran_video_heavy", 5, 8, 15, 25.0, 1400, 80, 10.0, 128.0, 8.0, {0.5, 0.1, 0.4}};
-    m["greenran_congestion"] = {"greenran_congestion", 5, 8, 50, 25.0, 1400, 100, 5.0, 128.0, 5.0, {0.35, 0.1, 0.55}};
-    m["greenran_night_energy"] = {"greenran_night_energy", 5, 8, 3, 10.0, 1200, 80, 60.0, 64.0, 3.0, {0.4, 0.3, 0.3}};
-    m["greenran_balanced"] = {"greenran_balanced", 5, 8, 25, 15.0, 1200, 80, 20.0, 64.0, 5.0, {0.35, 0.15, 0.5}};
+    // Sensor intervals reduced to ensure mMTC traffic is visible to the
+    // scheduler within a 10 s simulation (each sensor sends 3-10 packets).
+    // Previous intervals (5-60 s) produced 0-1 packets per sensor — the
+    // scheduler never saw SENSOR_MMTC UEs as active.
+    m["greenran_low"] = {"greenran_low", 5, 8, 5, 10.0, 1200, 80, 2.0, 64.0, 5.0, {0.5, 0.2, 0.3}};
+    m["greenran_normal"] = {"greenran_normal", 5, 8, 20, 15.0, 1200, 80, 2.0, 128.0, 5.0, {0.4, 0.15, 0.45}};
+    m["greenran_video_heavy"] = {"greenran_video_heavy", 5, 8, 15, 25.0, 1400, 80, 2.0, 128.0, 8.0, {0.5, 0.1, 0.4}};
+    m["greenran_congestion"] = {"greenran_congestion", 5, 8, 30, 25.0, 1400, 100, 1.0, 128.0, 2.0, {0.35, 0.1, 0.55}};
+    m["greenran_night_energy"] = {"greenran_night_energy", 5, 8, 3, 10.0, 1200, 80, 3.0, 64.0, 3.0, {0.4, 0.3, 0.3}};
+    m["greenran_balanced"] = {"greenran_balanced", 5, 8, 25, 15.0, 1200, 80, 2.0, 64.0, 5.0, {0.35, 0.15, 0.5}};
     return m;
 }
 
@@ -1815,9 +1819,10 @@ main(int argc, char* argv[])
         }
         else // GENERIC_EMBB_SLICE
         {
-            // VoIP UL traffic
+            // VoIP UL traffic — starts at appStartSec to ensure gNB sets up
+            // DL logical channels early (needed for DL data to be buffered).
             OnOffHelper ulVoip("ns3::UdpSocketFactory", InetSocketAddress(remoteHostAddr, ulPort));
-            ulVoip.SetConstantRate(DataRate(64000), 160);  // 64 kbps, 20ms packets
+            ulVoip.SetConstantRate(DataRate(64000), 160);
             clientApps.Add(ulVoip.Install(ueNodes.Get(i)));
         }
 
@@ -1841,9 +1846,11 @@ main(int argc, char* argv[])
             UdpServerHelper dlServer(dlPort);
             serverApps.Add(dlServer.Install(ueNodes.Get(i)));
 
-            // Staggered entry for generic users: traffic starts at different times
+            // Staggered entry for generic users: traffic starts at different times.
+            // Window limited to 10% of active time so that even the last UE has
+            // enough runway (>90% of simTime) to generate meaningful traffic.
             uint32_t genericIdx = i - (videoUesVal + sensorUesVal);
-            double entryWindow = (simTimeSec - appStartSec) * 0.5;
+            double entryWindow = (simTimeSec - appStartSec) * 0.1;
             double genericStartTime = appStartSec + (entryWindow * genericIdx / std::max(1u, genericUesVal));
 
             OnOffHelper dlStream("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, dlPort));
@@ -1852,13 +1859,6 @@ main(int argc, char* argv[])
             streamApp.Start(Seconds(genericStartTime));
             streamApp.Stop(Seconds(simTimeSec));
             clientApps.Add(streamApp);
-
-            OnOffHelper ulVoip("ns3::UdpSocketFactory", InetSocketAddress(remoteHostAddr, ulPort));
-            ulVoip.SetConstantRate(DataRate(64000), 160);
-            ApplicationContainer voipApp = ulVoip.Install(ueNodes.Get(i));
-            voipApp.Start(Seconds(genericStartTime));
-            voipApp.Stop(Seconds(simTimeSec));
-            clientApps.Add(voipApp);
 
             portToUeId[dlPort] = ueId;
         }

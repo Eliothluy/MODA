@@ -130,6 +130,8 @@ class MacScheduler : public NrMacSchedulerOfdmaRR
         std::vector<uint32_t> borrowedInRbg;
         std::vector<uint32_t> borrowedOutRbg;
         std::vector<uint32_t> reservedRbg;
+        std::vector<uint32_t> sliceCapRbg;
+        uint32_t wastedRbg{0};
         std::vector<bool> sliceHasDemand;
         std::vector<bool> sliceHasActiveUe;
         std::vector<bool> sliceConfigured;
@@ -148,7 +150,8 @@ class MacScheduler : public NrMacSchedulerOfdmaRR
         uint32_t totalRbgs,
         const UeVec2D& sliceUeVec,
         const std::vector<bool>& sliceHasDemand,
-        const std::vector<bool>& sliceConfigured) const;
+        const std::vector<bool>& sliceConfigured,
+        bool applyCap) const;
 
     void OpenCsvFiles() const;
 
@@ -198,6 +201,7 @@ class MacScheduler : public NrMacSchedulerOfdmaRR
     bool m_logAllMacSlots{false};
     uint32_t m_macLoggingPeriodMs{100};
     bool m_enableDetailedMacLogging{false};
+    double m_maxSliceRatio{1.5};
     mutable uint64_t m_lastLoggedMs{0};
     mutable uint64_t m_lastUlLoggedMs{0};
 

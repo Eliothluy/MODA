@@ -78,9 +78,15 @@ MacScheduler::GetTypeId()
                           MakeUintegerChecker<uint32_t>(1))
             .AddAttribute("EnableDetailedMacLogging",
                           "If true, enable detailed MAC-level logging with call IDs and slot info",
-                          BooleanValue(false),
+                          BooleanValue(true),
                           MakeBooleanAccessor(&MacScheduler::m_enableDetailedMacLogging),
-                          MakeBooleanChecker());
+                          MakeBooleanChecker())
+            .AddAttribute("MaxSliceRatio",
+                          "Maximum ratio of total RBGs any single slice can consume after borrowing. "
+                          "1.0 = strict weight-based caps, 2.0 = generous borrowing.",
+                          DoubleValue(1.5),
+                          MakeDoubleAccessor(&MacScheduler::m_maxSliceRatio),
+                          MakeDoubleChecker<double>(1.0, 5.0));
     return tid;
 }
 
@@ -414,8 +420,8 @@ MacScheduler::OpenCsvFiles() const
         m_sliceAllocCsv.open(path, std::ios::out | std::ios::trunc);
         m_sliceAllocCsv << "callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,"
                             "effectiveWeight,activeUes,hasActiveUe,hasDemand,totalRbg,budgetRbg,"
-                            "allocatedRbg,borrowedIn,borrowedOut,reserved,cumulAllocRbg,cumulCalls,"
-                            "reason,rntis\n";
+                            "allocatedRbg,borrowedIn,borrowedOut,reserved,sliceCap,wastedRbg,"
+                            "cumulAllocRbg,cumulCalls,reason,rntis\n";
         m_sliceAllocCsv.flush();
     }
     if (!m_unmappedRntiCsv.is_open())
@@ -451,8 +457,8 @@ MacScheduler::OpenCsvFiles() const
             m_sliceAllocUlCsv.open(path, std::ios::out | std::ios::trunc);
             m_sliceAllocUlCsv << "callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,"
                                   "effectiveWeight,activeUes,hasActiveUe,hasDemand,totalRbg,budgetRbg,"
-                                  "allocatedRbg,borrowedIn,borrowedOut,reserved,cumulAllocRbg,cumulCalls,"
-                                  "reason,rntis\n";
+                                  "allocatedRbg,borrowedIn,borrowedOut,reserved,sliceCap,wastedRbg,"
+                                  "cumulAllocRbg,cumulCalls,reason,rntis\n";
             m_sliceAllocUlCsv.flush();
         }
         if (!m_ueAllocUlCsv.is_open())
@@ -562,7 +568,8 @@ MacScheduler::ComputeSliceBudgets(
     uint32_t totalRbgs,
     const UeVec2D& sliceUeVec,
     const std::vector<bool>& sliceHasDemand,
-    const std::vector<bool>& sliceConfigured) const
+    const std::vector<bool>& sliceConfigured,
+    bool applyCap) const
 {
     SliceBudgetResult result;
     result.effectiveWeight.resize(m_numSlices, 0.0);
@@ -570,6 +577,7 @@ MacScheduler::ComputeSliceBudgets(
     result.borrowedInRbg.resize(m_numSlices, 0);
     result.borrowedOutRbg.resize(m_numSlices, 0);
     result.reservedRbg.resize(m_numSlices, 0);
+    result.sliceCapRbg.resize(m_numSlices, 0);
     result.sliceHasDemand = sliceHasDemand;
     result.sliceHasActiveUe.resize(m_numSlices, false);
     result.sliceConfigured = sliceConfigured;
@@ -663,7 +671,7 @@ MacScheduler::ComputeSliceBudgets(
         }
     }
 
-    // Step 4: Redistribute borrowed budget to slices with demand using largest fractional remainder
+    // Step 4: Redistribute borrowed budget to slices with demand, capped per slice
     if (totalBorrowed > 0)
     {
         std::vector<uint32_t> demandSlices;
@@ -679,42 +687,138 @@ MacScheduler::ComputeSliceBudgets(
 
         if (demandWeightSum > 0 && !demandSlices.empty())
         {
-            std::vector<double> demandFrac(m_numSlices, 0.0);
-            uint32_t redistributedSoFar = 0;
-
-            for (size_t i = 0; i < demandSlices.size(); i++)
+            if (applyCap)
             {
-                uint32_t s = demandSlices[i];
-                double share = m_prbWeights[s] / demandWeightSum;
-                double rawExtra = totalBorrowed * share;
-                uint32_t extra = static_cast<uint32_t>(rawExtra);
-                result.borrowedInRbg[s] = extra;
-                result.budgetRbg[s] += extra;
-                demandFrac[s] = rawExtra - extra;
-                redistributedSoFar += extra;
-            }
-
-            uint32_t remainingBorrowed = totalBorrowed - redistributedSoFar;
-            if (remainingBorrowed > 0 && remainingBorrowed < m_numSlices)
-            {
-                std::vector<std::pair<double, uint32_t>> demandFracOrder;
-                for (uint32_t s : demandSlices)
+                // Capped redistribution: no slice exceeds m_maxSliceRatio × weight-based share
+                std::vector<uint32_t> sliceCap(m_numSlices, 0);
+                for (uint32_t s = 0; s < m_numSlices; s++)
                 {
-                    demandFracOrder.push_back({demandFrac[s], s});
+                    if (m_prbWeights[s] > 0.0)
+                    {
+                        sliceCap[s] = static_cast<uint32_t>(
+                            std::ceil(m_prbWeights[s] * static_cast<double>(totalRbgs) * m_maxSliceRatio));
+                    }
                 }
-                std::sort(demandFracOrder.begin(), demandFracOrder.end(),
-                          std::greater<std::pair<double, uint32_t>>());
-                for (uint32_t i = 0; i < remainingBorrowed && i < demandFracOrder.size(); i++)
+
+                uint32_t redistributedSoFar = 0;
+                uint32_t cappedAway = 0;
+                std::vector<double> demandFrac(m_numSlices, 0.0);
+
+                for (size_t i = 0; i < demandSlices.size(); i++)
                 {
-                    uint32_t s = demandFracOrder[i].second;
-                    result.budgetRbg[s]++;
-                    result.borrowedInRbg[s]++;
+                    uint32_t s = demandSlices[i];
+                    double share = m_prbWeights[s] / demandWeightSum;
+                    double rawExtra = totalBorrowed * share;
+                    uint32_t extra = static_cast<uint32_t>(rawExtra);
+
+                    uint32_t maxAllowed = (sliceCap[s] > result.budgetRbg[s])
+                                              ? (sliceCap[s] - result.budgetRbg[s])
+                                              : 0;
+                    if (extra > maxAllowed)
+                    {
+                        cappedAway += extra - maxAllowed;
+                        extra = maxAllowed;
+                    }
+
+                    result.borrowedInRbg[s] = extra;
+                    result.budgetRbg[s] += extra;
+                    demandFrac[s] = rawExtra - static_cast<uint32_t>(rawExtra);
+                    redistributedSoFar += extra;
+                }
+
+                // Redistribute capped-away RBGs to slices that still have room
+                uint32_t toRedistribute = cappedAway;
+                for (uint32_t round = 0; round < m_numSlices && toRedistribute > 0; round++)
+                {
+                    for (size_t i = 0; i < demandSlices.size() && toRedistribute > 0; i++)
+                    {
+                        uint32_t s = demandSlices[i];
+                        uint32_t maxAllowed = (sliceCap[s] > result.budgetRbg[s])
+                                                  ? (sliceCap[s] - result.budgetRbg[s])
+                                                  : 0;
+                        if (maxAllowed > 0)
+                        {
+                            result.budgetRbg[s]++;
+                            result.borrowedInRbg[s]++;
+                            toRedistribute--;
+                            redistributedSoFar++;
+                        }
+                    }
+                }
+
+                uint32_t remainingBorrowed = totalBorrowed - redistributedSoFar;
+                if (remainingBorrowed > 0 && remainingBorrowed <= m_numSlices)
+                {
+                    std::vector<std::pair<double, uint32_t>> demandFracOrder;
+                    for (uint32_t s : demandSlices)
+                    {
+                        uint32_t maxAllowed = (sliceCap[s] > result.budgetRbg[s])
+                                                  ? (sliceCap[s] - result.budgetRbg[s])
+                                                  : 0;
+                        if (maxAllowed > 0)
+                        {
+                            demandFracOrder.push_back({demandFrac[s], s});
+                        }
+                    }
+                    std::sort(demandFracOrder.begin(), demandFracOrder.end(),
+                              std::greater<std::pair<double, uint32_t>>());
+                    for (uint32_t i = 0; i < remainingBorrowed && i < demandFracOrder.size(); i++)
+                    {
+                        uint32_t s = demandFracOrder[i].second;
+                        result.budgetRbg[s]++;
+                        result.borrowedInRbg[s]++;
+                    }
+                }
+            }
+            else
+            {
+                // Uncapped redistribution (DL direction): give all borrowed to demanding slices
+                std::vector<double> demandFrac(m_numSlices, 0.0);
+                uint32_t redistributedSoFar = 0;
+
+                for (size_t i = 0; i < demandSlices.size(); i++)
+                {
+                    uint32_t s = demandSlices[i];
+                    double share = m_prbWeights[s] / demandWeightSum;
+                    double rawExtra = totalBorrowed * share;
+                    uint32_t extra = static_cast<uint32_t>(rawExtra);
+                    result.borrowedInRbg[s] = extra;
+                    result.budgetRbg[s] += extra;
+                    demandFrac[s] = rawExtra - extra;
+                    redistributedSoFar += extra;
+                }
+
+                uint32_t remainingBorrowed = totalBorrowed - redistributedSoFar;
+                if (remainingBorrowed > 0 && remainingBorrowed < m_numSlices)
+                {
+                    std::vector<std::pair<double, uint32_t>> demandFracOrder;
+                    for (uint32_t s : demandSlices)
+                    {
+                        demandFracOrder.push_back({demandFrac[s], s});
+                    }
+                    std::sort(demandFracOrder.begin(), demandFracOrder.end(),
+                              std::greater<std::pair<double, uint32_t>>());
+                    for (uint32_t i = 0; i < remainingBorrowed && i < demandFracOrder.size(); i++)
+                    {
+                        uint32_t s = demandFracOrder[i].second;
+                        result.budgetRbg[s]++;
+                        result.borrowedInRbg[s]++;
+                    }
                 }
             }
         }
     }
 
-    // Verify invariant: sum of budgetRbg should not exceed totalRbgs
+    // Compute per-slice caps and wasted RBGs
+    for (uint32_t s = 0; s < m_numSlices; s++)
+    {
+        if (m_prbWeights[s] > 0.0)
+        {
+            result.sliceCapRbg[s] = static_cast<uint32_t>(
+                std::ceil(m_prbWeights[s] * static_cast<double>(totalRbgs) * m_maxSliceRatio));
+        }
+    }
+
     uint32_t totalBudget = 0;
     for (uint32_t s = 0; s < m_numSlices; s++)
     {
@@ -722,6 +826,14 @@ MacScheduler::ComputeSliceBudgets(
     }
     NS_ASSERT_MSG(totalBudget <= totalRbgs,
                    "Total budget " << totalBudget << " exceeds total RBGs " << totalRbgs);
+
+    result.wastedRbg = totalRbgs - totalBudget - result.reservedRbg[0]; // approximate
+    uint32_t totalAllocAndReserve = totalBudget;
+    for (uint32_t s = 0; s < m_numSlices; s++)
+    {
+        totalAllocAndReserve += result.reservedRbg[s];
+    }
+    result.wastedRbg = (totalAllocAndReserve <= totalRbgs) ? (totalRbgs - totalAllocAndReserve) : 0;
 
     return result;
 }
@@ -943,7 +1055,7 @@ MacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) const
         }
 
         // Use ComputeSliceBudgets helper
-        SliceBudgetResult budget = ComputeSliceBudgets(totalRbgs, sliceUeVec, sliceHasDemand, sliceConfigured);
+        SliceBudgetResult budget = ComputeSliceBudgets(totalRbgs, sliceUeVec, sliceHasDemand, sliceConfigured, false);
 
         // Call BeforeDlSched for all UEs across all slices
         for (uint32_t s = 0; s < m_numSlices; s++)
@@ -1131,6 +1243,8 @@ MacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) const
                                 << budget.borrowedInRbg[s] << ","
                                 << budget.borrowedOutRbg[s] << ","
                                 << budget.reservedRbg[s] << ","
+                                << budget.sliceCapRbg[s] << ","
+                                << budget.wastedRbg << ","
                                 << m_cumulSliceAllocRbg[s] << ","
                                 << m_cumulSliceAllocCalls[s] << ","
                                 << reason << ","
@@ -1226,8 +1340,8 @@ MacScheduler::AssignULRBG(uint32_t symAvail, const ActiveUeMap& activeUl) const
                     m_sliceAllocUlCsv.open(prefix + "slice_alloc_ul.csv", std::ios::out | std::ios::trunc);
                     m_sliceAllocUlCsv << "callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,"
                                           "effectiveWeight,activeUes,hasActiveUe,hasDemand,totalRbg,budgetRbg,"
-                                          "allocatedRbg,borrowedIn,borrowedOut,reserved,cumulAllocRbg,cumulCalls,"
-                                          "reason,rntis\n";
+                                          "allocatedRbg,borrowedIn,borrowedOut,reserved,sliceCap,wastedRbg,"
+                                          "cumulAllocRbg,cumulCalls,reason,rntis\n";
                     m_sliceAllocUlCsv.flush();
                 }
                 if (!m_ueAllocUlCsv.is_open())
@@ -1367,7 +1481,7 @@ MacScheduler::AssignULRBG(uint32_t symAvail, const ActiveUeMap& activeUl) const
         }
 
         // Use ComputeSliceBudgets helper
-        SliceBudgetResult budget = ComputeSliceBudgets(totalRbgs, sliceUeVec, sliceHasDemand, sliceConfigured);
+        SliceBudgetResult budget = ComputeSliceBudgets(totalRbgs, sliceUeVec, sliceHasDemand, sliceConfigured, true);
 
         // Call BeforeUlSched for all UEs across all slices
         // CRITICAL: UL uses FTResources(beamSym * beamSym, beamSym), not (beamSym, beamSym) like DL
@@ -1561,6 +1675,8 @@ MacScheduler::AssignULRBG(uint32_t symAvail, const ActiveUeMap& activeUl) const
                                     << budget.borrowedInRbg[s] << ","
                                     << budget.borrowedOutRbg[s] << ","
                                     << budget.reservedRbg[s] << ","
+                                    << budget.sliceCapRbg[s] << ","
+                                    << budget.wastedRbg << ","
                                     << m_cumulSliceAllocUlRbg[s] << ","
                                     << m_cumulSliceAllocUlCalls[s] << ","
                                     << reason << ","
