@@ -1,0 +1,376 @@
+timestamp_ms,event,status,details
+600,write_kpms,success,rslaq-kpms.txt written
+600,sem_post,success,g_semMetricsReady signaled
+600,sem_trywait,not_ready,no external confirmation
+700,write_kpms,success,rslaq-kpms.txt written
+700,sem_post,success,g_semMetricsReady signaled
+700,sem_trywait,success,sem_control acknowledged
+700,apply_drl_action,success,weights=0.2910,0.2560,0.4530
+800,write_kpms,success,rslaq-kpms.txt written
+800,sem_post,success,g_semMetricsReady signaled
+800,sem_trywait,success,sem_control acknowledged
+800,apply_drl_action,success,weights=0.3559,0.4368,0.2073
+900,write_kpms,success,rslaq-kpms.txt written
+900,sem_post,success,g_semMetricsReady signaled
+900,sem_trywait,success,sem_control acknowledged
+900,apply_drl_action,success,weights=0.3928,0.3186,0.2886
+1000,write_kpms,success,rslaq-kpms.txt written
+1000,sem_post,success,g_semMetricsReady signaled
+1000,sem_trywait,success,sem_control acknowledged
+1000,apply_drl_action,success,weights=0.4301,0.2591,0.3108
+1100,write_kpms,success,rslaq-kpms.txt written
+1100,sem_post,success,g_semMetricsReady signaled
+1100,sem_trywait,success,sem_control acknowledged
+1100,apply_drl_action,success,weights=0.3106,0.3199,0.3695
+1200,write_kpms,success,rslaq-kpms.txt written
+1200,sem_post,success,g_semMetricsReady signaled
+1200,sem_trywait,success,sem_control acknowledged
+1200,apply_drl_action,success,weights=0.4227,0.3346,0.2428
+1300,write_kpms,success,rslaq-kpms.txt written
+1300,sem_post,success,g_semMetricsReady signaled
+1300,sem_trywait,success,sem_control acknowledged
+1300,apply_drl_action,success,weights=0.4941,0.3165,0.1894
+1400,write_kpms,success,rslaq-kpms.txt written
+1400,sem_post,success,g_semMetricsReady signaled
+1400,sem_trywait,success,sem_control acknowledged
+1400,apply_drl_action,success,weights=0.3077,0.4203,0.2721
+1500,write_kpms,success,rslaq-kpms.txt written
+1500,sem_post,success,g_semMetricsReady signaled
+1500,sem_trywait,success,sem_control acknowledged
+1500,apply_drl_action,success,weights=0.3123,0.4276,0.2601
+1600,write_kpms,success,rslaq-kpms.txt written
+1600,sem_post,success,g_semMetricsReady signaled
+1600,sem_trywait,success,sem_control acknowledged
+1600,apply_drl_action,success,weights=0.2771,0.2612,0.4616
+1700,write_kpms,success,rslaq-kpms.txt written
+1700,sem_post,success,g_semMetricsReady signaled
+1700,sem_trywait,success,sem_control acknowledged
+1700,apply_drl_action,success,weights=0.3715,0.4043,0.2242
+1800,write_kpms,success,rslaq-kpms.txt written
+1800,sem_post,success,g_semMetricsReady signaled
+1800,sem_trywait,success,sem_control acknowledged
+1800,apply_drl_action,success,weights=0.2948,0.4298,0.2755
+1900,write_kpms,success,rslaq-kpms.txt written
+1900,sem_post,success,g_semMetricsReady signaled
+1900,sem_trywait,success,sem_control acknowledged
+1900,apply_drl_action,success,weights=0.2098,0.4308,0.3594
+2000,write_kpms,success,rslaq-kpms.txt written
+2000,sem_post,success,g_semMetricsReady signaled
+2000,sem_trywait,success,sem_control acknowledged
+2000,apply_drl_action,success,weights=0.2651,0.3520,0.3829
+2100,write_kpms,success,rslaq-kpms.txt written
+2100,sem_post,success,g_semMetricsReady signaled
+2100,sem_trywait,success,sem_control acknowledged
+2100,apply_drl_action,success,weights=0.4327,0.2841,0.2832
+2200,write_kpms,success,rslaq-kpms.txt written
+2200,sem_post,success,g_semMetricsReady signaled
+2200,sem_trywait,success,sem_control acknowledged
+2200,apply_drl_action,success,weights=0.2716,0.3970,0.3313
+2300,write_kpms,success,rslaq-kpms.txt written
+2300,sem_post,success,g_semMetricsReady signaled
+2300,sem_trywait,success,sem_control acknowledged
+2300,apply_drl_action,success,weights=0.2975,0.2764,0.4260
+2400,write_kpms,success,rslaq-kpms.txt written
+2400,sem_post,success,g_semMetricsReady signaled
+2400,sem_trywait,success,sem_control acknowledged
+2400,apply_drl_action,success,weights=0.2426,0.3260,0.4314
+2500,write_kpms,success,rslaq-kpms.txt written
+2500,sem_post,success,g_semMetricsReady signaled
+2500,sem_trywait,success,sem_control acknowledged
+2500,apply_drl_action,success,weights=0.3903,0.2676,0.3421
+2600,write_kpms,success,rslaq-kpms.txt written
+2600,sem_post,success,g_semMetricsReady signaled
+2600,sem_trywait,success,sem_control acknowledged
+2600,apply_drl_action,success,weights=0.2762,0.5319,0.1919
+2700,write_kpms,success,rslaq-kpms.txt written
+2700,sem_post,success,g_semMetricsReady signaled
+2700,sem_trywait,success,sem_control acknowledged
+2700,apply_drl_action,success,weights=0.3745,0.3775,0.2480
+2800,write_kpms,success,rslaq-kpms.txt written
+2800,sem_post,success,g_semMetricsReady signaled
+2800,sem_trywait,success,sem_control acknowledged
+2800,apply_drl_action,success,weights=0.2629,0.3950,0.3421
+2900,write_kpms,success,rslaq-kpms.txt written
+2900,sem_post,success,g_semMetricsReady signaled
+2900,sem_trywait,success,sem_control acknowledged
+2900,apply_drl_action,success,weights=0.3477,0.3044,0.3480
+3000,write_kpms,success,rslaq-kpms.txt written
+3000,sem_post,success,g_semMetricsReady signaled
+3000,sem_trywait,success,sem_control acknowledged
+3000,apply_drl_action,success,weights=0.2790,0.2891,0.4319
+3100,write_kpms,success,rslaq-kpms.txt written
+3100,sem_post,success,g_semMetricsReady signaled
+3100,sem_trywait,success,sem_control acknowledged
+3100,apply_drl_action,success,weights=0.2771,0.3220,0.4009
+3200,write_kpms,success,rslaq-kpms.txt written
+3200,sem_post,success,g_semMetricsReady signaled
+3200,sem_trywait,success,sem_control acknowledged
+3200,apply_drl_action,success,weights=0.2998,0.4103,0.2900
+3300,write_kpms,success,rslaq-kpms.txt written
+3300,sem_post,success,g_semMetricsReady signaled
+3300,sem_trywait,success,sem_control acknowledged
+3300,apply_drl_action,success,weights=0.3065,0.4688,0.2248
+3400,write_kpms,success,rslaq-kpms.txt written
+3400,sem_post,success,g_semMetricsReady signaled
+3400,sem_trywait,success,sem_control acknowledged
+3400,apply_drl_action,success,weights=0.2256,0.2772,0.4972
+3500,write_kpms,success,rslaq-kpms.txt written
+3500,sem_post,success,g_semMetricsReady signaled
+3500,sem_trywait,success,sem_control acknowledged
+3500,apply_drl_action,success,weights=0.3165,0.4082,0.2753
+3600,write_kpms,success,rslaq-kpms.txt written
+3600,sem_post,success,g_semMetricsReady signaled
+3600,sem_trywait,success,sem_control acknowledged
+3600,apply_drl_action,success,weights=0.4249,0.2967,0.2784
+3700,write_kpms,success,rslaq-kpms.txt written
+3700,sem_post,success,g_semMetricsReady signaled
+3700,sem_trywait,success,sem_control acknowledged
+3700,apply_drl_action,success,weights=0.2318,0.5105,0.2577
+3800,write_kpms,success,rslaq-kpms.txt written
+3800,sem_post,success,g_semMetricsReady signaled
+3800,sem_trywait,success,sem_control acknowledged
+3800,apply_drl_action,success,weights=0.2930,0.4246,0.2824
+3900,write_kpms,success,rslaq-kpms.txt written
+3900,sem_post,success,g_semMetricsReady signaled
+3900,sem_trywait,success,sem_control acknowledged
+3900,apply_drl_action,success,weights=0.4090,0.3602,0.2308
+4000,write_kpms,success,rslaq-kpms.txt written
+4000,sem_post,success,g_semMetricsReady signaled
+4000,sem_trywait,success,sem_control acknowledged
+4000,apply_drl_action,success,weights=0.4004,0.3811,0.2184
+4100,write_kpms,success,rslaq-kpms.txt written
+4100,sem_post,success,g_semMetricsReady signaled
+4100,sem_trywait,success,sem_control acknowledged
+4100,apply_drl_action,success,weights=0.4661,0.2479,0.2860
+4200,write_kpms,success,rslaq-kpms.txt written
+4200,sem_post,success,g_semMetricsReady signaled
+4200,sem_trywait,success,sem_control acknowledged
+4200,apply_drl_action,success,weights=0.3811,0.3715,0.2475
+4300,write_kpms,success,rslaq-kpms.txt written
+4300,sem_post,success,g_semMetricsReady signaled
+4300,sem_trywait,success,sem_control acknowledged
+4300,apply_drl_action,success,weights=0.4227,0.2496,0.3277
+4400,write_kpms,success,rslaq-kpms.txt written
+4400,sem_post,success,g_semMetricsReady signaled
+4400,sem_trywait,success,sem_control acknowledged
+4400,apply_drl_action,success,weights=0.4102,0.3867,0.2031
+4500,write_kpms,success,rslaq-kpms.txt written
+4500,sem_post,success,g_semMetricsReady signaled
+4500,sem_trywait,success,sem_control acknowledged
+4500,apply_drl_action,success,weights=0.3385,0.4071,0.2545
+4600,write_kpms,success,rslaq-kpms.txt written
+4600,sem_post,success,g_semMetricsReady signaled
+4600,sem_trywait,success,sem_control acknowledged
+4600,apply_drl_action,success,weights=0.4290,0.3073,0.2637
+4700,write_kpms,success,rslaq-kpms.txt written
+4700,sem_post,success,g_semMetricsReady signaled
+4700,sem_trywait,success,sem_control acknowledged
+4700,apply_drl_action,success,weights=0.4957,0.2978,0.2065
+4800,write_kpms,success,rslaq-kpms.txt written
+4800,sem_post,success,g_semMetricsReady signaled
+4800,sem_trywait,success,sem_control acknowledged
+4800,apply_drl_action,success,weights=0.4870,0.3093,0.2037
+4900,write_kpms,success,rslaq-kpms.txt written
+4900,sem_post,success,g_semMetricsReady signaled
+4900,sem_trywait,success,sem_control acknowledged
+4900,apply_drl_action,success,weights=0.3295,0.3523,0.3182
+5000,write_kpms,success,rslaq-kpms.txt written
+5000,sem_post,success,g_semMetricsReady signaled
+5000,sem_trywait,success,sem_control acknowledged
+5000,apply_drl_action,success,weights=0.2802,0.3008,0.4190
+5100,write_kpms,success,rslaq-kpms.txt written
+5100,sem_post,success,g_semMetricsReady signaled
+5100,sem_trywait,success,sem_control acknowledged
+5100,apply_drl_action,success,weights=0.3365,0.3151,0.3484
+5200,write_kpms,success,rslaq-kpms.txt written
+5200,sem_post,success,g_semMetricsReady signaled
+5200,sem_trywait,success,sem_control acknowledged
+5200,apply_drl_action,success,weights=0.2383,0.5395,0.2222
+5300,write_kpms,success,rslaq-kpms.txt written
+5300,sem_post,success,g_semMetricsReady signaled
+5300,sem_trywait,success,sem_control acknowledged
+5300,apply_drl_action,success,weights=0.4369,0.3667,0.1964
+5400,write_kpms,success,rslaq-kpms.txt written
+5400,sem_post,success,g_semMetricsReady signaled
+5400,sem_trywait,success,sem_control acknowledged
+5400,apply_drl_action,success,weights=0.2473,0.5427,0.2100
+5500,write_kpms,success,rslaq-kpms.txt written
+5500,sem_post,success,g_semMetricsReady signaled
+5500,sem_trywait,success,sem_control acknowledged
+5500,apply_drl_action,success,weights=0.4764,0.2533,0.2703
+5600,write_kpms,success,rslaq-kpms.txt written
+5600,sem_post,success,g_semMetricsReady signaled
+5600,sem_trywait,success,sem_control acknowledged
+5600,apply_drl_action,success,weights=0.4050,0.4120,0.1830
+5700,write_kpms,success,rslaq-kpms.txt written
+5700,sem_post,success,g_semMetricsReady signaled
+5700,sem_trywait,success,sem_control acknowledged
+5700,apply_drl_action,success,weights=0.2415,0.4647,0.2938
+5800,write_kpms,success,rslaq-kpms.txt written
+5800,sem_post,success,g_semMetricsReady signaled
+5800,sem_trywait,success,sem_control acknowledged
+5800,apply_drl_action,success,weights=0.3110,0.3535,0.3356
+5900,write_kpms,success,rslaq-kpms.txt written
+5900,sem_post,success,g_semMetricsReady signaled
+5900,sem_trywait,success,sem_control acknowledged
+5900,apply_drl_action,success,weights=0.3532,0.4041,0.2427
+6000,write_kpms,success,rslaq-kpms.txt written
+6000,sem_post,success,g_semMetricsReady signaled
+6000,sem_trywait,success,sem_control acknowledged
+6000,apply_drl_action,success,weights=0.2646,0.3163,0.4191
+6100,write_kpms,success,rslaq-kpms.txt written
+6100,sem_post,success,g_semMetricsReady signaled
+6100,sem_trywait,success,sem_control acknowledged
+6100,apply_drl_action,success,weights=0.2546,0.5296,0.2159
+6200,write_kpms,success,rslaq-kpms.txt written
+6200,sem_post,success,g_semMetricsReady signaled
+6200,sem_trywait,success,sem_control acknowledged
+6200,apply_drl_action,success,weights=0.3854,0.2902,0.3244
+6300,write_kpms,success,rslaq-kpms.txt written
+6300,sem_post,success,g_semMetricsReady signaled
+6300,sem_trywait,success,sem_control acknowledged
+6300,apply_drl_action,success,weights=0.3210,0.4936,0.1854
+6400,write_kpms,success,rslaq-kpms.txt written
+6400,sem_post,success,g_semMetricsReady signaled
+6400,sem_trywait,success,sem_control acknowledged
+6400,apply_drl_action,success,weights=0.3453,0.3388,0.3159
+6500,write_kpms,success,rslaq-kpms.txt written
+6500,sem_post,success,g_semMetricsReady signaled
+6500,sem_trywait,success,sem_control acknowledged
+6500,apply_drl_action,success,weights=0.2895,0.4665,0.2440
+6600,write_kpms,success,rslaq-kpms.txt written
+6600,sem_post,success,g_semMetricsReady signaled
+6600,sem_trywait,success,sem_control acknowledged
+6600,apply_drl_action,success,weights=0.4276,0.3056,0.2668
+6700,write_kpms,success,rslaq-kpms.txt written
+6700,sem_post,success,g_semMetricsReady signaled
+6700,sem_trywait,success,sem_control acknowledged
+6700,apply_drl_action,success,weights=0.4109,0.2573,0.3318
+6800,write_kpms,success,rslaq-kpms.txt written
+6800,sem_post,success,g_semMetricsReady signaled
+6800,sem_trywait,success,sem_control acknowledged
+6800,apply_drl_action,success,weights=0.4384,0.2835,0.2781
+6900,write_kpms,success,rslaq-kpms.txt written
+6900,sem_post,success,g_semMetricsReady signaled
+6900,sem_trywait,success,sem_control acknowledged
+6900,apply_drl_action,success,weights=0.3591,0.2541,0.3868
+7000,write_kpms,success,rslaq-kpms.txt written
+7000,sem_post,success,g_semMetricsReady signaled
+7000,sem_trywait,success,sem_control acknowledged
+7000,apply_drl_action,success,weights=0.2615,0.4592,0.2793
+7100,write_kpms,success,rslaq-kpms.txt written
+7100,sem_post,success,g_semMetricsReady signaled
+7100,sem_trywait,success,sem_control acknowledged
+7100,apply_drl_action,success,weights=0.2191,0.4597,0.3212
+7200,write_kpms,success,rslaq-kpms.txt written
+7200,sem_post,success,g_semMetricsReady signaled
+7200,sem_trywait,success,sem_control acknowledged
+7200,apply_drl_action,success,weights=0.3420,0.3281,0.3299
+7300,write_kpms,success,rslaq-kpms.txt written
+7300,sem_post,success,g_semMetricsReady signaled
+7300,sem_trywait,success,sem_control acknowledged
+7300,apply_drl_action,success,weights=0.3023,0.2634,0.4343
+7400,write_kpms,success,rslaq-kpms.txt written
+7400,sem_post,success,g_semMetricsReady signaled
+7400,sem_trywait,success,sem_control acknowledged
+7400,apply_drl_action,success,weights=0.3694,0.3625,0.2681
+7500,write_kpms,success,rslaq-kpms.txt written
+7500,sem_post,success,g_semMetricsReady signaled
+7500,sem_trywait,success,sem_control acknowledged
+7500,apply_drl_action,success,weights=0.2381,0.4420,0.3200
+7600,write_kpms,success,rslaq-kpms.txt written
+7600,sem_post,success,g_semMetricsReady signaled
+7600,sem_trywait,success,sem_control acknowledged
+7600,apply_drl_action,success,weights=0.4755,0.2805,0.2440
+7700,write_kpms,success,rslaq-kpms.txt written
+7700,sem_post,success,g_semMetricsReady signaled
+7700,sem_trywait,success,sem_control acknowledged
+7700,apply_drl_action,success,weights=0.2481,0.2939,0.4580
+7800,write_kpms,success,rslaq-kpms.txt written
+7800,sem_post,success,g_semMetricsReady signaled
+7800,sem_trywait,success,sem_control acknowledged
+7800,apply_drl_action,success,weights=0.3071,0.4344,0.2586
+7900,write_kpms,success,rslaq-kpms.txt written
+7900,sem_post,success,g_semMetricsReady signaled
+7900,sem_trywait,success,sem_control acknowledged
+7900,apply_drl_action,success,weights=0.2959,0.3883,0.3158
+8000,write_kpms,success,rslaq-kpms.txt written
+8000,sem_post,success,g_semMetricsReady signaled
+8000,sem_trywait,success,sem_control acknowledged
+8000,apply_drl_action,success,weights=0.3691,0.4125,0.2184
+8100,write_kpms,success,rslaq-kpms.txt written
+8100,sem_post,success,g_semMetricsReady signaled
+8100,sem_trywait,success,sem_control acknowledged
+8100,apply_drl_action,success,weights=0.2846,0.3625,0.3529
+8200,write_kpms,success,rslaq-kpms.txt written
+8200,sem_post,success,g_semMetricsReady signaled
+8200,sem_trywait,success,sem_control acknowledged
+8200,apply_drl_action,success,weights=0.4808,0.3003,0.2189
+8300,write_kpms,success,rslaq-kpms.txt written
+8300,sem_post,success,g_semMetricsReady signaled
+8300,sem_trywait,success,sem_control acknowledged
+8300,apply_drl_action,success,weights=0.4192,0.3682,0.2126
+8400,write_kpms,success,rslaq-kpms.txt written
+8400,sem_post,success,g_semMetricsReady signaled
+8400,sem_trywait,success,sem_control acknowledged
+8400,apply_drl_action,success,weights=0.2639,0.2707,0.4654
+8500,write_kpms,success,rslaq-kpms.txt written
+8500,sem_post,success,g_semMetricsReady signaled
+8500,sem_trywait,success,sem_control acknowledged
+8500,apply_drl_action,success,weights=0.3087,0.2668,0.4246
+8600,write_kpms,success,rslaq-kpms.txt written
+8600,sem_post,success,g_semMetricsReady signaled
+8600,sem_trywait,success,sem_control acknowledged
+8600,apply_drl_action,success,weights=0.3193,0.3771,0.3036
+8700,write_kpms,success,rslaq-kpms.txt written
+8700,sem_post,success,g_semMetricsReady signaled
+8700,sem_trywait,success,sem_control acknowledged
+8700,apply_drl_action,success,weights=0.2560,0.3706,0.3734
+8800,write_kpms,success,rslaq-kpms.txt written
+8800,sem_post,success,g_semMetricsReady signaled
+8800,sem_trywait,success,sem_control acknowledged
+8800,apply_drl_action,success,weights=0.3244,0.3760,0.2996
+8900,write_kpms,success,rslaq-kpms.txt written
+8900,sem_post,success,g_semMetricsReady signaled
+8900,sem_trywait,success,sem_control acknowledged
+8900,apply_drl_action,success,weights=0.2629,0.4860,0.2510
+9000,write_kpms,success,rslaq-kpms.txt written
+9000,sem_post,success,g_semMetricsReady signaled
+9000,sem_trywait,success,sem_control acknowledged
+9000,apply_drl_action,success,weights=0.2842,0.4036,0.3122
+9100,write_kpms,success,rslaq-kpms.txt written
+9100,sem_post,success,g_semMetricsReady signaled
+9100,sem_trywait,success,sem_control acknowledged
+9100,apply_drl_action,success,weights=0.4226,0.3247,0.2527
+9200,write_kpms,success,rslaq-kpms.txt written
+9200,sem_post,success,g_semMetricsReady signaled
+9200,sem_trywait,success,sem_control acknowledged
+9200,apply_drl_action,success,weights=0.2558,0.3997,0.3445
+9300,write_kpms,success,rslaq-kpms.txt written
+9300,sem_post,success,g_semMetricsReady signaled
+9300,sem_trywait,success,sem_control acknowledged
+9300,apply_drl_action,success,weights=0.3917,0.3279,0.2804
+9400,write_kpms,success,rslaq-kpms.txt written
+9400,sem_post,success,g_semMetricsReady signaled
+9400,sem_trywait,success,sem_control acknowledged
+9400,apply_drl_action,success,weights=0.2590,0.5075,0.2335
+9500,write_kpms,success,rslaq-kpms.txt written
+9500,sem_post,success,g_semMetricsReady signaled
+9500,sem_trywait,success,sem_control acknowledged
+9500,apply_drl_action,success,weights=0.3497,0.4666,0.1837
+9600,write_kpms,success,rslaq-kpms.txt written
+9600,sem_post,success,g_semMetricsReady signaled
+9600,sem_trywait,success,sem_control acknowledged
+9600,apply_drl_action,success,weights=0.4105,0.3480,0.2415
+9700,write_kpms,success,rslaq-kpms.txt written
+9700,sem_post,success,g_semMetricsReady signaled
+9700,sem_trywait,success,sem_control acknowledged
+9700,apply_drl_action,success,weights=0.4760,0.3010,0.2230
+9800,write_kpms,success,rslaq-kpms.txt written
+9800,sem_post,success,g_semMetricsReady signaled
+9800,sem_trywait,success,sem_control acknowledged
+9800,apply_drl_action,success,weights=0.2250,0.4067,0.3683
+9900,write_kpms,success,rslaq-kpms.txt written
+9900,sem_post,success,g_semMetricsReady signaled
+9900,sem_trywait,success,sem_control acknowledged
+9900,apply_drl_action,success,weights=0.2495,0.4797,0.2708

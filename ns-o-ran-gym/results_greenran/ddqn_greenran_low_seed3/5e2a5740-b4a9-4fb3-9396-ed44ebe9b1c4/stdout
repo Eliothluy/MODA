@@ -1,0 +1,67 @@
+WARNING: explicit --txPower overrides hardware profile power mode.
+========================================
+  GreenRAN 5G/NR Slice-Aware Simulation
+========================================
+Scenario      : greenran_low
+UL slicing    : ENABLED
+Video UEs     : 5 (VIDEO_EMBB UL, 10 Mbps each; DL feedback 64 kbps each)
+Sensor UEs    : 8 (SENSOR_MMTC, 80 B every 2s)
+Total UEs     : 18
+Weights       : 0.4000,0.1500,0.4500 (CLI)
+Frequency     : 3.55 GHz
+Bandwidth     : 100 MHz
+Numerology    : 1
+Est. PRB/RBG  : 272 PRBs, 17 RBGs, 16 RB/RBG
+Hardware      : ran650_aw3161_outdoor
+Radio Unit    : Benetel RAN650 n78 (Outdoor, IP65, O-RAN split 7.2x)
+Antenna Panel : Alpha Wireless AW3161-E-F-V2 (4 ports, 17.4 dBi, 65x7 deg, downtilt 6 deg)
+RAN650 TX mode: explicit_cli
+TxPower set   : 43 dBm
+Approx. EIRP  : 60.4 dBm (TxPower + antenna gain; documentation only)
+Receiver NF   : 4 dB
+Thermal noise : -90 dBm over 100 MHz
+Channel       : UMi (from umi)
+UE Area       : +/- 80 m
+Antenna model : gNB 2x2 array represents 4 ports; element=ThreeGppAntennaModel; AW3161 measured pattern file not loaded
+Shadowing     : ENABLED
+Direction rule: DL if source IP == remoteHost; UL if destination IP == remoteHost
+SimTime        : 12s
+IPC enabled   : YES (POSIX sync)
+DRL control   : ENABLED (actions: rslaq_actions_for_ns3.csv; KPM: rslaq-kpms.txt)
+Output         : .
+========================================
+
+[GreenRAN] POSIX semaphores created: /rslaq_metrics_5e2a5740-b4a9-4fb3-9396-ed44ebe9b1c4 and /rslaq_control_5e2a5740-b4a9-4fb3-9396-ed44ebe9b1c4 (non-blocking control check; deprecated timeout arg=0 ms)
+
+=== UFPA GreenRAN Slice/QoS Approximation ===
+Source: projetoUFPA/19175_Proposta_Ajustada (4).md
+Scope: application traffic + NR QoS Flow/5QI + RAN MAC PRB slicing; not full 5GC slicing.
+UE   1 -> VIDEO_EMBB app=App1-Vigilancia 5QI=80 QFI=1 rule=UE-address scoped
+UE   2 -> VIDEO_EMBB app=App1-Vigilancia 5QI=80 QFI=1 rule=UE-address scoped
+UE   3 -> VIDEO_EMBB app=App1-Vigilancia 5QI=80 QFI=1 rule=UE-address scoped
+UE   4 -> VIDEO_EMBB app=App1-Vigilancia 5QI=80 QFI=1 rule=UE-address scoped
+UE   5 -> VIDEO_EMBB app=App1-Vigilancia 5QI=80 QFI=1 rule=UE-address scoped
+UE   6 -> SENSOR_MMTC app=App2-Monitoramento 5QI=70 QFI=1 rule=UE-address scoped
+UE   7 -> SENSOR_MMTC app=App2-Monitoramento 5QI=70 QFI=1 rule=UE-address scoped
+UE   8 -> SENSOR_MMTC app=App2-Monitoramento 5QI=70 QFI=1 rule=UE-address scoped
+UE   9 -> SENSOR_MMTC app=App2-Monitoramento 5QI=70 QFI=1 rule=UE-address scoped
+UE  10 -> SENSOR_MMTC app=App2-Monitoramento 5QI=70 QFI=1 rule=UE-address scoped
+UE  11 -> SENSOR_MMTC app=App2-Monitoramento 5QI=70 QFI=1 rule=UE-address scoped
+UE  12 -> SENSOR_MMTC app=App2-Monitoramento 5QI=70 QFI=1 rule=UE-address scoped
+UE  13 -> SENSOR_MMTC app=App2-Monitoramento 5QI=70 QFI=1 rule=UE-address scoped
+UE  14 -> GENERIC_EMBB app=App3-Usuarios 5QI=8 QFI=1 rule=UE-address scoped
+UE  14 -> GENERIC_EMBB app=VoIP 5QI=1 QFI=3 rule=UE-address scoped
+UE  15 -> GENERIC_EMBB app=App3-Usuarios 5QI=8 QFI=1 rule=UE-address scoped
+UE  15 -> GENERIC_EMBB app=VoIP 5QI=1 QFI=3 rule=UE-address scoped
+UE  16 -> GENERIC_EMBB app=App3-Usuarios 5QI=8 QFI=1 rule=UE-address scoped
+UE  16 -> GENERIC_EMBB app=VoIP 5QI=1 QFI=3 rule=UE-address scoped
+UE  17 -> GENERIC_EMBB app=App3-Usuarios 5QI=8 QFI=1 rule=UE-address scoped
+UE  17 -> GENERIC_EMBB app=VoIP 5QI=1 QFI=3 rule=UE-address scoped
+UE  18 -> GENERIC_EMBB app=App3-Usuarios 5QI=8 QFI=1 rule=UE-address scoped
+UE  18 -> GENERIC_EMBB app=VoIP 5QI=1 QFI=3 rule=UE-address scoped
+[GreenRAN] Slice/QoS mapping written to: ./greenran_low_slice_qos_mapping.csv
+[GreenRAN] Attached all 18 UEs
+UE   1 [VIDEO_EMBB] UL_port=30001 UL_model=video_upload UL_rate=10.00 Mbps DL_port=40001 DL_rate=64 kbps DL_pkt=100 B
+UE   2 [VIDEO_EMBB] UL_port=30002 UL_model=video_upload UL_rate=10.00 Mbps DL_port=40002 DL_rate=64 kbps DL_pkt=100 B
+UE   3 [VIDEO_EMBB] UL_port=30003 UL_model=video_upload UL_rate=10.00 Mbps DL_port=40003 DL_rate=64 kbps DL_pkt=100 B
+UE   4 [VIDEO_EMBB] UL_port=30004 UL_model=video_upload UL_rate=10.00 Mbps DL_port=40004 DL_rate=64

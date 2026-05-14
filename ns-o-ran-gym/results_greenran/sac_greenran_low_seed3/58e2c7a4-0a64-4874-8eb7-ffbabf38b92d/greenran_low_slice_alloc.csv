@@ -1,0 +1,10 @@
+callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,effectiveWeight,activeUes,hasActiveUe,hasDemand,totalRbg,budgetRbg,allocatedRbg,borrowedIn,borrowedOut,reserved,sliceCap,wastedRbg,cumulAllocRbg,cumulCalls,reason,rntis
+1,504,greenran_low,0,0,65535_65535,0,0.4000,0.4000,0,0,0,266,0,0,0,106,0,160,0,0,1,NO_ACTIVE_UE,""
+1,504,greenran_low,0,0,65535_65535,1,0.1500,0.1500,0,0,0,266,0,0,0,40,0,60,0,0,1,NO_ACTIVE_UE,""
+1,504,greenran_low,0,0,65535_65535,2,0.4500,0.4500,5,1,1,266,266,266,146,0,0,180,0,266,1,FULL_ALLOC,"24;23;22;21;20"
+5,1949,greenran_low,0,0,65535_65535,0,0.4657,0.4657,5,1,1,266,165,165,41,0,0,186,0,165,5,FULL_ALLOC,"1;2;3;4;5"
+5,1949,greenran_low,0,0,65535_65535,1,0.2469,0.2469,0,0,0,266,0,0,0,66,0,99,0,0,5,NO_ACTIVE_UE,""
+5,1949,greenran_low,0,0,65535_65535,2,0.2873,0.2873,5,1,1,266,101,101,25,0,0,115,0,1165,5,FULL_ALLOC,"23;21;24;20;22"
+6,5109,greenran_low,0,0,65535_65535,0,0.3938,0.3938,5,1,1,266,159,159,54,0,0,158,0,324,6,FULL_ALLOC,"1;2;3;4;5"
+6,5109,greenran_low,0,0,65535_65535,1,0.3418,0.3418,0,0,0,266,0,0,0,91,0,137,0,0,6,NO_ACTIVE_UE,""
+6,5109,greenran_low,0,0,65535_65535,2,0.2644,0.2644,5,1,1,266,107,107,37,0,0,106,0,1272,6,FULL_ALLOC,"23;21;24;20;22"

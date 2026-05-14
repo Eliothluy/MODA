@@ -1,0 +1,7 @@
+callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,effectiveWeight,activeUes,hasActiveUe,hasDemand,totalRbg,budgetRbg,allocatedRbg,borrowedIn,borrowedOut,reserved,sliceCap,wastedRbg,cumulAllocRbg,cumulCalls,reason,rntis
+1,504,greenran_low,0,0,65535_65535,0,0.4000,0.4000,0,0,0,266,0,0,0,106,0,160,0,0,1,NO_ACTIVE_UE,""
+1,504,greenran_low,0,0,65535_65535,1,0.1500,0.1500,0,0,0,266,0,0,0,40,0,60,0,0,1,NO_ACTIVE_UE,""
+1,504,greenran_low,0,0,65535_65535,2,0.4500,0.4500,5,1,1,266,266,266,146,0,0,180,0,266,1,FULL_ALLOC,"24;23;22;21;20"
+5,9309,greenran_low,0,0,65535_65535,0,0.4149,0.4149,5,1,1,266,181,181,71,0,0,166,0,181,5,FULL_ALLOC,"1;2;3;4;5"
+5,9309,greenran_low,0,0,65535_65535,1,0.3904,0.3904,0,0,0,266,0,0,0,104,0,156,0,0,5,NO_ACTIVE_UE,""
+5,9309,greenran_low,0,0,65535_65535,2,0.1947,0.1947,5,1,1,266,85,85,33,0,0,78,0,1149,5,FULL_ALLOC,"23;21;24;20;22"

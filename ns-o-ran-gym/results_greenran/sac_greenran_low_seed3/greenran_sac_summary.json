@@ -1,0 +1,12 @@
+{
+  "method": "sac",
+  "scenario_mode": "fixed",
+  "scenarios": [
+    "greenran_low"
+  ],
+  "episodes": 300,
+  "final_avg_100": 2.5445780136323304,
+  "best_avg": 5.161535205967147,
+  "total_training_time_sec": 32622.78,
+  "mean_episode_time_sec": 108.74
+}

@@ -1,0 +1,4 @@
+callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,effectiveWeight,activeUes,hasActiveUe,hasDemand,totalRbg,budgetRbg,allocatedRbg,borrowedIn,borrowedOut,reserved,sliceCap,wastedRbg,cumulAllocRbg,cumulCalls,reason,rntis
+1,11019,greenran_congestion,0,0,65535_65535,0,0.3500,0.3500,5,1,1,266,103,103,10,0,0,140,0,103,1,FULL_ALLOC,"1;2;3;4;5"
+1,11019,greenran_congestion,0,0,65535_65535,1,0.1000,0.1000,0,0,0,266,0,0,0,27,0,40,0,0,1,NO_ACTIVE_UE,""
+1,11019,greenran_congestion,0,0,65535_65535,2,0.5500,0.5500,30,1,1,266,163,163,17,0,0,220,0,163,1,FULL_ALLOC,"105;104;103;102;101;100;99;98;97;87;86;85;84;83;82;81;80;79;78;77;76;46;47;48;49;50;51;52;53;54"

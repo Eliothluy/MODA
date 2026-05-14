@@ -1,0 +1,7 @@
+timestamp_ms,slice,configured_weight,budget_rbg,allocated_rbg,total_allocated_rbg,rsh_real_pct,active_ues,effective_weight,beam_id,has_demand,reason,redistributed_idle_rbg,rntis
+502,0,0.3333,53,53,53,100.0000,5,1.0000,65535_65535,1,full_alloc,0,"5;4;3;2;1"
+502,1,0.4000,0,0,53,0.0000,0,0.0000,65535_65535,0,no_active_ues,21,""
+502,2,0.2667,0,0,53,0.0000,0,0.0000,65535_65535,0,no_active_ues,14,""
+600,0,0.2319,12,12,53,22.6415,5,0.2319,65535_65535,1,full_alloc,0,"4;3;2;1;5"
+600,1,0.5470,29,29,53,54.7170,5,0.5470,65535_65535,1,full_alloc,0,"23;24;6;21;22"
+600,2,0.2211,12,12,53,22.6415,10,0.2211,65535_65535,1,full_alloc,0,"44;43;36;40;37;38;25;35;26;39"

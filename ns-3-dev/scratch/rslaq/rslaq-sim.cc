@@ -18,17 +18,25 @@
 #include "ns3/internet-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/nr-module.h"
+#include "ns3/nr-mac-scheduler-ofdma-mr.h"
+#include "ns3/nr-mac-scheduler-ofdma-pf.h"
+#include "ns3/nr-mac-scheduler-ofdma-rr.h"
 #include "ns3/point-to-point-module.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <cctype>
 #include <ctime>
+#include <filesystem>
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
+#include <numeric>
 #include <semaphore.h>
 #include <sstream>
 #include <string>
@@ -64,6 +72,8 @@ static std::map<uint16_t, SliceType> g_ueToSlice;
 static std::map<uint16_t, uint16_t> g_ueIdToRnti;
 static uint32_t g_indicationPeriodMs = 10;
 static bool g_ipcEnabled = false;
+static bool g_useSliceScheduler = true;
+static const std::array<double, 3> SLA_MIN_MBPS = {50.0, 1.0, 1.0};
 
 // Previous KPM values for delta calculation (IPC mode)
 struct KpmPrevValues
@@ -202,6 +212,200 @@ ParseWeights(const std::string& str)
     return w;
 }
 
+static std::string
+ToUpper(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return s;
+}
+
+static RslaqMacScheduler::IntraSliceAlgorithm
+ParseIntraAlgo(const std::string& algo)
+{
+    std::string a = ToUpper(algo);
+    if (a == "RR")
+    {
+        return RslaqMacScheduler::IntraSliceAlgorithm::RR;
+    }
+    if (a == "PF")
+    {
+        return RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    }
+    if (a == "BCQI" || a == "MAXCQI" || a == "MR")
+    {
+        return RslaqMacScheduler::IntraSliceAlgorithm::BCQI;
+    }
+    NS_FATAL_ERROR("Invalid intraAlgo: " << algo << " (valid: RR|PF|BCQI)");
+}
+
+static std::string
+IntraAlgoName(RslaqMacScheduler::IntraSliceAlgorithm algo)
+{
+    switch (algo)
+    {
+    case RslaqMacScheduler::IntraSliceAlgorithm::RR:
+        return "RR";
+    case RslaqMacScheduler::IntraSliceAlgorithm::PF:
+        return "PF";
+    case RslaqMacScheduler::IntraSliceAlgorithm::BCQI:
+        return "BCQI";
+    }
+    return "UNKNOWN";
+}
+
+static TypeId
+NativeSchedulerForMode(const std::string& baselineMode)
+{
+    if (baselineMode == "pure_rr")
+    {
+        return NrMacSchedulerOfdmaRR::GetTypeId();
+    }
+    if (baselineMode == "pure_pf")
+    {
+        return NrMacSchedulerOfdmaPF::GetTypeId();
+    }
+    if (baselineMode == "pure_bcqi")
+    {
+        return NrMacSchedulerOfdmaMR::GetTypeId();
+    }
+    return RslaqMacScheduler::GetTypeId();
+}
+
+static bool
+IsPureMode(const std::string& baselineMode)
+{
+    return baselineMode == "pure_rr" || baselineMode == "pure_pf" || baselineMode == "pure_bcqi";
+}
+
+static bool
+ConfigureBaselineMode(const std::string& baselineMode,
+                      const std::vector<double>& weightsArg,
+                      RslaqMacScheduler::IntraSliceAlgorithm cliAlgo,
+                      std::vector<double>* weights,
+                      std::vector<RslaqMacScheduler::IntraSliceAlgorithm>* algos)
+{
+    const std::vector<double> equal = {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0};
+    const std::vector<double> weighted = {0.3333, 0.4000, 0.2667};
+
+    if (IsPureMode(baselineMode))
+    {
+        *weights = {};
+        *algos = {};
+        return false;
+    }
+
+    *weights = weightsArg;
+    RslaqMacScheduler::IntraSliceAlgorithm algo = cliAlgo;
+
+    if (baselineMode == "slice_rr")
+    {
+        *weights = equal;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::RR;
+    }
+    else if (baselineMode == "slice_pf")
+    {
+        *weights = equal;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    }
+    else if (baselineMode == "slice_bcqi")
+    {
+        *weights = equal;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::BCQI;
+    }
+    else if (baselineMode == "slice_weighted_pf")
+    {
+        *weights = weighted;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    }
+    else if (baselineMode == "slice_weighted_rr")
+    {
+        *weights = weighted;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::RR;
+    }
+    else if (baselineMode == "slice_weighted_bcqi")
+    {
+        *weights = weighted;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::BCQI;
+    }
+    else if (baselineMode == "slice_custom")
+    {
+        *weights = weightsArg;
+    }
+    else if (baselineMode == "psta_equal")
+    {
+        weights->resize(NUM_SLICES);
+        for (uint32_t i = 0; i < NUM_SLICES; ++i)
+        {
+            (*weights)[i] = 0.5 * weighted[i] + 0.5 * equal[i];
+        }
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    }
+    else
+    {
+        NS_FATAL_ERROR("Invalid baselineMode: "
+                       << baselineMode
+                       << " (valid: pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|"
+                          "slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|slice_custom)");
+    }
+
+    algos->assign(NUM_SLICES, algo);
+    return true;
+}
+
+static std::string
+NormalizeTddPatternForNr(const std::string& requested, bool* applied)
+{
+    if (requested == "dl_only")
+    {
+        *applied = true;
+        return "DL|DL|DL|DL|DL|DL|DL|DL|DL|DL|";
+    }
+    if (requested == "D|D|8D|4GB|4U|U|U" || requested == "article")
+    {
+        *applied = true;
+        return "DL|DL|DL|S|UL|UL|UL|";
+    }
+
+    std::stringstream ss(requested);
+    std::string token;
+    std::ostringstream out;
+    bool ok = true;
+    uint32_t count = 0;
+    while (std::getline(ss, token, '|'))
+    {
+        if (token.empty())
+        {
+            continue;
+        }
+        std::string t = ToUpper(token);
+        if (t == "D")
+        {
+            t = "DL";
+        }
+        else if (t == "U")
+        {
+            t = "UL";
+        }
+        else if (t == "GB")
+        {
+            t = "S";
+        }
+
+        if (t != "DL" && t != "UL" && t != "S" && t != "F")
+        {
+            ok = false;
+            break;
+        }
+        out << t << "|";
+        count++;
+    }
+
+    *applied = ok && count > 0;
+    return *applied ? out.str() : "DL|DL|DL|DL|DL|DL|DL|DL|DL|DL|";
+}
+
 // ---------------------------------------------------------------------------
 // Estruturas para estatísticas baseline (standalone mode)
 // ---------------------------------------------------------------------------
@@ -222,6 +426,12 @@ struct UeStats
     uint32_t prevLostPackets = 0;
     double delaySumSec = 0.0;
     double prevDelaySumSec = 0.0;
+    double jitterSumSec = 0.0;
+    double prevJitterSumSec = 0.0;
+    std::vector<double> throughputSamplesMbps;
+    std::vector<double> delaySamplesMs;
+    std::vector<double> jitterSamplesMs;
+    std::vector<double> bufferSamplesBytes;
 };
 
 struct SliceAggStats
@@ -248,6 +458,37 @@ struct SimState
 
 static SimState g_baseline;
 
+static double
+Percentile(std::vector<double> values, double pct)
+{
+    if (values.empty())
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    std::sort(values.begin(), values.end());
+    double pos = (pct / 100.0) * static_cast<double>(values.size() - 1);
+    size_t lo = static_cast<size_t>(std::floor(pos));
+    size_t hi = static_cast<size_t>(std::ceil(pos));
+    if (lo == hi)
+    {
+        return values[lo];
+    }
+    double frac = pos - static_cast<double>(lo);
+    return values[lo] * (1.0 - frac) + values[hi] * frac;
+}
+
+static std::string
+CsvValue(double value, uint32_t precision = 4)
+{
+    if (std::isnan(value))
+    {
+        return "NA";
+    }
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(precision) << value;
+    return oss.str();
+}
+
 // ---------------------------------------------------------------------------
 // Callback de estatísticas baseline (standalone)
 // ---------------------------------------------------------------------------
@@ -268,10 +509,12 @@ StatsCallback()
 
     if (!g_baseline.statsFile.is_open())
     {
-        std::string path = g_baseline.outputDir + "/rslaq_stats_timeseries.csv";
+        std::string path = g_baseline.outputDir + "/timeseries.csv";
         g_baseline.statsFile.open(path, std::ios::out | std::ios::trunc);
-        // Added effective loss metrics (based on tx - rx, more reliable than FlowMonitor lostPackets)
-        g_baseline.statsFile << "timestamp_ms,ue_id,slice,thr_mbps,btx,bfs_pct,tdp,effective_lost_pcts,rsh_pct\n";
+        g_baseline.statsFile << "timestamp_ms,ue_id,slice,thr_mbps,tx_bytes_delta,"
+                              << "rx_bytes_delta,tx_packets_delta,rx_packets_delta,"
+                              << "loss_pct_interval,buffer_bytes,dropped_packets_delta,"
+                              << "rsh_configured_pct\n";
     }
 
     for (const auto& kv : stats)
@@ -297,29 +540,44 @@ StatsCallback()
         uint32_t dRxPackets = st.rxPackets - ue.prevRxPackets;
         uint32_t dLostPackets = st.lostPackets - ue.prevLostPackets;
 
-        // Calculate effective loss based on tx - rx (more reliable than FlowMonitor lostPackets)
-        uint32_t effectiveLost = (dTxPackets >= dRxPackets) ? (dTxPackets - dRxPackets) : 0;
-        double effectiveLostPct = (dTxPackets > 0) ? (static_cast<double>(effectiveLost) / dTxPackets * 100.0) : 0.0;
-
         double periodSec = static_cast<double>(g_baseline.indicationPeriodMs) / 1000.0;
         double thrMbps = (periodSec > 0) ? (static_cast<double>(dRxBytes) * 8.0 / periodSec / 1e6) : 0.0;
-        double bfsPct = (dTxPackets > 0) ? (static_cast<double>(dLostPackets) / static_cast<double>(dTxPackets) * 100.0) : 0.0;
-        (void)dTxBytes;
+        double lossPctInterval = (dTxPackets > 0) ? (static_cast<double>(dLostPackets) / static_cast<double>(dTxPackets) * 100.0) : 0.0;
 
         int32_t sliceIdx = static_cast<int32_t>(slice);
-        double rshPct = 0.0;
+        double rshConfiguredPct = 0.0;
+        int64_t bufferBytes = -1;
         if (g_schedulerPtr && sliceIdx >= 0)
         {
-            rshPct = g_schedulerPtr->GetPrbWeight(static_cast<uint32_t>(sliceIdx)) * 100.0;
+            rshConfiguredPct = g_schedulerPtr->GetPrbWeight(static_cast<uint32_t>(sliceIdx)) * 100.0;
+            if (g_ueIdToRnti.count(ueId))
+            {
+                bufferBytes = g_schedulerPtr->GetUeDlBufferSize(g_ueIdToRnti[ueId]);
+            }
         }
 
         g_baseline.statsFile << nowMs << "," << ueId << "," << SliceName(slice) << ","
                              << std::fixed << std::setprecision(4) << thrMbps << ","
                              << dTxBytes << ","
-                             << std::setprecision(2) << bfsPct << ","
+                             << dRxBytes << ","
+                             << dTxPackets << ","
+                             << dRxPackets << ","
+                             << std::setprecision(2) << lossPctInterval << ","
+                             << bufferBytes << ","
                              << dLostPackets << ","
-                             << effectiveLostPct << ","
-                             << std::setprecision(2) << rshPct << "\n";
+                             << std::setprecision(2) << rshConfiguredPct << "\n";
+
+        double dDelayMs = (st.delaySum.GetSeconds() - ue.prevDelaySumSec) * 1000.0;
+        double dJitterMs = (st.jitterSum.GetSeconds() - ue.prevJitterSumSec) * 1000.0;
+        double meanDelayMs = (dRxPackets > 0) ? dDelayMs / dRxPackets : 0.0;
+        double meanJitterMs = (dRxPackets > 1) ? dJitterMs / (dRxPackets - 1) : 0.0;
+        ue.throughputSamplesMbps.push_back(thrMbps);
+        ue.delaySamplesMs.push_back(meanDelayMs);
+        ue.jitterSamplesMs.push_back(meanJitterMs);
+        if (bufferBytes >= 0)
+        {
+            ue.bufferSamplesBytes.push_back(static_cast<double>(bufferBytes));
+        }
 
         ue.prevRxBytes = st.rxBytes;
         ue.prevTxBytes = st.txBytes;
@@ -327,6 +585,7 @@ StatsCallback()
         ue.prevTxPackets = st.txPackets;
         ue.prevLostPackets = st.lostPackets;
         ue.prevDelaySumSec = st.delaySum.GetSeconds();
+        ue.prevJitterSumSec = st.jitterSum.GetSeconds();
 
         ue.txBytes = st.txBytes;
         ue.rxBytes = st.rxBytes;
@@ -334,82 +593,167 @@ StatsCallback()
         ue.rxPackets = st.rxPackets;
         ue.lostPackets = st.lostPackets;
         ue.delaySumSec = st.delaySum.GetSeconds();
+        ue.jitterSumSec = st.jitterSum.GetSeconds();
     }
 
     g_baseline.statsFile.flush();
     Simulator::Schedule(MilliSeconds(g_baseline.indicationPeriodMs), &StatsCallback);
 }
 
-// ---------------------------------------------------------------------------
-// CSV final (resumo pós-simulação)
-// ---------------------------------------------------------------------------
-
 static void
-WriteFinalCsv(const std::string& prefix)
+WriteSummaryCsv(const std::string& outputDir, const std::string& scenarioName, const std::string& baselineMode)
 {
+    std::ofstream out(outputDir + "/summary.csv", std::ios::out | std::ios::trunc);
+    out << "scenario,baseline_mode,slice,throughput_mbps_mean,throughput_mbps_p50,"
+        << "throughput_mbps_p95,delay_ms_mean,delay_ms_p95,delay_ms_p99,jitter_ms_mean,"
+        << "pdr_pct,plr_pct,buffer_bytes_mean,buffer_bytes_p95,buffer_bytes_p99,"
+        << "rsh_real_pct_mean,allocated_rbg_total,rx_bytes_total,tx_bytes_total\n";
+
+    std::vector<RslaqMacScheduler::SliceAllocationStats> allocStats;
+    if (g_schedulerPtr)
     {
-        std::ofstream out(prefix + "_ue.csv", std::ios::out | std::ios::trunc);
-        // Added effective_lost_packets and effective_pdr
-        out << "ue_id,slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,"
-            << "effective_lost_packets,throughput_mbps,avg_delay_ms,pdr,effective_pdr\n";
+        allocStats = g_schedulerPtr->GetSliceAllocationStats();
+    }
+
+    for (SliceType slice : {SliceType::EMBB, SliceType::URLLC, SliceType::MTC})
+    {
+        const SliceAggStats& agg = g_baseline.sliceStats[slice];
+        std::vector<double> thrSamples;
+        std::vector<double> delaySamples;
+        std::vector<double> jitterSamples;
+        std::vector<double> bufferSamples;
+
         for (const auto& kv : g_baseline.ueStats)
         {
-            const UeStats& m = kv.second;
-            double thr = (g_baseline.activeDurationSec > 0)
-                             ? static_cast<double>(m.rxBytes) * 8.0 / g_baseline.activeDurationSec / 1e6
-                             : 0.0;
-            double avgDelay = (m.rxPackets > 0) ? m.delaySumSec / m.rxPackets * 1000.0 : 0.0;
-            double pdr = (m.txPackets > 0)
-                             ? static_cast<double>(m.rxPackets) / m.txPackets
-                             : 0.0;
-            // Calculate effective loss based on tx - rx (more reliable than FlowMonitor lostPackets)
-            uint32_t effectiveLost = (m.txPackets >= m.rxPackets) ? (m.txPackets - m.rxPackets) : 0;
-            double effectivePdr = (m.txPackets > 0)
-                                    ? static_cast<double>(m.rxPackets) / m.txPackets
-                                    : 0.0;
-
-            out << m.ueId << "," << SliceName(m.slice) << ","
-                << m.txBytes << "," << m.rxBytes << ","
-                << m.txPackets << "," << m.rxPackets << "," << m.lostPackets << ","
-                << effectiveLost << ","
-                << std::fixed << std::setprecision(4) << thr << ","
-                << std::setprecision(3) << avgDelay << ","
-                << std::setprecision(4) << pdr << ","
-                << std::setprecision(4) << effectivePdr << "\n";
+            const UeStats& ue = kv.second;
+            if (ue.slice != slice)
+            {
+                continue;
+            }
+            thrSamples.insert(thrSamples.end(), ue.throughputSamplesMbps.begin(), ue.throughputSamplesMbps.end());
+            delaySamples.insert(delaySamples.end(), ue.delaySamplesMs.begin(), ue.delaySamplesMs.end());
+            jitterSamples.insert(jitterSamples.end(), ue.jitterSamplesMs.begin(), ue.jitterSamplesMs.end());
+            bufferSamples.insert(bufferSamples.end(), ue.bufferSamplesBytes.begin(), ue.bufferSamplesBytes.end());
         }
-    }
 
-    {
-        std::ofstream out(prefix + "_slice.csv", std::ios::out | std::ios::trunc);
-        // Added effective_lost_packets and effective_pdr
-        out << "slice,tx_bytes,rx_bytes,tx_packets,rx_packets,lost_packets,"
-            << "effective_lost_packets,throughput_mbps,avg_delay_ms,pdr,effective_pdr\n";
-        for (const auto& kv : g_baseline.sliceStats)
+        double throughputMean = (g_baseline.activeDurationSec > 0.0)
+                                    ? static_cast<double>(agg.rxBytes) * 8.0 /
+                                          g_baseline.activeDurationSec / 1e6
+                                    : 0.0;
+        double delayMean = (agg.rxPackets > 0) ? agg.delaySumSec * 1000.0 / agg.rxPackets : 0.0;
+        double jitterMean = (agg.rxPackets > 1) ? agg.jitterSumSec * 1000.0 / (agg.rxPackets - 1) : 0.0;
+        double pdrPct = (agg.txPackets > 0) ? 100.0 * static_cast<double>(agg.rxPackets) / agg.txPackets : 0.0;
+        double plrPct = (agg.txPackets > 0) ? 100.0 * static_cast<double>(agg.lostPackets) / agg.txPackets : 0.0;
+
+        uint32_t idx = static_cast<uint32_t>(slice);
+        std::string rshMean = "NA";
+        std::string allocatedTotal = "NA";
+        if (idx < allocStats.size() && allocStats[idx].samples > 0)
         {
-            const SliceAggStats& m = kv.second;
-            double thr = (g_baseline.activeDurationSec > 0)
-                             ? static_cast<double>(m.rxBytes) * 8.0 / g_baseline.activeDurationSec / 1e6
-                             : 0.0;
-            double avgDelay = (m.rxPackets > 0) ? m.delaySumSec / m.rxPackets * 1000.0 : 0.0;
-            double pdr = (m.txPackets > 0)
-                             ? static_cast<double>(m.rxPackets) / m.txPackets
-                             : 0.0;
-            // Calculate effective loss based on tx - rx
-            uint32_t effectiveLost = (m.txPackets >= m.rxPackets) ? (m.txPackets - m.rxPackets) : 0;
-            double effectivePdr = (m.txPackets > 0)
-                                    ? static_cast<double>(m.rxPackets) / m.txPackets
-                                    : 0.0;
-
-            out << SliceName(kv.first) << ","
-                << m.txBytes << "," << m.rxBytes << ","
-                << m.txPackets << "," << m.rxPackets << "," << m.lostPackets << ","
-                << effectiveLost << ","
-                << std::fixed << std::setprecision(4) << thr << ","
-                << std::setprecision(3) << avgDelay << ","
-                << std::setprecision(4) << pdr << ","
-                << std::setprecision(4) << effectivePdr << "\n";
+            rshMean = CsvValue(allocStats[idx].rshRealPctSum / allocStats[idx].samples);
+            allocatedTotal = std::to_string(allocStats[idx].allocatedRbgTotal);
         }
+
+        double bufferMean = std::numeric_limits<double>::quiet_NaN();
+        if (!bufferSamples.empty())
+        {
+            bufferMean = std::accumulate(bufferSamples.begin(), bufferSamples.end(), 0.0) /
+                         static_cast<double>(bufferSamples.size());
+        }
+
+        out << scenarioName << "," << baselineMode << "," << SliceName(slice) << ","
+            << CsvValue(throughputMean) << ","
+            << CsvValue(Percentile(thrSamples, 50.0)) << ","
+            << CsvValue(Percentile(thrSamples, 95.0)) << ","
+            << CsvValue(delayMean, 3) << ","
+            << CsvValue(Percentile(delaySamples, 95.0), 3) << ","
+            << CsvValue(Percentile(delaySamples, 99.0), 3) << ","
+            << CsvValue(jitterMean, 3) << ","
+            << CsvValue(pdrPct, 3) << ","
+            << CsvValue(plrPct, 3) << ","
+            << CsvValue(bufferMean, 2) << ","
+            << CsvValue(Percentile(bufferSamples, 95.0), 2) << ","
+            << CsvValue(Percentile(bufferSamples, 99.0), 2) << ","
+            << rshMean << ","
+            << allocatedTotal << ","
+            << agg.rxBytes << ","
+            << agg.txBytes << "\n";
     }
+}
+
+static void
+WriteMetadataJson(const std::string& outputDir,
+                  const ScenarioConfig& scenario,
+                  const std::string& baselineMode,
+                  const std::string& intraAlgoName,
+                  uint32_t seed,
+                  uint32_t run,
+                  double simTimeSec,
+                  double drainTimeSec,
+                  const std::vector<double>& weights,
+                  const std::string& duplexMode,
+                  const std::string& tddPatternRequested,
+                  const std::string& tddPatternApplied,
+                  bool dlOnly,
+                  bool embbSlaFeasible)
+{
+    std::ofstream out(outputDir + "/metadata.json", std::ios::out | std::ios::trunc);
+    auto mbps = [](uint64_t bps) { return static_cast<double>(bps) / 1e6; };
+    out << "{\n"
+        << "  \"scenario\": \"" << scenario.name << "\",\n"
+        << "  \"baseline_mode\": \"" << baselineMode << "\",\n"
+        << "  \"intra_algo\": \"" << intraAlgoName << "\",\n"
+        << "  \"seed\": " << seed << ",\n"
+        << "  \"run\": " << run << ",\n"
+        << "  \"sim_time_sec\": " << simTimeSec << ",\n"
+        << "  \"drain_time_sec\": " << drainTimeSec << ",\n"
+        << "  \"num_gnbs\": 1,\n"
+        << "  \"num_ues\": " << (g_numUeEmbb + g_numUeUrllc + g_numUeMtc) << ",\n"
+        << "  \"slices\": [\"eMBB\", \"URLLC\", \"MTC\"],\n"
+        << "  \"slice_weights_configured\": [";
+    for (size_t i = 0; i < weights.size(); ++i)
+    {
+        if (i)
+        {
+            out << ", ";
+        }
+        out << std::fixed << std::setprecision(4) << weights[i];
+    }
+    out << "],\n"
+        << "  \"traffic_mbps_per_slice\": {\"eMBB\": " << mbps(scenario.embbRateBps)
+        << ", \"URLLC\": " << mbps(scenario.urllcRateBps)
+        << ", \"MTC\": " << mbps(scenario.mtcRateBps) << "},\n"
+        << "  \"offered_load_mbps_per_slice\": {\"eMBB\": " << mbps(scenario.embbRateBps)
+        << ", \"URLLC\": " << mbps(scenario.urllcRateBps)
+        << ", \"MTC\": " << mbps(scenario.mtcRateBps) << "},\n"
+        << "  \"sla\": {\"min_mbps_per_slice\": {\"eMBB\": " << SLA_MIN_MBPS[0]
+        << ", \"URLLC\": " << SLA_MIN_MBPS[1]
+        << ", \"MTC\": " << SLA_MIN_MBPS[2] << "}},\n"
+        << "  \"sla_min_mbps_per_slice\": {\"eMBB\": " << SLA_MIN_MBPS[0]
+        << ", \"URLLC\": " << SLA_MIN_MBPS[1]
+        << ", \"MTC\": " << SLA_MIN_MBPS[2] << "},\n"
+        << "  \"sla_feasible_by_offered_load\": " << (embbSlaFeasible ? "true" : "false") << ",\n"
+        << "  \"duplex_mode\": \"" << duplexMode << "\",\n"
+        << "  \"tdd_pattern_requested\": \"" << tddPatternRequested << "\",\n"
+        << "  \"tdd_pattern_applied\": \"" << tddPatternApplied << "\",\n"
+        << "  \"dl_only\": " << (dlOnly ? "true" : "false") << ",\n"
+        << "  \"notes\": [";
+    bool wroteNote = false;
+    if (dlOnly)
+    {
+        out << "\"TDD pattern not applied; simplified DL-only simulation\"";
+        wroteNote = true;
+    }
+    if (!embbSlaFeasible)
+    {
+        if (wroteNote)
+        {
+            out << ", ";
+        }
+        out << "\"eMBB offered load is below eMBB minimum SLA\"";
+    }
+    out << "]\n"
+        << "}\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -635,12 +979,16 @@ main(int argc, char* argv[])
     std::string scenarioName = "normal";
     std::string outputDir = ".";
     uint32_t seed = 1;
+    uint32_t run = 1;
     double simTimeSec = 4.0;
     double appStartSec = 0.4;
+    double drainTimeSec = 0.2;
     uint32_t indicationPeriodMs = 10;
-    std::string tddPattern = "D|D|D|D|D|D|D|D|D|D";
+    std::string tddPattern = "D|D|8D|4GB|4U|U|U";
     double txPowerDbm = 43.0;
     std::string weightsStr = "0.3333,0.4000,0.2667";
+    std::string baselineMode = "slice_weighted_pf";
+    std::string intraAlgo = "PF";
     std::string simId = "";
     bool logAllMacSlots = false;
     uint32_t macLoggingPeriodMs = 97;
@@ -650,14 +998,20 @@ main(int argc, char* argv[])
     cmd.AddValue("simTime", "Total sim time (s)", simTimeSec);
     cmd.AddValue("appStart", "App start time (s)", appStartSec);
     cmd.AddValue("seed", "RNG seed", seed);
+    cmd.AddValue("run", "RNG run", run);
+    cmd.AddValue("drainTimeSec", "Drain time after client stop to avoid in-flight packet loss", drainTimeSec);
     cmd.AddValue("outputDir", "Output directory", outputDir);
     cmd.AddValue("periodMs", "Stats indication period (ms)", indicationPeriodMs);
-    cmd.AddValue("tddPattern", "TDD slot pattern string (NOTE: currently NOT applied in this NR version)", tddPattern);
+    cmd.AddValue("tddPattern", "TDD slot pattern string", tddPattern);
     cmd.AddValue("txPower", "gNB TX power (dBm)", txPowerDbm);
     cmd.AddValue("embbUes", "Number of eMBB UEs", g_numUeEmbb);
     cmd.AddValue("urllcUes", "Number of URLLC UEs", g_numUeUrllc);
     cmd.AddValue("mtcUes", "Number of MTC UEs", g_numUeMtc);
     cmd.AddValue("weights", "Slice weights as comma-separated list (eMBB,URLLC,MTC)", weightsStr);
+    cmd.AddValue("baselineMode",
+                 "pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|slice_custom",
+                 baselineMode);
+    cmd.AddValue("intraAlgo", "RR|PF|BCQI", intraAlgo);
     cmd.AddValue("simId", "Simulation UUID for IPC semaphores", simId);
     cmd.AddValue("LogAllMacSlots", "Log every MAC scheduling call (large files)", logAllMacSlots);
     cmd.AddValue("MacLoggingPeriodMs", "MAC logging period in ms (when LogAllMacSlots=false)", macLoggingPeriodMs);
@@ -683,6 +1037,19 @@ main(int argc, char* argv[])
     const ScenarioConfig scenario = scenarios.at(scenarioName);
     const uint32_t numUeTotal = g_numUeEmbb + g_numUeUrllc + g_numUeMtc;
 
+    if (simTimeSec <= drainTimeSec)
+    {
+        NS_FATAL_ERROR("simTimeSec must be greater than drainTimeSec");
+    }
+    if (simTimeSec - drainTimeSec <= appStartSec)
+    {
+        NS_FATAL_ERROR("simTimeSec - drainTimeSec must be greater than appStartSec");
+    }
+    NS_ASSERT_MSG(numUeTotal == 20, "RSLAQ experiments require numUes == 20");
+    NS_ASSERT_MSG(g_numUeEmbb == 5, "RSLAQ experiments require eMBB UEs == 5");
+    NS_ASSERT_MSG(g_numUeUrllc == 5, "RSLAQ experiments require URLLC UEs == 5");
+    NS_ASSERT_MSG(g_numUeMtc == 10, "RSLAQ experiments require MTC UEs == 10");
+
     std::vector<double> sliceWeights = ParseWeights(weightsStr);
     if (sliceWeights.size() != NUM_SLICES)
     {
@@ -696,7 +1063,49 @@ main(int argc, char* argv[])
         NS_FATAL_ERROR("Weights must sum to 1.0 (got " << wsum << ")");
     }
 
-    std::vector<double> p_j = sliceWeights;
+    RslaqMacScheduler::IntraSliceAlgorithm parsedIntraAlgo = ParseIntraAlgo(intraAlgo);
+    std::vector<RslaqMacScheduler::IntraSliceAlgorithm> sliceAlgos;
+    std::vector<double> p_j;
+    g_useSliceScheduler = ConfigureBaselineMode(baselineMode, sliceWeights, parsedIntraAlgo, &p_j, &sliceAlgos);
+
+    if (g_useSliceScheduler)
+    {
+        double configuredSum = std::accumulate(p_j.begin(), p_j.end(), 0.0);
+        NS_ASSERT_MSG(p_j.size() == NUM_SLICES, "weights.size() must be 3");
+        NS_ASSERT_MSG(std::abs(configuredSum - 1.0) < 1e-3,
+                      "sum(weights) must be approximately 1.0, got " << configuredSum);
+    }
+
+    std::filesystem::path baseOutput(outputDir);
+    outputDir = (baseOutput / "results_rslaq_network_only" /
+                 ("scenario=" + scenarioName) /
+                 ("mode=" + baselineMode) /
+                 ("seed=" + std::to_string(seed) + "_run=" + std::to_string(run)))
+                    .string();
+    std::filesystem::create_directories(outputDir);
+    if (!g_useSliceScheduler)
+    {
+        std::ofstream alloc(outputDir + "/slice_alloc.csv", std::ios::out | std::ios::trunc);
+        alloc << "timestamp_ms,slice,configured_weight,budget_rbg,allocated_rbg,"
+              << "total_allocated_rbg,rsh_real_pct,active_ues,effective_weight,"
+              << "beam_id,has_demand,reason,redistributed_idle_rbg,rntis\n";
+    }
+
+    bool tddApplied = false;
+    std::string appliedTddPattern = NormalizeTddPatternForNr(tddPattern, &tddApplied);
+    std::string duplexMode = tddApplied ? "tdd" : "dl_only";
+    bool dlOnly = !tddApplied;
+
+    bool embbSlaFeasible = (static_cast<double>(scenario.embbRateBps) / 1e6) >= SLA_MIN_MBPS[0];
+    if (!embbSlaFeasible)
+    {
+        std::cout << "WARNING: eMBB offered load is below eMBB minimum SLA. Goodput cannot satisfy SLA; use this scenario only to evaluate resource redistribution/waste.\n";
+    }
+    if (dlOnly)
+    {
+        std::cout << "WARNING: TDD pattern not applied. Running simplified DL-only simulation. Results are not directly comparable to RSLAQ Table IV.\n";
+    }
+
     g_indicationPeriodMs = indicationPeriodMs;
 
     const double centralFrequency = 2.59e9;
@@ -718,10 +1127,21 @@ main(int argc, char* argv[])
               << "SimTime      : " << simTimeSec << " s\n"
               << "TxPower      : " << txPowerDbm << " dBm\n"
               << "Stats period : " << indicationPeriodMs << " ms\n"
+              << "BaselineMode : " << baselineMode << "\n"
+              << "IntraAlgo    : " << (g_useSliceScheduler ? IntraAlgoName(sliceAlgos[0]) : "NA") << "\n"
+              << "Seed/Run     : " << seed << "/" << run << "\n"
               << "IPC enabled  : " << (simId.empty() ? "NO (standalone)" : "YES") << "\n"
-              << "Weights      : eMBB=" << p_j[0]
-              << " URLLC=" << p_j[1]
-              << " MTC=" << p_j[2] << "\n\n";
+              << "OutputDir    : " << outputDir << "\n";
+    if (g_useSliceScheduler)
+    {
+        std::cout << "Weights      : eMBB=" << p_j[0]
+                  << " URLLC=" << p_j[1]
+                  << " MTC=" << p_j[2] << "\n\n";
+    }
+    else
+    {
+        std::cout << "Weights      : NA (pure native scheduler)\n\n";
+    }
 
     // Setup IPC semaphores if simId provided
     if (!simId.empty())
@@ -754,7 +1174,7 @@ main(int argc, char* argv[])
     }
 
     RngSeedManager::SetSeed(seed);
-    RngSeedManager::SetRun(1);
+    RngSeedManager::SetRun(run);
 
     Config::SetDefault("ns3::NrRlcUm::MaxTxBufferSize", UintegerValue(10485760));
     Config::SetDefault("ns3::ThreeGppChannelModel::UpdatePeriod", TimeValue(MilliSeconds(0)));
@@ -792,7 +1212,7 @@ main(int argc, char* argv[])
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
     nrHelper->SetEpcHelper(epcHelper);
 
-    nrHelper->SetSchedulerTypeId(RslaqMacScheduler::GetTypeId());
+    nrHelper->SetSchedulerTypeId(NativeSchedulerForMode(baselineMode));
 
     nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(1));
     nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(1));
@@ -833,6 +1253,11 @@ main(int argc, char* argv[])
     // ---- PHY configuration ----
     nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)->SetAttribute("Numerology", UintegerValue(numerology));
     nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)->SetAttribute("TxPower", DoubleValue(txPowerDbm));
+    nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)->SetPattern(appliedTddPattern);
+    for (uint32_t i = 0; i < ueNetDev.GetN(); ++i)
+    {
+        nrHelper->GetUePhy(ueNetDev.Get(i), 0)->SetPattern(appliedTddPattern);
+    }
 
     // ---- EPC backhaul ----
     Ptr<Node> pgw = epcHelper->GetPgwNode();
@@ -862,26 +1287,34 @@ main(int argc, char* argv[])
     // ---- Attach UEs ----
     nrHelper->AttachToClosestGnb(ueNetDev, gnbNetDev);
 
-    // ---- Configure the RSLAQ Meta-Scheduler ----
+    // ---- Configure the RSLAQ Meta-Scheduler when a slice-aware mode is selected ----
     Ptr<NrMacScheduler> schedBase = NrHelper::GetScheduler(gnbNetDev.Get(0), 0);
     Ptr<RslaqMacScheduler> scheduler = DynamicCast<RslaqMacScheduler>(schedBase);
-    NS_ASSERT_MSG(scheduler != nullptr, "Failed to cast to RslaqMacScheduler");
-    g_schedulerPtr = scheduler;
+    if (g_useSliceScheduler)
+    {
+        NS_ASSERT_MSG(scheduler != nullptr, "Failed to cast to RslaqMacScheduler");
+        g_schedulerPtr = scheduler;
 
-    scheduler->SetScenarioName(scenarioName);
-    scheduler->SetOutputDir(outputDir);
+        scheduler->SetScenarioName(scenarioName);
+        scheduler->SetOutputDir(outputDir);
 
-    // Configure MAC logging attributes
-    scheduler->SetAttribute("LogAllMacSlots", BooleanValue(logAllMacSlots));
-    scheduler->SetAttribute("MacLoggingPeriodMs", UintegerValue(macLoggingPeriodMs));
-    scheduler->SetAttribute("EnableDetailedMacLogging", BooleanValue(true)); // Enable detailed logging
+        // Configure MAC logging attributes
+        scheduler->SetAttribute("LogAllMacSlots", BooleanValue(logAllMacSlots));
+        scheduler->SetAttribute("MacLoggingPeriodMs", UintegerValue(macLoggingPeriodMs));
+        scheduler->SetAttribute("EnableDetailedMacLogging", BooleanValue(true));
+    }
+    else
+    {
+        NS_ASSERT_MSG(scheduler == nullptr, "Pure baseline unexpectedly installed RslaqMacScheduler");
+        g_schedulerPtr = nullptr;
+    }
 
     // Mapeamento RNTI real pós-attach
     double mappingTime = std::min(0.1, appStartSec - 0.05);
     if (mappingTime < 0.0)
         mappingTime = 0.05;
 
-    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &p_j, &scenarioName, &outputDir, &ueIpIfaces]() {
+    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &p_j, &sliceAlgos, &scenarioName, &outputDir, &ueIpIfaces]() {
         std::vector<std::vector<uint32_t>> sliceRntis(NUM_SLICES);
         std::cout << "\n=== UE Mapping (RNTI real após attach) ===\n"
                   << std::setw(4) << "Idx" << " | "
@@ -945,13 +1378,11 @@ main(int argc, char* argv[])
         std::cout << "==========================================\n";
         std::cout << "UE/RNTI mapping written to: " << mappingPath << "\n\n";
 
-        scheduler->SetSliceUeMapping(NUM_SLICES, sliceRntis);
-
-        std::vector<RslaqMacScheduler::IntraSliceAlgorithm> defaultAlgos = {
-            RslaqMacScheduler::IntraSliceAlgorithm::PF,
-            RslaqMacScheduler::IntraSliceAlgorithm::PF,
-            RslaqMacScheduler::IntraSliceAlgorithm::PF};
-        scheduler->SetSliceConfiguration(p_j, defaultAlgos);
+        if (scheduler)
+        {
+            scheduler->SetSliceUeMapping(NUM_SLICES, sliceRntis);
+            scheduler->SetSliceConfiguration(p_j, sliceAlgos);
+        }
     });
 
     // ---- Applications (DL traffic) ----
@@ -967,6 +1398,7 @@ main(int argc, char* argv[])
         Ipv4Address ueAddr = ueIpIfaces.GetAddress(i);
 
         portToUeId[port] = ueId;
+        g_ueToSlice[ueId] = slice;
 
         UdpServerHelper serverHelper(port);
         serverApps.Add(serverHelper.Install(ueNodes.Get(i)));
@@ -990,7 +1422,7 @@ main(int argc, char* argv[])
     serverApps.Start(Seconds(appStartSec));
     clientApps.Start(Seconds(appStartSec));
     serverApps.Stop(Seconds(simTimeSec));
-    clientApps.Stop(Seconds(simTimeSec));
+    clientApps.Stop(Seconds(simTimeSec - drainTimeSec));
 
     // ---- Flow Monitor ----
     FlowMonitorHelper flowmonHelper;
@@ -1010,7 +1442,7 @@ main(int argc, char* argv[])
     // ---- Initialize baseline stats ----
     g_baseline.outputDir = outputDir;
     g_baseline.indicationPeriodMs = indicationPeriodMs;
-    g_baseline.activeDurationSec = simTimeSec - appStartSec;
+    g_baseline.activeDurationSec = simTimeSec - drainTimeSec - appStartSec;
     g_baseline.sliceStats[SliceType::EMBB] = SliceAggStats();
     g_baseline.sliceStats[SliceType::URLLC] = SliceAggStats();
     g_baseline.sliceStats[SliceType::MTC] = SliceAggStats();
@@ -1106,13 +1538,27 @@ main(int argc, char* argv[])
                   << "  TX/RX pkts : " << m.txPackets << " / " << m.rxPackets << "\n\n";
     }
 
-    std::string prefix = outputDir + "/rslaq_" + scenario.name;
-    WriteFinalCsv(prefix);
+    WriteSummaryCsv(outputDir, scenarioName, baselineMode);
+    WriteMetadataJson(outputDir,
+                      scenario,
+                      baselineMode,
+                      g_useSliceScheduler ? IntraAlgoName(sliceAlgos[0]) : "NA",
+                      seed,
+                      run,
+                      simTimeSec,
+                      drainTimeSec,
+                      p_j,
+                      duplexMode,
+                      tddPattern,
+                      appliedTddPattern,
+                      dlOnly,
+                      embbSlaFeasible);
 
     std::cout << "CSV outputs:\n"
-              << "  " << prefix << "_ue.csv\n"
-              << "  " << prefix << "_slice.csv\n"
-              << "  " << outputDir << "/rslaq_stats_timeseries.csv\n";
+              << "  " << outputDir << "/timeseries.csv\n"
+              << "  " << outputDir << "/slice_alloc.csv\n"
+              << "  " << outputDir << "/summary.csv\n"
+              << "  " << outputDir << "/metadata.json\n";
 
     // ---- Cleanup IPC ----
     if (g_ipcEnabled)

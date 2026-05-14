@@ -11,13 +11,13 @@
 
 set -euo pipefail
 
-REPO_ROOT="/home/eliothluy/Documentos/artigo_jussi"
+REPO_ROOT="/home/elioth/Documentos/artigo_jussi"
 NS3_DIR="${REPO_ROOT}/ns-3-dev"
 GYM_DIR="${REPO_ROOT}/ns-o-ran-gym"
 RESULTS_DIR="${GYM_DIR}/results"
 
 # ── Seed ──────────────────────────────────────────────────
-FIXED_SEED=3
+FIXED_SEED=1
 SEED_CYCLE=99999
 
 # ── Training ──────────────────────────────────────────────

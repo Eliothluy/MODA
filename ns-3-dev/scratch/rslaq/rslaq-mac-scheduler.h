@@ -14,6 +14,8 @@
 
 #include <cstdint>
 #include <fstream>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -94,6 +96,15 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      * @return total DL buffer size in bytes, 0 if not found
      */
     uint32_t GetUeDlBufferSize(uint16_t rnti) const;
+
+    struct SliceAllocationStats
+    {
+        uint64_t samples = 0;
+        uint64_t allocatedRbgTotal = 0;
+        double rshRealPctSum = 0.0;
+    };
+
+    std::vector<SliceAllocationStats> GetSliceAllocationStats() const;
 
     /**
      * @brief Set current slot number for logging
@@ -204,6 +215,8 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      * @brief Last known DL buffer size per RNTI (updated during scheduling)
      */
     mutable std::map<uint16_t, uint32_t> m_lastDlBufferSize;
+
+    mutable std::vector<SliceAllocationStats> m_sliceAllocationStats;
 
     /**
      * @brief Collect RNTIs present in the activeDl map

@@ -17,6 +17,7 @@
 #include "ns3/simulator.h"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
 #include <numeric>
@@ -172,9 +173,11 @@ RslaqMacScheduler::SetSliceUeMapping(uint32_t numSlices,
     NS_LOG_FUNCTION(this);
     m_numSlices = numSlices;
     m_sliceUeRnti = sliceUeRnti;
+    NS_ASSERT_MSG(m_numSlices == 3, "RSLAQ experiments require exactly 3 slices");
 
     m_prbWeights.resize(m_numSlices, 1.0 / m_numSlices);
     m_intraAlgorithms.resize(m_numSlices, IntraSliceAlgorithm::RR);
+    m_sliceAllocationStats.assign(m_numSlices, SliceAllocationStats());
 
     for (uint32_t s = 0; s < m_numSlices; s++)
     {
@@ -276,19 +279,13 @@ RslaqMacScheduler::OpenCsvFiles() const
     {
         prefix += '/';
     }
-    if (!m_scenarioName.empty())
-    {
-        prefix += m_scenarioName + "_";
-    }
-
     if (!m_sliceAllocCsv.is_open())
     {
         std::string path = prefix + "slice_alloc.csv";
         m_sliceAllocCsv.open(path, std::ios::out | std::ios::trunc);
-        // Header with new fields: callId, slot, bwpId, beamId
-        m_sliceAllocCsv << "callId,timeMs,scenario,slot,bwpId,beamId,sliceId,configuredWeight,"
-                           "effectiveWeight,activeUes,beamSym,hasDemand,budgetRbg,allocatedRbg,"
-                           "reason,rntis\n";
+        m_sliceAllocCsv << "timestamp_ms,slice,configured_weight,budget_rbg,allocated_rbg,"
+                           "total_allocated_rbg,rsh_real_pct,active_ues,effective_weight,"
+                           "beam_id,has_demand,reason,redistributed_idle_rbg,rntis\n";
         m_sliceAllocCsv.flush();
     }
     if (!m_unmappedRntiCsv.is_open())
@@ -379,6 +376,12 @@ RslaqMacScheduler::GetUeDlBufferSize(uint16_t rnti) const
 {
     auto it = m_lastDlBufferSize.find(rnti);
     return (it != m_lastDlBufferSize.end()) ? it->second : 0;
+}
+
+std::vector<RslaqMacScheduler::SliceAllocationStats>
+RslaqMacScheduler::GetSliceAllocationStats() const
+{
+    return m_sliceAllocationStats;
 }
 
 void
@@ -569,8 +572,13 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
         std::vector<uint32_t> sliceRbgBudget(m_numSlices, 0);
         if (activeWeightSum > 0.0)
         {
-            uint32_t allocatedSoFar = 0;
-            uint32_t lastActiveSlice = 0;
+            struct BudgetCandidate
+            {
+                uint32_t slice = 0;
+                double remainder = 0.0;
+            };
+            std::vector<BudgetCandidate> candidates;
+            uint32_t budgetSum = 0;
             for (uint32_t s = 0; s < m_numSlices; s++)
             {
                 if (!sliceHasDemand[s])
@@ -578,25 +586,37 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                     continue;
                 }
                 effectiveWeight[s] = m_prbWeights[s] / activeWeightSum;
-                lastActiveSlice = s;
+                double rawBudget = static_cast<double>(totalRbgs) * effectiveWeight[s];
+                double floored = std::floor(rawBudget);
+                sliceRbgBudget[s] = static_cast<uint32_t>(floored);
+                budgetSum += sliceRbgBudget[s];
+                candidates.push_back({s, rawBudget - floored});
             }
-            for (uint32_t s = 0; s < m_numSlices; s++)
+
+            NS_ASSERT_MSG(budgetSum <= totalRbgs, "Floor budgets exceeded total RBGs");
+            uint32_t remaining = totalRbgs - budgetSum;
+            uint32_t rotation = (static_cast<uint32_t>(timeMs) + m_currentSlot) % m_numSlices;
+            std::stable_sort(candidates.begin(),
+                             candidates.end(),
+                             [rotation, this](const BudgetCandidate& a, const BudgetCandidate& b) {
+                                 if (std::abs(a.remainder - b.remainder) > 1e-12)
+                                 {
+                                     return a.remainder > b.remainder;
+                                 }
+                                 uint32_t ar = (a.slice + m_numSlices - rotation) % m_numSlices;
+                                 uint32_t br = (b.slice + m_numSlices - rotation) % m_numSlices;
+                                 return ar < br;
+                             });
+
+            for (uint32_t i = 0; i < remaining && i < candidates.size(); ++i)
             {
-                if (!sliceHasDemand[s])
-                {
-                    continue;
-                }
-                if (s == lastActiveSlice)
-                {
-                    sliceRbgBudget[s] = totalRbgs - allocatedSoFar;
-                }
-                else
-                {
-                    sliceRbgBudget[s] = static_cast<uint32_t>(totalRbgs * effectiveWeight[s]);
-                    allocatedSoFar += sliceRbgBudget[s];
-                }
+                sliceRbgBudget[candidates[i].slice] += 1;
             }
         }
+
+        uint32_t budgetTotal = std::accumulate(sliceRbgBudget.begin(), sliceRbgBudget.end(), 0u);
+        NS_ASSERT_MSG(activeWeightSum <= 0.0 || budgetTotal == totalRbgs,
+                      "sum(sliceBudgetRbg)=" << budgetTotal << " totalRbgs=" << totalRbgs);
 
         for (uint32_t s = 0; s < m_numSlices; s++)
         {
@@ -605,6 +625,10 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                 BeforeDlSched(ue, FTResources(totalRbgs, beamSym));
             }
         }
+
+        std::vector<uint32_t> sliceAllocatedVec(m_numSlices, 0);
+        std::vector<std::string> sliceReasonVec(m_numSlices);
+        std::vector<std::string> sliceRntiListVec(m_numSlices);
 
         // --- Slice-by-slice allocation with diagnostic logging ---
         for (uint32_t s = 0; s < m_numSlices; s++)
@@ -753,28 +777,16 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                 }
             }
 
-            if (logThisSlot && m_sliceAllocCsv.is_open())
+            sliceAllocatedVec[s] = sliceAllocated;
+            sliceReasonVec[s] = reason;
+            std::ostringstream rntiList;
+            for (size_t i = 0; i < sliceUeVec[s].size(); ++i)
             {
-                std::ostringstream rntiList;
-                for (size_t i = 0; i < sliceUeVec[s].size(); ++i)
-                {
-                    if (i)
-                        rntiList << ";";
-                    rntiList << sliceUeVec[s][i].first->m_rnti;
-                }
-                m_sliceAllocCsv << callId << "," << timeMs << "," << m_scenarioName << ","
-                                << m_currentSlot << "," << m_bwpId << "," << beamIdStr << ","
-                                << s << ","
-                                << std::fixed << std::setprecision(4) << m_prbWeights[s] << ","
-                                << std::setprecision(4) << effectiveWeight[s] << ","
-                                << sliceUeVec[s].size() << ","
-                                << beamSym << ","
-                                << (sliceHasDemand[s] ? 1 : 0) << ","
-                                << sliceRbgBudget[s] << ","
-                                << sliceAllocated << ","
-                                << reason << ","
-                                << "\"" << rntiList.str() << "\"\n";
+                if (i)
+                    rntiList << ";";
+                rntiList << sliceUeVec[s][i].first->m_rnti;
             }
+            sliceRntiListVec[s] = rntiList.str();
 
             // Log per-UE demand details for no_demand slices
             if (logThisSlot && reason == "no_demand" && m_ueAllocCsv.is_open())
@@ -792,6 +804,52 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                                  << static_cast<uint32_t>(ue.first->m_dlRank) << ","
                                  << GetNumRbPerRbg() << ",no_demand\n";
                 }
+            }
+        }
+
+        uint32_t totalAllocatedRbg = std::accumulate(sliceAllocatedVec.begin(),
+                                                     sliceAllocatedVec.end(),
+                                                     0u);
+
+        for (uint32_t s = 0; s < m_numSlices; ++s)
+        {
+            NS_ASSERT_MSG(sliceAllocatedVec[s] <= sliceRbgBudget[s],
+                          "allocatedRbg=" << sliceAllocatedVec[s]
+                                          << " exceeds budgetRbg=" << sliceRbgBudget[s]
+                                          << " for slice " << s);
+
+            double rshRealPct = (totalAllocatedRbg > 0)
+                                    ? 100.0 * static_cast<double>(sliceAllocatedVec[s]) /
+                                          static_cast<double>(totalAllocatedRbg)
+                                    : 0.0;
+
+            if (m_sliceAllocationStats.size() == m_numSlices)
+            {
+                m_sliceAllocationStats[s].samples += 1;
+                m_sliceAllocationStats[s].allocatedRbgTotal += sliceAllocatedVec[s];
+                m_sliceAllocationStats[s].rshRealPctSum += rshRealPct;
+            }
+
+            if (logThisSlot && m_sliceAllocCsv.is_open())
+            {
+                uint32_t redistributedIdleRbg =
+                    (!sliceHasDemand[s] && sliceRbgBudget[s] == 0 && m_prbWeights[s] > 0.0)
+                        ? static_cast<uint32_t>(std::round(totalRbgs * m_prbWeights[s]))
+                        : 0;
+
+                m_sliceAllocCsv << timeMs << "," << s << ","
+                                << std::fixed << std::setprecision(4) << m_prbWeights[s] << ","
+                                << sliceRbgBudget[s] << ","
+                                << sliceAllocatedVec[s] << ","
+                                << totalAllocatedRbg << ","
+                                << std::setprecision(4) << rshRealPct << ","
+                                << sliceUeVec[s].size() << ","
+                                << std::setprecision(4) << effectiveWeight[s] << ","
+                                << beamIdStr << ","
+                                << (sliceHasDemand[s] ? 1 : 0) << ","
+                                << sliceReasonVec[s] << ","
+                                << redistributedIdleRbg << ","
+                                << "\"" << sliceRntiListVec[s] << "\"\n";
             }
         }
     }

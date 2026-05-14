@@ -1,0 +1,28 @@
+category,parameter,value,unit,source_or_note
+radio,name,Benetel RAN650 n78,,datasheet
+radio,rf_min,3.3e+09,Hz,datasheet
+radio,rf_max,3.8e+09,Hz,datasheet
+radio,max_bandwidth,1e+08,Hz,datasheet
+radio,scs,30,kHz,datasheet
+radio,numerology,1,,30 kHz SCS
+radio,tx_ports,4,,datasheet
+radio,rx_ports,4,,datasheet
+radio,tx_power_per_port,37,dBm,datasheet
+radio,aggregate_tx_power,43.0206,dBm,37+10log10(4)
+radio,configured_tx_power,43,dBm,5G-LENA TxPower attribute
+radio,receiver_noise_figure,4,dB,datasheet
+radio,typical_power_consumption,100,W,datasheet
+radio,ip_rating,IP65,,datasheet
+antenna,name,Alpha Wireless AW3161-E-F-V2,,datasheet
+antenna,type,Outdoor sector panel,,datasheet
+antenna,ports,4,,datasheet
+antenna,gain,17.4,dBi,datasheet/default or CLI
+antenna,max_gain,17.9,dBi,datasheet
+antenna,azimuth_beamwidth,65,deg,datasheet/default or CLI
+antenna,elevation_beamwidth,7,deg,datasheet/default or CLI
+antenna,electrical_downtilt,6,deg,CLI/default
+antenna,polarization,+/-45 slant linear,,datasheet
+link_budget,approximate_eirp,60.4,dBm,TxPower+AntennaGain documentation only
+link_budget,thermal_noise,-90,dBm,-174+10log10(BW)+NF
+model,antenna_element,ThreeGppAntennaModel,,5G-LENA model selection
+model,exact_aw3161_pattern_loaded,false,,no measured pattern file supplied

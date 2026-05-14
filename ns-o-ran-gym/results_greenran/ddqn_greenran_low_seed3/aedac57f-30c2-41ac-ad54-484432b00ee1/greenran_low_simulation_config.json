@@ -1,0 +1,64 @@
+{
+  "scenarioName": "greenran_low",
+  "seed": 3,
+  "simTimeSec": 12,
+  "appStartSec": 0.5,
+  "numUes": {"VIDEO_EMBB": 5, "SENSOR_MMTC": 8, "GENERIC_EMBB": 5},
+  "traffic": {
+    "VIDEO_EMBB": {"primaryDirection": "UL", "ulThroughputMbpsPerUe": 10, "ulPacketBytes": 1200, "dlFeedbackKbpsPerUe": 64},
+    "SENSOR_MMTC": {"primaryDirection": "UL", "packetBytes": 80, "intervalSecMean": 2, "startPhaseJitter": "deterministic_uniform", "estimatedKbpsPerSensor": 0.32},
+    "GENERIC_EMBB": {"primaryDirection": "DL+UL", "dlThroughputMbpsPerUe": 5, "dlPacketBytes": 1400, "ulVoipKbpsPerUe": 64}
+  },
+  "projectSliceModel": {
+    "source": "projetoUFPA/19175_Proposta_Ajustada (4).md",
+    "scope": "closest feasible approximation: application classes, NR QoS Flow/5QI, EPC bearer metadata, and RAN MAC PRB slicing",
+    "slices": [
+      {"sliceId": 0, "sliceName": "VIDEO_EMBB", "application": "App1-Vigilancia", "useCase": "Campus UFPA Belem: video 4K/H.265 e IA para seguranca publica", "serviceType": "eMBB low-latency video", "primaryDirection": "UL", "fiveQi": 80, "sla": {"dlThroughputMbps": 0.304, "ulThroughputMbps": 25, "delayMs": 100, "pdr": 0.99}, "notes": "Aproxima 5QI 80 para eMBB de baixa latencia; cameras 4K requerem cerca de 25 Mbps e <100 ms."},
+      {"sliceId": 1, "sliceName": "SENSOR_MMTC", "application": "App2-Monitoramento", "useCase": "Agro/Campus: sensores ambientais e de solo com coleta intermitente", "serviceType": "mMTC sensor monitoring", "primaryDirection": "UL", "fiveQi": 70, "sla": {"dlThroughputMbps": 0, "ulThroughputMbps": 0, "delayMs": 5000, "pdr": 0.95}, "notes": "Aproxima 5QI 70 para dados criticos/monitoramento; foco em PDR, escala e uso eficiente de PRBs."},
+      {"sliceId": 2, "sliceName": "GENERIC_EMBB", "application": "App3-Usuarios", "useCase": "Campus UFPA: usuarios comuns com streaming e VoIP", "serviceType": "eMBB mixed traffic", "primaryDirection": "DL+UL", "fiveQi": 8, "sla": {"dlThroughputMbps": 22.5, "ulThroughputMbps": 0.32, "delayMs": 150, "pdr": 0.98}, "notes": "Aproxima 5QI 4 para streaming e 5QI 1 para VoIP; trafego misto de usuarios de campus."}
+    ]
+  },
+  "directionClassification": "DL if sourceAddress == remoteHostAddr; UL if destinationAddress == remoteHostAddr",
+  "hardwareProfile": "ran650_aw3161_outdoor",
+  "radioUnit": {
+    "name": "Benetel RAN650 n78",
+    "frequencyRangeHz": [3.3e+09, 3.8e+09],
+    "instantaneousBandwidthHz": 1e+08,
+    "scsKHz": 30,
+    "numerology": 1,
+    "txPorts": 4,
+    "rxPorts": 4,
+    "txPowerPerPortDbm": 37,
+    "aggregateTxPowerDbm": 43.0206,
+    "configuredTxPowerDbm": 43,
+    "txPowerMode": "explicit_cli",
+    "receiverNoiseFigureDb": 4,
+    "typicalPowerConsumptionW": 100,
+    "ipRating": "IP65",
+    "oRanSplit": "7.2x"
+  },
+  "antennaPanel": {
+    "name": "Alpha Wireless AW3161-E-F-V2",
+    "type": "Outdoor sector panel",
+    "ports": 4,
+    "gainDbi": 17.4,
+    "maxGainDbi": 17.9,
+    "azimuthBeamwidthDeg": 65,
+    "elevationBeamwidthDeg": 7,
+    "electricalDowntiltDeg": 6,
+    "polarization": "+/-45 slant linear",
+    "frontToBackRatioDb": 30,
+    "crossPolarDiscriminationDb": 18,
+    "isolationDb": 28
+  },
+  "weights": {"source": "CLI", "values": [0.4, 0.15, 0.45]},
+  "nr": {"centralFrequencyHz": 3.55e+09, "bandwidthHz": 1e+08, "numerology": 1, "estimatedPrbs": 272, "estimatedRbgs": 17, "estimatedRbPerRbg": 16, "txPowerDbm": 43, "approximateEirpDbm": 60.4, "thermalNoiseDbm": -90},
+  "channel": {"deploymentScenarioCli": "umi", "threeGppScenario": "UMi", "shadowing": true},
+  "mobility": {"ueAreaRadiusM": 80, "gnbHeightM": 10, "ueHeightM": 1.5},
+  "antenna": {"gnbRows": 2, "gnbColumns": 2, "ueRows": 1, "ueColumns": 1, "element": "ThreeGppAntennaModel", "exactAw3161PatternLoaded": false, "mimoSpatialMultiplexingClaimed": false},
+  "scheduler": {"type": "MacScheduler", "ranSideOnly": true, "ulSlicingEnabled": true},
+  "ipc": {"enabled": true, "drlControlEnabled": true, "mode": "non_blocking_sem_trywait", "simId": "aedac57f-30c2-41ac-ad54-484432b00ee1", "metricsSemaphore": "/rslaq_metrics_aedac57f-30c2-41ac-ad54-484432b00ee1", "controlSemaphore": "/rslaq_control_aedac57f-30c2-41ac-ad54-484432b00ee1", "kpmFile": "rslaq-kpms.txt", "actionFile": "rslaq_actions_for_ns3.csv", "actionFormat": "timestamp,sliceId,dedicatedPRB,minPRB,maxPRB"},
+  "kpmAndMacMetrics": {"macBufferCongestionCsv": "greenran_mac_buffer_congestion.csv", "slicePrbCsvPattern": "*_slice_alloc*.csv", "bufferCongestionReferenceBytes": 10485760},
+  "modelingNotes": {"slicingScope": "near-end-to-end approximation with RAN/MAC enforcement by UE/RNTI", "notModeled": ["full 5GC slicing", "NSSF/AMF/SMF/UPF slicing", "real SDAP entity", "exact measured antenna pattern file", "real O-RAN fronthaul latency unless explicitly modeled"]},
+  "modelLimitations": ["RAN-side MAC/RBG slicing only", "No complete 5GC slicing", "No NSSF/AMF/SMF/UPF slicing", "5QI/QFI are represented with 5G-LENA dedicated QoS flows but not a full 5GC policy chain", "AW3161 exact measured radiation pattern is not loaded", "Hardware profile changed; old results are not directly comparable"]
+}
