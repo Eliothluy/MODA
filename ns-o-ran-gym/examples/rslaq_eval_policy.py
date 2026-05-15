@@ -62,6 +62,15 @@ class FixedBaselineAgent:
             return 0
 
 
+def parse_weights(weights: str) -> np.ndarray:
+    values = np.array([float(x.strip()) for x in weights.split(",")], dtype=np.float64)
+    if values.shape[0] != 3:
+        raise ValueError("--p_sta_weights must contain exactly 3 comma-separated values")
+    if values.sum() <= 0:
+        raise ValueError("--p_sta_weights must sum to a positive value")
+    return values / values.sum()
+
+
 def load_sac_agent(checkpoint_path, state_shape):
     from examples.rslaq_train_sac import SACActor
 
@@ -107,6 +116,12 @@ def evaluate_agent(
     max_steps,
     run_id,
     agent_name,
+    include_scheduler=False,
+    enable_step_logging=True,
+    step_log_file="step_metrics.csv",
+    p_sta_weights=None,
+    p_sta_static_fraction=0.5,
+    sla_config=None,
 ):
     env = RslaqEnv(
         ns3_path=os.path.abspath(ns3_path),
@@ -117,6 +132,12 @@ def evaluate_agent(
         observation_mode=observation_mode,
         max_steps=max_steps if max_steps != "auto" else None,
         apply_p_sta=True,  # P_STA applied in Python, ns-3 receives final values
+        p_sta_weights=p_sta_weights,
+        p_sta_static_fraction=p_sta_static_fraction,
+        sla_config=sla_config or {},
+        include_scheduler=include_scheduler,
+        enable_step_logging=enable_step_logging,
+        step_log_file=step_log_file,
     )
 
     rows = []
@@ -192,6 +213,24 @@ def main():
     parser.add_argument("--periodMs", type=int, default=10)
     parser.add_argument("--max_steps", type=str, default="auto")
     parser.add_argument("--observation_mode", type=str, default="paper")
+    parser.set_defaults(include_scheduler=True)
+    parser.add_argument("--no-include-scheduler", action="store_false", dest="include_scheduler",
+                        help="Disable scheduler selection for DDQN evaluation")
+    parser.set_defaults(enable_step_logging=True)
+    parser.add_argument("--no-step-logging", action="store_false", dest="enable_step_logging",
+                        help="Disable per-step step_metrics.csv logging")
+    parser.add_argument("--step_log_file", type=str, default="step_metrics.csv",
+                        help="Per-simulation step metrics filename")
+    parser.add_argument("--p_sta_static_fraction", type=float, default=0.5,
+                        help="Static fraction in P_STA decomposition")
+    parser.add_argument("--p_sta_weights", type=str, default="0.3333,0.4000,0.2667",
+                        help="Comma-separated P_STA static weights")
+    parser.add_argument("--reward_alpha", type=float, default=0.3333,
+                        help="Reward weight for eMBB")
+    parser.add_argument("--reward_beta", type=float, default=0.4000,
+                        help="Reward weight for URLLC")
+    parser.add_argument("--reward_gamma", type=float, default=0.2667,
+                        help="Reward weight for MTC")
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -207,6 +246,13 @@ def main():
     }
 
     action_mode = "continuous" if args.algo == "sac" else "discrete"
+    include_scheduler = bool(args.include_scheduler and args.algo == "ddqn")
+    p_sta_weights = parse_weights(args.p_sta_weights)
+    sla_config = {
+        "alpha": args.reward_alpha,
+        "beta": args.reward_beta,
+        "gamma": args.reward_gamma,
+    }
 
     # Load agent
     if args.algo == "sac":
@@ -220,6 +266,10 @@ def main():
             observation_mode=args.observation_mode,
             max_steps=1,
             apply_p_sta=True,
+            p_sta_weights=p_sta_weights,
+            p_sta_static_fraction=args.p_sta_static_fraction,
+            include_scheduler=False,
+            enable_step_logging=False,
         )
         state_shape = tmp_env.observation_space.shape
         tmp_env.close()
@@ -234,9 +284,13 @@ def main():
             observation_mode=args.observation_mode,
             max_steps=1,
             apply_p_sta=True,
+            p_sta_weights=p_sta_weights,
+            p_sta_static_fraction=args.p_sta_static_fraction,
+            include_scheduler=include_scheduler,
+            enable_step_logging=False,
         )
         state_shape = tmp_env.observation_space.shape
-        action_size = len(build_discrete_action_table(step=0.1, include_scheduler=False))
+        action_size = len(build_discrete_action_table(step=0.1, include_scheduler=include_scheduler))
         tmp_env.close()
         agent_fn = load_ddqn_agent(args.checkpoint, state_shape, action_size)
 
@@ -265,6 +319,12 @@ def main():
             args.max_steps,
             run_id,
             f"{args.algo}_s{seed}",
+            include_scheduler=include_scheduler,
+            enable_step_logging=args.enable_step_logging,
+            step_log_file=args.step_log_file,
+            p_sta_weights=p_sta_weights,
+            p_sta_static_fraction=args.p_sta_static_fraction,
+            sla_config=sla_config,
         )
         all_rows.extend(rows)
 
@@ -293,6 +353,12 @@ def main():
                 args.max_steps,
                 run_id,
                 f"{name}_s{seed}",
+                include_scheduler=False,
+                enable_step_logging=args.enable_step_logging,
+                step_log_file=args.step_log_file,
+                p_sta_weights=p_sta_weights,
+                p_sta_static_fraction=args.p_sta_static_fraction,
+                sla_config=sla_config,
             )
             all_rows.extend(rows)
 

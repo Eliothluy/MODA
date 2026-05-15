@@ -1,0 +1,4 @@
+scenario,slice,offered_traffic_estimated_mbps,throughput_measured_mean_mbps,throughput_measured_max_mbps,sla_min,sla_soft_or_max,physical_status,notes
+low_traffic,eMBB,5.0,4.581429825641027,12.224,10.0,15.0,erro provável de unidade/configuração,eMBB offered traffic is 5 Mbps while paper SLA minimum is 10 Mbps
+low_traffic,URLLC,1.0,1.4375583248212462,5.3664000000000005,,10000.0,factível,
+low_traffic,MTC,2.0,2.389612257405516,5.9392000000000005,,10.0,factível,

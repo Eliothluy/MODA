@@ -1,4 +1,5 @@
 from typing_extensions import override
+import csv
 import numpy as np
 import uuid
 import time
@@ -25,6 +26,7 @@ from .rslaq_action_spaces import (
     continuous_action_to_prb,
     discrete_action_to_prb,
     DEFAULT_WEIGHTS,
+    scheduler_id_to_name,
 )
 from .rslaq_kpis import parse_kpm_file, build_observation
 from .rslaq_reward import compute_rslaq_reward
@@ -62,6 +64,10 @@ class RslaqEnv(NsOranEnv):
         include_scheduler: bool = False,
         sla_config: dict | None = None,
         apply_p_sta: bool = True,
+        p_sta_weights=None,
+        p_sta_static_fraction: float = 0.5,
+        enable_step_logging: bool = True,
+        step_log_file: str = "step_metrics.csv",
     ):
         # Ensure required keys exist
         scenario_configuration.setdefault("simId", [""])
@@ -88,6 +94,13 @@ class RslaqEnv(NsOranEnv):
         self.include_scheduler = include_scheduler
         self.sla_config = sla_config or {}
         self.apply_p_sta = apply_p_sta
+        self.p_sta_weights = np.asarray(
+            p_sta_weights if p_sta_weights is not None else DEFAULT_WEIGHTS,
+            dtype=np.float64,
+        )
+        self.p_sta_static_fraction = float(p_sta_static_fraction)
+        self.enable_step_logging = enable_step_logging
+        self.step_log_file = step_log_file
         self.scenario_name = scenario_configuration.get("scenario", ["normal"])[0]
 
         # Action table for discrete mode
@@ -151,6 +164,8 @@ class RslaqEnv(NsOranEnv):
         self.kpi_dict: dict = {}
         self.num_steps = 0
         self.latest_action_info: dict = {}
+        self._step_log_path: str | None = None
+        self._step_log_initialized = False
 
         # History of per-step KPI dicts for consecutive-period outage detection
         self.kpi_history: deque[dict] = deque(maxlen=10)
@@ -197,6 +212,8 @@ class RslaqEnv(NsOranEnv):
         self.sim_result["meta"]["id"] = sim_uuid
         self.sim_path = os.path.join(self.output_folder, sim_uuid)
         os.makedirs(self.sim_path)
+        self._step_log_path = os.path.join(self.sim_path, self.step_log_file)
+        self._step_log_initialized = False
 
         self.action_controller = ActionController(
             self.sim_path, self.log_file, self.control_file, self.control_header
@@ -246,7 +263,12 @@ class RslaqEnv(NsOranEnv):
                 raise ValueError(
                     f"Continuous action must have shape (3,), got {raw.shape}"
                 )
-            prb_pct = continuous_action_to_prb(raw, apply_p_sta=self.apply_p_sta)
+            prb_pct = continuous_action_to_prb(
+                raw,
+                weights=self.p_sta_weights,
+                static_fraction=self.p_sta_static_fraction,
+                apply_p_sta=self.apply_p_sta,
+            )
             scheduler_id = -1
         elif self.action_mode == "discrete":
             if not isinstance(action, (int, np.integer)):
@@ -260,7 +282,11 @@ class RslaqEnv(NsOranEnv):
                     "This should not happen."
                 )
             prb_pct, scheduler_id = discrete_action_to_prb(
-                action_idx, self.action_table, apply_p_sta=self.apply_p_sta
+                action_idx,
+                self.action_table,
+                weights=self.p_sta_weights,
+                static_fraction=self.p_sta_static_fraction,
+                apply_p_sta=self.apply_p_sta,
             )
         else:
             raise ValueError(f"Unknown action_mode: {self.action_mode}")
@@ -278,7 +304,10 @@ class RslaqEnv(NsOranEnv):
         self.latest_action_info = {
             "prb_pct": prb_pct.tolist(),
             "scheduler_id": int(scheduler_id),
+            "scheduler_name": scheduler_id_to_name(int(scheduler_id)) if scheduler_id >= 0 else "PF(default)",
             "action_mode": self.action_mode,
+            "p_sta_static_fraction": self.p_sta_static_fraction,
+            "p_sta_weights": self.p_sta_weights.tolist(),
         }
         return actions
 
@@ -358,7 +387,100 @@ class RslaqEnv(NsOranEnv):
         reward_val = self._compute_reward()
 
         info = self._build_info(action)
+        self._write_step_metrics(action, reward_val, info)
         return obs, reward_val, self.terminated, self.truncated, info
+
+    def _write_step_metrics(self, raw_action, reward_val: float, info: dict) -> None:
+        """Persist one row per slice for each environment step."""
+        if not self.enable_step_logging or not self._step_log_path:
+            return
+
+        header = [
+            "seed",
+            "scenario",
+            "episode",
+            "step",
+            "algo_mode",
+            "slice_id",
+            "slice",
+            "throughput_mbps",
+            "dTxBytes",
+            "dRxBytes",
+            "bufferBytes_mean",
+            "bufferBytes_max",
+            "plr_pct",
+            "pdr_pct",
+            "dLostPackets",
+            "resourceSharePct",
+            "action_embb",
+            "action_urllc",
+            "action_mtc",
+            "scheduler_id",
+            "scheduler_name",
+            "raw_action",
+            "reward",
+            "outage_flag",
+            "soft_flag",
+            "terminated",
+            "truncated",
+            "sim_id",
+        ]
+
+        if not self._step_log_initialized:
+            with open(self._step_log_path, "w", newline="") as f:
+                csv.writer(f).writerow(header)
+            self._step_log_initialized = True
+
+        action_info = info.get("action_info", {})
+        prb_pct = action_info.get("prb_pct", [0.0, 0.0, 0.0])
+        scheduler_id = int(action_info.get("scheduler_id", -1))
+        scheduler_name = action_info.get("scheduler_name", "PF(default)")
+        outage_flags = info.get("outage_flags", {})
+        soft_flags = info.get("soft_flags", {})
+        current_seed = int(self.scenario_configuration.get("seed", [self._base_seed])[0])
+        sim_id = self.sim_result.get("meta", {}).get("id", "") if self.sim_result else ""
+
+        raw_action_str = np.asarray(raw_action).flatten().tolist()
+
+        rows = []
+        for sid in range(self.num_slices):
+            metrics = self.kpi_dict.get(sid, {})
+            plr_pct = float(metrics.get("plr_mean", 0.0))
+            rows.append(
+                [
+                    current_seed,
+                    self.scenario_name,
+                    self._episode_count,
+                    self.num_steps,
+                    self.action_mode,
+                    sid,
+                    slice_name(sid),
+                    metrics.get("throughputMbps_sum", 0.0),
+                    metrics.get("dTxBytes_sum", 0.0),
+                    metrics.get("dRxBytes_sum", 0.0),
+                    metrics.get("bufferBytes_mean", 0.0),
+                    metrics.get("bufferBytes_max", 0.0),
+                    plr_pct,
+                    max(0.0, 100.0 - plr_pct),
+                    metrics.get("dLostPackets_sum", 0.0),
+                    metrics.get("resourceSharePct_mean", 0.0),
+                    prb_pct[0] if len(prb_pct) > 0 else 0.0,
+                    prb_pct[1] if len(prb_pct) > 1 else 0.0,
+                    prb_pct[2] if len(prb_pct) > 2 else 0.0,
+                    scheduler_id,
+                    scheduler_name,
+                    raw_action_str,
+                    reward_val,
+                    bool(outage_flags.get(sid, False)),
+                    bool(soft_flags.get(sid, False)),
+                    bool(self.terminated),
+                    bool(self.truncated),
+                    sim_id,
+                ]
+            )
+
+        with open(self._step_log_path, "a", newline="") as f:
+            csv.writer(f).writerows(rows)
 
     def _build_info(self, raw_action) -> dict:
         """Build the info dict returned by step()."""
@@ -381,6 +503,9 @@ class RslaqEnv(NsOranEnv):
                 "dLostPackets_sum": metrics.get("dLostPackets_sum", 0.0),
                 "resourceSharePct_mean": metrics.get("resourceSharePct_mean", 0.0),
                 "dTxBytes_sum": metrics.get("dTxBytes_sum", 0.0),
+                "dRxBytes_sum": metrics.get("dRxBytes_sum", 0.0),
+                "bufferBytes_mean": metrics.get("bufferBytes_mean", 0.0),
+                "bufferBytes_max": metrics.get("bufferBytes_max", 0.0),
             }
 
         # Reward debug info if available
@@ -390,5 +515,3 @@ class RslaqEnv(NsOranEnv):
             info["soft_flags"] = self._last_reward_result.soft_flags
 
         return info
-
-

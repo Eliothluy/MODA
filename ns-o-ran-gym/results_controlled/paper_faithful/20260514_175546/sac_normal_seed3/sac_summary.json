@@ -1,0 +1,23 @@
+{
+  "method": "sac",
+  "scenario_mode": "fixed",
+  "scenarios": [
+    "normal"
+  ],
+  "episodes": 50,
+  "interaction_budget": 5000,
+  "apply_p_sta": true,
+  "p_sta_static_fraction": 0.5,
+  "p_sta_weights": [
+    0.3333,
+    0.4,
+    0.2667
+  ],
+  "reward_weights": [
+    0.3333,
+    0.4,
+    0.2667
+  ],
+  "final_avg_100": 4.084623022779445,
+  "best_avg": 6.3226855346202875
+}

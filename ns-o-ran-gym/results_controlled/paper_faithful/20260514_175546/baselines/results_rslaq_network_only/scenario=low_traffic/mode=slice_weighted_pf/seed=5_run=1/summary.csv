@@ -1,0 +1,4 @@
+scenario,baseline_mode,slice,throughput_mbps_mean,throughput_mbps_p50,throughput_mbps_p95,delay_ms_mean,delay_ms_p95,delay_ms_p99,jitter_ms_mean,pdr_pct,plr_pct,buffer_bytes_mean,buffer_bytes_p95,buffer_bytes_p99,rsh_real_pct_mean,allocated_rbg_total,rx_bytes_total,tx_bytes_total
+low_traffic,slice_weighted_pf,eMBB,5.0730,1.2224,1.2224,10.538,12.100,15.100,2.287,100.000,0.000,539.91,1537.00,1537.00,35.3469,9573,634120,634120
+low_traffic,slice_weighted_pf,URLLC,1.5569,0.2496,0.4368,5.950,6.100,6.100,1.450,100.000,0.000,106.98,169.00,169.00,37.2115,10078,194610,194610
+low_traffic,slice_weighted_pf,MTC,2.5498,0.2048,0.4096,6.417,7.600,7.767,1.960,100.000,0.000,109.35,137.00,137.00,27.4416,7432,318720,318720

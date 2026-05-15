@@ -1,0 +1,15 @@
+{
+  "experiment_line": "paper_faithful",
+  "run_tag": "20260514_175546",
+  "scenarios": "low_traffic normal congestion stressed insufficient_resources",
+  "seeds": "1 2 3 4 5",
+  "episodes": 50,
+  "episode_steps": 100,
+  "interaction_budget": 5000,
+  "sim_time": 1.7,
+  "app_start": 0.5,
+  "period_ms": 10,
+  "p_sta_static_fraction": 0.5,
+  "p_sta_weights": "0.3333,0.4000,0.2667",
+  "reward_weights": "0.3333,0.4000,0.2667"
+}

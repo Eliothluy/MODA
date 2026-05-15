@@ -255,6 +255,24 @@ IntraAlgoName(RslaqMacScheduler::IntraSliceAlgorithm algo)
     return "UNKNOWN";
 }
 
+static RslaqMacScheduler::IntraSliceAlgorithm
+IntraAlgoFromActionId(int schedulerId)
+{
+    switch (schedulerId)
+    {
+    case 0:
+        return RslaqMacScheduler::IntraSliceAlgorithm::RR;
+    case 1:
+        return RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    case 2:
+        return RslaqMacScheduler::IntraSliceAlgorithm::BCQI;
+    default:
+        NS_LOG_WARN("[RslaqSim] Unknown action scheduler id " << schedulerId
+                                                              << "; falling back to PF");
+        return RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    }
+}
+
 static TypeId
 NativeSchedulerForMode(const std::string& baselineMode)
 {
@@ -900,7 +918,9 @@ KpmAndControlCallback()
             {
                 std::string line;
                 std::vector<double> dedicatedPrb(NUM_SLICES, 33.33);
-                std::getline(actionFile, line); // skip header
+                std::vector<RslaqMacScheduler::IntraSliceAlgorithm> algos(
+                    NUM_SLICES,
+                    RslaqMacScheduler::IntraSliceAlgorithm::PF);
                 while (std::getline(actionFile, line))
                 {
                     std::stringstream ss(line);
@@ -912,11 +932,23 @@ KpmAndControlCallback()
                     }
                     if (cols.size() >= 4)
                     {
-                        uint32_t sliceId = static_cast<uint32_t>(std::stoi(cols[1]));
-                        double ded = std::stod(cols[2]);
-                        if (sliceId < NUM_SLICES)
+                        try
                         {
-                            dedicatedPrb[sliceId] = ded;
+                            uint32_t sliceId = static_cast<uint32_t>(std::stoi(cols[1]));
+                            double ded = std::stod(cols[2]);
+                            if (sliceId < NUM_SLICES)
+                            {
+                                dedicatedPrb[sliceId] = ded;
+                                if (cols.size() >= 6)
+                                {
+                                    algos[sliceId] = IntraAlgoFromActionId(std::stoi(cols[5]));
+                                }
+                            }
+                        }
+                        catch (const std::exception&)
+                        {
+                            // Allows both headerless control files and optional CSV headers.
+                            continue;
                         }
                     }
                 }
@@ -945,15 +977,14 @@ KpmAndControlCallback()
                         }
                     }
 
-                    std::vector<RslaqMacScheduler::IntraSliceAlgorithm> algos = {
-                        RslaqMacScheduler::IntraSliceAlgorithm::PF,
-                        RslaqMacScheduler::IntraSliceAlgorithm::PF,
-                        RslaqMacScheduler::IntraSliceAlgorithm::PF};
                     g_schedulerPtr->SetSliceConfiguration(p_final, algos);
 
                     NS_LOG_INFO("[RslaqSim] IPC action applied at t=" << nowMs
                                 << "ms: weights=[" << p_final[0] << ", "
-                                << p_final[1] << ", " << p_final[2] << "]");
+                                << p_final[1] << ", " << p_final[2] << "]"
+                                << " algos=[" << IntraAlgoName(algos[0]) << ", "
+                                << IntraAlgoName(algos[1]) << ", "
+                                << IntraAlgoName(algos[2]) << "]");
                 }
             }
         }

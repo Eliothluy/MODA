@@ -1,0 +1,4 @@
+scenario,slice,ues,packet_size_bytes,per_ue_rate_mbps,packet_interval_ms_estimated,trafego_oferecido_estimado_mbps,throughput_medido_mbps_max_observado,sla_minimo,sla_maximo_soft,nivel_medicao_throughput,status_fisico
+low_traffic,eMBB,5,1500,1.0,12.0,5.0,5.631189333333335,10.0,15.0,FlowMonitor/IP UDP rxBytes delta; DRL KPM usa dRxBytes por periodo,aparentemente infactivel
+low_traffic,URLLC,5,50,0.2,2.0,1.0,1.5597,buffer <= 10000 bytes,sem soft max,FlowMonitor/IP UDP rxBytes delta; DRL KPM usa dRxBytes por periodo,factivel
+low_traffic,MTC,10,100,0.2,4.0,2.0,2.5589,no-policy no artigo,no-policy,FlowMonitor/IP UDP rxBytes delta; DRL KPM usa dRxBytes por periodo,inconclusivo por falta de metrica

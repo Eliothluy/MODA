@@ -1,0 +1,25 @@
+{
+  "method": "ddqn",
+  "scenario_mode": "fixed",
+  "scenarios": [
+    "low_traffic"
+  ],
+  "episodes": 50,
+  "ntsr": 100,
+  "interaction_budget": 5000,
+  "include_scheduler": true,
+  "apply_p_sta": true,
+  "p_sta_static_fraction": 0.5,
+  "p_sta_weights": [
+    0.3333,
+    0.4,
+    0.2667
+  ],
+  "reward_weights": [
+    0.3333,
+    0.4,
+    0.2667
+  ],
+  "final_avg_100": 3.9629599546876677,
+  "best_avg": 4.0442086347004675
+}

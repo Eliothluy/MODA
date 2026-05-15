@@ -221,6 +221,15 @@ def choose_scenario(episode, mode, scenarios_list):
     return scenarios_list[0]
 
 
+def parse_weights(weights: str) -> np.ndarray:
+    values = np.array([float(x.strip()) for x in weights.split(",")], dtype=np.float64)
+    if values.shape[0] != 3:
+        raise ValueError("--p_sta_weights must contain exactly 3 comma-separated values")
+    if values.sum() <= 0:
+        raise ValueError("--p_sta_weights must sum to a positive value")
+    return values / values.sum()
+
+
 def train_ddqn(args):
     set_seed(args.seed)
 
@@ -268,7 +277,11 @@ def train_ddqn(args):
         "max_buffer_bytes": args.max_buffer_bytes,
         "warmup_steps": args.warmup_steps,
         "consecutive_outage_steps": args.consecutive_outage_steps,
+        "alpha": args.reward_alpha,
+        "beta": args.reward_beta,
+        "gamma": args.reward_gamma,
     }
+    p_sta_weights = parse_weights(args.p_sta_weights)
 
     env = RslaqEnv(
         ns3_path=os.path.abspath(args.ns3_path),
@@ -279,8 +292,12 @@ def train_ddqn(args):
         observation_mode=args.observation_mode,
         max_steps=max_steps,
         apply_p_sta=args.apply_p_sta,
+        p_sta_weights=p_sta_weights,
+        p_sta_static_fraction=args.p_sta_static_fraction,
         include_scheduler=args.include_scheduler,
         sla_config=sla_config,
+        enable_step_logging=args.enable_step_logging,
+        step_log_file=args.step_log_file,
     )
 
     state_shape = env.observation_space.shape
@@ -417,6 +434,12 @@ def train_ddqn(args):
         "scenarios": scenario_list,
         "episodes": args.episodes,
         "ntsr": args.ntsr,
+        "interaction_budget": args.episodes * min(args.ntsr, max_steps),
+        "include_scheduler": args.include_scheduler,
+        "apply_p_sta": args.apply_p_sta,
+        "p_sta_static_fraction": args.p_sta_static_fraction,
+        "p_sta_weights": p_sta_weights.tolist(),
+        "reward_weights": [args.reward_alpha, args.reward_beta, args.reward_gamma],
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
     }
@@ -481,6 +504,21 @@ def main():
                         help="Steps to suppress terminal conditions at episode start")
     parser.add_argument("--consecutive_outage_steps", type=int, default=5,
                         help="Consecutive steps to declare outage (default 5 = 50ms)")
+    parser.add_argument("--p_sta_static_fraction", type=float, default=0.5,
+                        help="Static fraction in P_STA decomposition")
+    parser.add_argument("--p_sta_weights", type=str, default="0.3333,0.4000,0.2667",
+                        help="Comma-separated P_STA static weights")
+    parser.add_argument("--reward_alpha", type=float, default=0.3333,
+                        help="Reward weight for eMBB")
+    parser.add_argument("--reward_beta", type=float, default=0.4000,
+                        help="Reward weight for URLLC")
+    parser.add_argument("--reward_gamma", type=float, default=0.2667,
+                        help="Reward weight for MTC")
+    parser.set_defaults(enable_step_logging=True)
+    parser.add_argument("--no-step-logging", action="store_false", dest="enable_step_logging",
+                        help="Disable per-step step_metrics.csv logging")
+    parser.add_argument("--step_log_file", type=str, default="step_metrics.csv",
+                        help="Per-simulation step metrics filename")
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":
