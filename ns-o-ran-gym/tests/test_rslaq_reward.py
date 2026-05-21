@@ -97,6 +97,49 @@ def test_embb_outage_below_min():
     assert result.reward == -ALPHA
 
 
+def test_demand_aware_embb_outage_disabled_by_default():
+    """Paper-faithful default still uses the absolute eMBB SLA threshold."""
+    metrics = _good_metrics()
+    metrics[0]["dTxBytes_sum"] = 7640.0
+    metrics[0]["throughputMbps_sum"] = 6.112
+    result = compute_rslaq_reward(metrics, scenario="normal",
+                                  step_count=POST_WARMUP, config=INSTANT_OUTAGE_CONFIG)
+    assert result.outage_flags[0] is True
+    assert result.terminated
+
+
+def test_demand_aware_embb_outage_suppresses_low_load_false_positive():
+    """Demand-aware mode caps the eMBB SLA by offered traffic."""
+    metrics = _good_metrics()
+    metrics[0]["dTxBytes_sum"] = 7640.0  # 6.112 Mbps over 10 ms
+    metrics[0]["throughputMbps_sum"] = 6.112
+    config = {
+        **INSTANT_OUTAGE_CONFIG,
+        "demand_aware_embb_outage": True,
+        "period_ms": 10,
+    }
+    result = compute_rslaq_reward(metrics, scenario="normal",
+                                  step_count=POST_WARMUP, config=config)
+    assert result.outage_flags[0] is False
+    assert not result.terminated
+
+
+def test_demand_aware_embb_outage_still_flags_unserved_demand():
+    """Demand-aware mode still flags eMBB when offered demand is not served."""
+    metrics = _good_metrics()
+    metrics[0]["dTxBytes_sum"] = 20000.0  # 16 Mbps offered over 10 ms
+    metrics[0]["throughputMbps_sum"] = 6.0
+    config = {
+        **INSTANT_OUTAGE_CONFIG,
+        "demand_aware_embb_outage": True,
+        "period_ms": 10,
+    }
+    result = compute_rslaq_reward(metrics, scenario="normal",
+                                  step_count=POST_WARMUP, config=config)
+    assert result.outage_flags[0] is True
+    assert result.terminated
+
+
 # ── h_2: URLLC exponential formula (Eq. 17) ─────────────────────────
 
 def test_urllc_uses_buffer_max_not_plr():
@@ -289,6 +332,111 @@ def test_no_scheduler_no_cost_term():
     assert abs(result_no_action.reward - expected) < 1e-9
 
 
+
+# ── Resource-efficient contribution ─────────────────────────────────
+
+def _resource_efficiency_metrics():
+    """Metrics with dominant URLLC demand and no SLA violation."""
+    metrics = _good_metrics()
+    metrics[0].update({
+        "dTxBytes_sum": 1000.0,
+        "dRxBytes_sum": 1000.0,
+        "bufferBytes_max": 0.0,
+        "dLostPackets_sum": 0.0,
+        "throughputMbps_sum": 12.0,
+    })
+    metrics[1].update({
+        "dTxBytes_sum": 90000.0,
+        "dRxBytes_sum": 90000.0,
+        "bufferBytes_max": 1000.0,
+        "dLostPackets_sum": 0.0,
+    })
+    metrics[2].update({
+        "dTxBytes_sum": 1000.0,
+        "dRxBytes_sum": 1000.0,
+        "bufferBytes_max": 0.0,
+        "dLostPackets_sum": 0.0,
+        "throughputMbps_sum": 5.0,
+    })
+    return metrics
+
+
+def test_paper_reward_mode_preserves_default():
+    """Explicit paper mode keeps the default RSLAQ reward unchanged."""
+    default = compute_rslaq_reward(_good_metrics(), scenario="normal")
+    paper = compute_rslaq_reward(
+        _good_metrics(), scenario="normal", config={"reward_mode": "paper"}
+    )
+    assert abs(default.reward - paper.reward) < 1e-12
+    assert default.optimization_terms == paper.optimization_terms
+
+
+def test_resource_efficient_penalizes_over_allocation():
+    """The contribution rewards PRB shares that follow active slice need."""
+    metrics = _resource_efficiency_metrics()
+    config = {
+        "reward_mode": "resource_efficient",
+        "resource_dynamic_need_weight": 1.0,
+        "resource_waste_deadband": 0.0,
+        "warmup_steps": 0,
+    }
+    matched = compute_rslaq_reward(
+        metrics,
+        scenario="normal",
+        action_info={"prb_pct": [5.0, 90.0, 5.0]},
+        config=config,
+        step_count=POST_WARMUP,
+    )
+    wasteful = compute_rslaq_reward(
+        metrics,
+        scenario="normal",
+        action_info={"prb_pct": [90.0, 5.0, 5.0]},
+        config=config,
+        step_count=POST_WARMUP,
+    )
+    assert matched.reward > wasteful.reward
+    assert matched.optimization_terms["need_allocation_match"] > wasteful.optimization_terms["need_allocation_match"]
+    assert wasteful.optimization_terms["over_allocation"] > matched.optimization_terms["over_allocation"]
+
+
+def test_resource_efficient_keeps_outage_terminal_reward():
+    """Resource efficiency shaping does not dilute terminal SLA penalties."""
+    metrics = _good_metrics()
+    metrics[0]["throughputMbps_sum"] = 5.0
+    config = {**INSTANT_OUTAGE_CONFIG, "reward_mode": "resource_efficient"}
+    result = compute_rslaq_reward(
+        metrics,
+        scenario="normal",
+        action_info={"prb_pct": [90.0, 5.0, 5.0]},
+        config=config,
+        step_count=POST_WARMUP,
+    )
+    assert result.outage_flags[0] is True
+    assert result.terminated
+    assert result.reward == -ALPHA
+    assert result.optimization_terms["resource_efficient_shaping"] == 0.0
+
+
+def test_resource_efficient_debug_terms():
+    """The new reward exposes efficiency terms for campaign analysis."""
+    result = compute_rslaq_reward(
+        _resource_efficiency_metrics(),
+        scenario="normal",
+        action_info={"prb_pct": [5.0, 90.0, 5.0]},
+        config={"reward_mode": "resource_efficient"},
+    )
+    for key in (
+        "resource_efficiency",
+        "need_allocation_match",
+        "over_allocation",
+        "under_allocation",
+        "resource_efficient_shaping",
+    ):
+        assert key in result.optimization_terms
+        assert key in result.debug_info
+    assert result.debug_info["reward_mode"] == "resource_efficient"
+
+
 # ── Metadata tests ───────────────────────────────────────────────────
 
 def test_optimization_terms_keys():
@@ -383,4 +531,8 @@ if __name__ == "__main__":
     test_post_warmup_allows_outage()
     test_consecutive_outage_needs_streak()
     test_consecutive_outage_with_history()
+    test_paper_reward_mode_preserves_default()
+    test_resource_efficient_penalizes_over_allocation()
+    test_resource_efficient_keeps_outage_terminal_reward()
+    test_resource_efficient_debug_terms()
     print("All reward tests passed.")

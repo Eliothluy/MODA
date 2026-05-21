@@ -1,0 +1,539 @@
+#!/usr/bin/env python3
+"""Predictive SAC training for RSLAQ.
+
+The policy observes the current RSLAQ 4x4 state plus a GRU forecast of
+near-future SLA risk/KPIs. The forecaster is trained offline from previous
+``step_metrics.csv`` logs and remains frozen during online SAC training.
+"""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+import argparse
+import csv
+import json
+import random
+from collections import deque
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+from environments.rslaq_env import RslaqEnv
+from environments.rslaq_predictive import (
+    FEATURE_DIM,
+    FORECAST_DIM,
+    RISK_DIM,
+    TemporalKpiForecaster,
+    StepFrame,
+    forecast_from_history,
+    frame_to_feature,
+)
+
+
+DEFAULT_NS3_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "ns-3-dev")
+DEFAULT_OUTPUT = os.path.join(os.path.dirname(__file__), "..", "results_predictive")
+
+SCENARIOS = [
+    "low_traffic",
+    "normal",
+    "congestion",
+    "stressed",
+    "insufficient_resources",
+]
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def parse_weights(weights: str) -> np.ndarray:
+    values = np.array([float(x.strip()) for x in weights.split(",")], dtype=np.float64)
+    if values.shape[0] != 3:
+        raise ValueError("--p_sta_weights must contain exactly 3 comma-separated values")
+    if values.sum() <= 0:
+        raise ValueError("--p_sta_weights must sum to a positive value")
+    return values / values.sum()
+
+
+def choose_scenario(episode, mode, scenarios_list):
+    if mode == "random":
+        return random.choice(scenarios_list)
+    return scenarios_list[0]
+
+
+def load_forecaster(path: str):
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    model = TemporalKpiForecaster(
+        input_dim=ckpt.get("input_dim", FEATURE_DIM),
+        hidden_dim=ckpt.get("hidden_dim", 64),
+        output_dim=ckpt.get("output_dim", FORECAST_DIM),
+        num_layers=ckpt.get("num_layers", 1),
+        dropout=ckpt.get("dropout", 0.0),
+    ).to(device)
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+    return model, int(ckpt.get("sequence_len", 8))
+
+
+class VectorSACActor(nn.Module):
+    def __init__(self, state_dim: int, action_dim: int = 3, hidden_dim: int = 128):
+        super().__init__()
+        self.backbone = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        )
+        self.fc_mean = nn.Linear(hidden_dim, action_dim)
+        self.fc_log_std = nn.Linear(hidden_dim, action_dim)
+
+    def forward(self, x):
+        z = self.backbone(x)
+        mean = self.fc_mean(z)
+        log_std = torch.clamp(self.fc_log_std(z), -20, 2)
+        return mean, log_std
+
+    def sample(self, x):
+        mean, log_std = self.forward(x)
+        std = log_std.exp()
+        normal = torch.distributions.Normal(mean, std)
+        z = normal.rsample()
+        action = torch.tanh(z)
+        log_prob = normal.log_prob(z) - torch.log(1 - action.pow(2) + 1e-6)
+        return action, log_prob.sum(dim=-1, keepdim=True)
+
+
+class VectorSACCritic(nn.Module):
+    def __init__(self, state_dim: int, action_dim: int = 3, hidden_dim: int = 128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim + action_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, state, action):
+        return self.net(torch.cat([state, action], dim=-1))
+
+
+class PredictiveSACAgent:
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int = 3,
+        hidden_dim: int = 128,
+        lr: float = 1e-3,
+        gamma: float = 0.99,
+        tau: float = 0.005,
+        alpha: float = 0.1,
+        buffer_size: int = 50000,
+        batch_size: int = 256,
+    ):
+        self.gamma = gamma
+        self.tau = tau
+        self.alpha = alpha
+        self.batch_size = batch_size
+        self.memory = deque(maxlen=buffer_size)
+
+        self.actor = VectorSACActor(state_dim, action_dim, hidden_dim).to(device)
+        self.critic1 = VectorSACCritic(state_dim, action_dim, hidden_dim).to(device)
+        self.critic2 = VectorSACCritic(state_dim, action_dim, hidden_dim).to(device)
+        self.critic1_target = VectorSACCritic(state_dim, action_dim, hidden_dim).to(device)
+        self.critic2_target = VectorSACCritic(state_dim, action_dim, hidden_dim).to(device)
+        self.critic1_target.load_state_dict(self.critic1.state_dict())
+        self.critic2_target.load_state_dict(self.critic2.state_dict())
+
+        self.actor_opt = optim.Adam(self.actor.parameters(), lr=lr)
+        self.critic1_opt = optim.Adam(self.critic1.parameters(), lr=lr)
+        self.critic2_opt = optim.Adam(self.critic2.parameters(), lr=lr)
+
+    def act(self, state):
+        s = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
+        with torch.no_grad():
+            a, _ = self.actor.sample(s)
+        return a.cpu().numpy().reshape(-1)
+
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append(
+            (
+                np.asarray(state, dtype=np.float32).copy(),
+                np.asarray(action, dtype=np.float32).copy(),
+                float(reward),
+                np.asarray(next_state, dtype=np.float32).copy(),
+                float(done),
+            )
+        )
+
+    def replay(self):
+        if len(self.memory) < self.batch_size:
+            return None, None
+        batch = random.sample(self.memory, self.batch_size)
+        states = torch.as_tensor(np.array([b[0] for b in batch]), dtype=torch.float32, device=device)
+        actions = torch.as_tensor(np.array([b[1] for b in batch]), dtype=torch.float32, device=device)
+        rewards = torch.as_tensor([b[2] for b in batch], dtype=torch.float32, device=device)
+        next_states = torch.as_tensor(np.array([b[3] for b in batch]), dtype=torch.float32, device=device)
+        dones = torch.as_tensor([b[4] for b in batch], dtype=torch.float32, device=device)
+
+        with torch.no_grad():
+            next_action, next_log_prob = self.actor.sample(next_states)
+            q1_t = self.critic1_target(next_states, next_action)
+            q2_t = self.critic2_target(next_states, next_action)
+            q_t = torch.min(q1_t, q2_t) - self.alpha * next_log_prob
+            q_backup = rewards.unsqueeze(1) + (1 - dones.unsqueeze(1)) * self.gamma * q_t
+
+        q1 = self.critic1(states, actions)
+        q2 = self.critic2(states, actions)
+        c1_loss = nn.MSELoss()(q1, q_backup)
+        c2_loss = nn.MSELoss()(q2, q_backup)
+
+        self.critic1_opt.zero_grad()
+        c1_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic1.parameters(), 1.0)
+        self.critic1_opt.step()
+
+        self.critic2_opt.zero_grad()
+        c2_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic2.parameters(), 1.0)
+        self.critic2_opt.step()
+
+        action_new, log_prob_new = self.actor.sample(states)
+        q1_pi = self.critic1(states, action_new)
+        q2_pi = self.critic2(states, action_new)
+        actor_loss = (self.alpha * log_prob_new - torch.min(q1_pi, q2_pi)).mean()
+
+        self.actor_opt.zero_grad()
+        actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        self.actor_opt.step()
+
+        for p, tp in zip(self.critic1.parameters(), self.critic1_target.parameters()):
+            tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
+        for p, tp in zip(self.critic2.parameters(), self.critic2_target.parameters()):
+            tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
+
+        return c1_loss.item(), actor_loss.item()
+
+    def save(self, path):
+        torch.save(
+            {
+                "actor": self.actor.state_dict(),
+                "critic1": self.critic1.state_dict(),
+                "critic2": self.critic2.state_dict(),
+            },
+            path,
+        )
+
+
+def feature_from_transition(obs, reward, info, scenario):
+    action_info = info.get("action_info", {})
+    prb_pct = action_info.get("prb_pct", [33.33, 33.33, 33.34])
+    outage = info.get("outage_flags", {})
+    soft = info.get("soft_flags", {})
+    frame = StepFrame(
+        sim_id=info.get("results", {}).get("meta", {}).get("id", ""),
+        scenario=scenario,
+        seed=0,
+        episode=0,
+        step=int(info.get("num_steps", 0)),
+        obs=np.asarray(obs, dtype=np.float32),
+        action=np.asarray(prb_pct, dtype=np.float32) / 100.0,
+        reward=float(reward),
+        outage_flags=np.array([bool(outage.get(sid, False)) for sid in range(3)], dtype=np.float32),
+        soft_flags=np.array([bool(soft.get(sid, False)) for sid in range(3)], dtype=np.float32),
+    )
+    return frame_to_feature(frame)
+
+
+def augmented_state(obs, forecast, last_action):
+    return np.concatenate(
+        [
+            np.asarray(obs, dtype=np.float32).reshape(-1),
+            np.asarray(forecast, dtype=np.float32).reshape(-1),
+            np.asarray(last_action, dtype=np.float32).reshape(-1),
+        ]
+    ).astype(np.float32)
+
+
+def train(args):
+    set_seed(args.seed)
+    os.makedirs(args.output, exist_ok=True)
+
+    forecaster, ckpt_sequence_len = load_forecaster(args.forecaster_checkpoint)
+    sequence_len = args.sequence_len or ckpt_sequence_len
+
+    scenario_list = args.scenarios.split(",") if args.scenarios else [args.scenario]
+    if args.scenario == "random":
+        mode = "random"
+        if not args.scenarios:
+            scenario_list = SCENARIOS
+    else:
+        mode = "fixed"
+        scenario_list = [args.scenario]
+
+    config = {
+        "simTime": [args.simTime],
+        "appStart": [args.appStart],
+        "scenario": [scenario_list[0]],
+        "seed": [args.seed],
+        "seed_cycle": [args.seed_cycle],
+        "periodMs": [args.periodMs],
+    }
+    sla_config = {
+        "max_buffer_bytes": args.max_buffer_bytes,
+        "warmup_steps": args.warmup_steps,
+        "consecutive_outage_steps": args.consecutive_outage_steps,
+        "alpha": args.reward_alpha,
+        "beta": args.reward_beta,
+        "gamma": args.reward_gamma,
+        "demand_aware_embb_outage": args.demand_aware_embb_outage,
+        "period_ms": args.periodMs,
+    }
+    p_sta_weights = parse_weights(args.p_sta_weights)
+
+    env = RslaqEnv(
+        ns3_path=os.path.abspath(args.ns3_path),
+        scenario_configuration=config,
+        output_folder=args.output,
+        optimized=False,
+        action_mode="continuous",
+        observation_mode=args.observation_mode,
+        max_steps=args.max_steps if args.max_steps != "auto" else None,
+        apply_p_sta=args.apply_p_sta,
+        p_sta_weights=p_sta_weights,
+        p_sta_static_fraction=args.p_sta_static_fraction,
+        sla_config=sla_config,
+        enable_step_logging=args.enable_step_logging,
+        step_log_file=args.step_log_file,
+    )
+
+    state_dim = int(np.prod(env.observation_space.shape)) + FORECAST_DIM + 3
+    agent = PredictiveSACAgent(
+        state_dim=state_dim,
+        hidden_dim=args.policy_hidden_dim,
+        lr=args.lr,
+        gamma=args.gamma,
+        tau=args.tau,
+        alpha=args.alpha,
+        buffer_size=args.buffer_size,
+        batch_size=args.batch_size,
+    )
+
+    log_path = os.path.join(args.output, "predictive_sac_training_log.csv")
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "episode", "scenario", "base_reward", "shaped_reward",
+                "avg_shaped_reward", "outage_count", "soft_count", "steps",
+                "actor_loss", "critic_loss", "forecast_outage_risk",
+                "forecast_soft_risk", "action_embb", "action_urllc",
+                "action_mtc",
+            ]
+        )
+
+    all_shaped_rewards = []
+    best_avg = -float("inf")
+
+    for ep in range(args.episodes):
+        chosen_scenario = choose_scenario(ep, mode, scenario_list)
+        env.scenario_configuration["scenario"] = [chosen_scenario]
+        env.scenario_name = chosen_scenario
+        obs, info = env.reset()
+
+        history = deque(maxlen=sequence_len)
+        last_action = np.array([1 / 3, 1 / 3, 1 / 3], dtype=np.float32)
+        forecast = forecast_from_history(
+            forecaster, history, sequence_len, chosen_scenario, device=device
+        )
+        state = augmented_state(obs, forecast, last_action)
+
+        ep_base_reward = 0.0
+        ep_shaped_reward = 0.0
+        ep_outages = 0
+        ep_soft = 0
+        ep_actor_losses = []
+        ep_critic_losses = []
+        ep_forecast_outage = []
+        ep_forecast_soft = []
+        step = 0
+        prb_pct = [0.0, 0.0, 0.0]
+
+        for step in range(env.max_steps):
+            action = agent.act(state)
+            next_obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+            action_info = info.get("action_info", {})
+            prb_pct = action_info.get("prb_pct", [0.0, 0.0, 0.0])
+            last_action = np.asarray(prb_pct, dtype=np.float32) / 100.0
+            history.append(feature_from_transition(next_obs, reward, info, chosen_scenario))
+            next_forecast = forecast_from_history(
+                forecaster, history, sequence_len, chosen_scenario, device=device
+            )
+
+            outage_risk = float(np.max(forecast[:3]))
+            soft_risk = float(np.max(forecast[3:RISK_DIM]))
+            shaped_reward = (
+                float(reward)
+                - args.risk_penalty * outage_risk
+                - args.soft_penalty * soft_risk
+            )
+
+            next_state = augmented_state(next_obs, next_forecast, last_action)
+            agent.remember(state, action, shaped_reward, next_state, done)
+            c_loss, a_loss = agent.replay()
+            if c_loss is not None:
+                ep_critic_losses.append(c_loss)
+            if a_loss is not None:
+                ep_actor_losses.append(a_loss)
+
+            ep_base_reward += float(reward)
+            ep_shaped_reward += shaped_reward
+            ep_forecast_outage.append(outage_risk)
+            ep_forecast_soft.append(soft_risk)
+
+            if info.get("outage_flags") and any(info["outage_flags"].values()):
+                ep_outages += 1
+            if info.get("soft_flags") and any(info["soft_flags"].values()):
+                ep_soft += 1
+
+            state = next_state
+            forecast = next_forecast
+            if done:
+                break
+
+        all_shaped_rewards.append(ep_shaped_reward)
+        avg100 = (
+            np.mean(all_shaped_rewards[-100:])
+            if len(all_shaped_rewards) >= 100
+            else np.mean(all_shaped_rewards)
+        )
+
+        with open(log_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    ep + 1,
+                    chosen_scenario,
+                    f"{ep_base_reward:.4f}",
+                    f"{ep_shaped_reward:.4f}",
+                    f"{avg100:.4f}",
+                    ep_outages,
+                    ep_soft,
+                    step + 1,
+                    f"{np.mean(ep_actor_losses):.6f}" if ep_actor_losses else "",
+                    f"{np.mean(ep_critic_losses):.6f}" if ep_critic_losses else "",
+                    f"{np.mean(ep_forecast_outage):.6f}" if ep_forecast_outage else "",
+                    f"{np.mean(ep_forecast_soft):.6f}" if ep_forecast_soft else "",
+                    f"{prb_pct[0]:.2f}",
+                    f"{prb_pct[1]:.2f}",
+                    f"{prb_pct[2]:.2f}",
+                ]
+            )
+
+        if (ep + 1) % args.log_interval == 0:
+            print(
+                f"Ep {ep + 1}/{args.episodes} | Scenario: {chosen_scenario} | "
+                f"Base: {ep_base_reward:.4f} | Shaped: {ep_shaped_reward:.4f} | "
+                f"Avg100: {avg100:.4f} | Outages: {ep_outages} | Soft: {ep_soft}"
+            )
+
+        if avg100 > best_avg:
+            best_avg = avg100
+            agent.save(os.path.join(args.output, "predictive_sac_best.pt"))
+
+    agent.save(os.path.join(args.output, "predictive_sac_final.pt"))
+    summary = {
+        "method": "predictive_sac",
+        "scenario_mode": mode,
+        "scenarios": scenario_list,
+        "episodes": args.episodes,
+        "interaction_budget": args.episodes * env.max_steps,
+        "forecaster_checkpoint": os.path.abspath(args.forecaster_checkpoint),
+        "sequence_len": sequence_len,
+        "forecast_dim": FORECAST_DIM,
+        "risk_penalty": args.risk_penalty,
+        "soft_penalty": args.soft_penalty,
+        "demand_aware_embb_outage": args.demand_aware_embb_outage,
+        "apply_p_sta": args.apply_p_sta,
+        "p_sta_static_fraction": args.p_sta_static_fraction,
+        "p_sta_weights": p_sta_weights.tolist(),
+        "reward_weights": [args.reward_alpha, args.reward_beta, args.reward_gamma],
+        "final_avg_100": float(avg100),
+        "best_avg": float(best_avg),
+    }
+    with open(os.path.join(args.output, "predictive_sac_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+    env.close()
+    print(f"Training complete. Best avg shaped reward: {best_avg:.4f}")
+    print(f"Logs saved to {log_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Predictive SAC Training for RSLAQ")
+    parser.add_argument("--scenario", type=str, default="normal")
+    parser.add_argument("--scenarios", type=str, default="")
+    parser.add_argument("--ns3_path", type=str, default=DEFAULT_NS3_PATH)
+    parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT)
+    parser.add_argument("--forecaster_checkpoint", type=str, required=True)
+    parser.add_argument("--sequence_len", type=int, default=0,
+                        help="0 uses the value saved in the forecaster checkpoint")
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed_cycle", type=int, default=100)
+    parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument("--simTime", type=float, default=4.0)
+    parser.add_argument("--appStart", type=float, default=0.5)
+    parser.add_argument("--periodMs", type=int, default=10)
+    parser.add_argument("--max_steps", type=str, default="auto")
+    parser.add_argument("--observation_mode", type=str, default="paper")
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--alpha", type=float, default=0.1)
+    parser.add_argument("--policy_hidden_dim", type=int, default=128)
+    parser.add_argument("--buffer_size", type=int, default=50000)
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--risk_penalty", type=float, default=0.5)
+    parser.add_argument("--soft_penalty", type=float, default=0.2)
+    parser.add_argument("--log_interval", type=int, default=1)
+    parser.set_defaults(apply_p_sta=True)
+    parser.add_argument("--no-apply-p-sta", action="store_false", dest="apply_p_sta")
+    parser.add_argument("--max_buffer_bytes", type=float, default=100000.0)
+    parser.add_argument("--warmup_steps", type=int, default=5)
+    parser.add_argument("--consecutive_outage_steps", type=int, default=5)
+    parser.add_argument("--p_sta_static_fraction", type=float, default=0.5)
+    parser.add_argument("--p_sta_weights", type=str, default="0.3333,0.4000,0.2667")
+    parser.add_argument("--reward_alpha", type=float, default=0.3333)
+    parser.add_argument("--reward_beta", type=float, default=0.4000)
+    parser.add_argument("--reward_gamma", type=float, default=0.2667)
+    parser.set_defaults(demand_aware_embb_outage=True)
+    parser.add_argument("--paper-faithful-outage", action="store_false",
+                        dest="demand_aware_embb_outage")
+    parser.set_defaults(enable_step_logging=True)
+    parser.add_argument("--no-step-logging", action="store_false", dest="enable_step_logging")
+    parser.add_argument("--step_log_file", type=str, default="step_metrics.csv")
+    args = parser.parse_args()
+
+    if args.max_steps.lower() == "auto":
+        args.max_steps = "auto"
+    else:
+        args.max_steps = int(args.max_steps)
+
+    train(args)
+
+
+if __name__ == "__main__":
+    main()

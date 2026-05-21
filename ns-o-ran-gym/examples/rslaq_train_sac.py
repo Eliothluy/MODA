@@ -43,6 +43,29 @@ SCENARIOS = [
     "insufficient_resources",
 ]
 
+SCENARIO_UE_PROFILES = {
+    "low_traffic": (2, 2, 6),
+    "normal": (5, 5, 10),
+    "congestion": (15, 10, 35),
+    "stressed": (8, 12, 20),
+    "insufficient_resources": (20, 10, 40),
+}
+
+
+def apply_ue_profile(config, scenario, args):
+    cli_profile = (args.embbUes, args.urllcUes, args.mtcUes)
+    if all(v > 0 for v in cli_profile):
+        profile = cli_profile
+    elif any(v > 0 for v in cli_profile):
+        raise ValueError("Provide --embbUes, --urllcUes and --mtcUes together, or leave all as 0")
+    else:
+        profile = SCENARIO_UE_PROFILES.get(scenario, SCENARIO_UE_PROFILES["normal"])
+
+    config["embbUes"] = [int(profile[0])]
+    config["urllcUes"] = [int(profile[1])]
+    config["mtcUes"] = [int(profile[2])]
+    return profile
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -271,6 +294,7 @@ def train_sac(args):
         "seed_cycle": [args.seed_cycle],
         "periodMs": [args.periodMs],
     }
+    current_ue_profile = apply_ue_profile(config, scenario_list[0], args)
 
     sla_config = {
         "max_buffer_bytes": args.max_buffer_bytes,
@@ -279,6 +303,15 @@ def train_sac(args):
         "alpha": args.reward_alpha,
         "beta": args.reward_beta,
         "gamma": args.reward_gamma,
+        "period_ms": args.periodMs,
+        "reward_mode": args.reward_mode,
+        "resource_efficiency_weight": args.resource_efficiency_weight,
+        "need_match_weight": args.need_match_weight,
+        "waste_penalty_weight": args.waste_penalty_weight,
+        "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+        "action_smoothness_weight": args.action_smoothness_weight,
+        "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
+        "resource_waste_deadband": args.resource_waste_deadband,
     }
     p_sta_weights = parse_weights(args.p_sta_weights)
 
@@ -317,6 +350,7 @@ def train_sac(args):
             [
                 "episode",
                 "scenario",
+                "reward_mode",
                 "total_reward",
                 "avg_reward",
                 "outage_count",
@@ -330,6 +364,9 @@ def train_sac(args):
                 "action_embb",
                 "action_urllc",
                 "action_mtc",
+                "embb_ues",
+                "urllc_ues",
+                "mtc_ues",
             ]
         )
 
@@ -340,6 +377,8 @@ def train_sac(args):
     for ep in range(args.episodes):
         chosen_scenario = choose_scenario(ep, mode, scenario_list)
         env.scenario_configuration["scenario"] = [chosen_scenario]
+        current_ue_profile = apply_ue_profile(env.scenario_configuration, chosen_scenario, args)
+        env.num_ues = sum(current_ue_profile)
         env.scenario_name = chosen_scenario
 
         obs, info = env.reset()
@@ -392,6 +431,7 @@ def train_sac(args):
                 [
                     ep + 1,
                     chosen_scenario,
+                    args.reward_mode,
                     f"{ep_reward:.4f}",
                     f"{avg100:.4f}",
                     ep_outages,
@@ -405,6 +445,9 @@ def train_sac(args):
                     f"{prb_pct[0]:.2f}",
                     f"{prb_pct[1]:.2f}",
                     f"{prb_pct[2]:.2f}",
+                    current_ue_profile[0],
+                    current_ue_profile[1],
+                    current_ue_profile[2],
                 ]
             )
 
@@ -430,7 +473,23 @@ def train_sac(args):
         "apply_p_sta": args.apply_p_sta,
         "p_sta_static_fraction": args.p_sta_static_fraction,
         "p_sta_weights": p_sta_weights.tolist(),
+        "reward_mode": args.reward_mode,
         "reward_weights": [args.reward_alpha, args.reward_beta, args.reward_gamma],
+        "resource_efficiency_reward": {
+            "resource_efficiency_weight": args.resource_efficiency_weight,
+            "need_match_weight": args.need_match_weight,
+            "waste_penalty_weight": args.waste_penalty_weight,
+            "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+            "action_smoothness_weight": args.action_smoothness_weight,
+            "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
+            "resource_waste_deadband": args.resource_waste_deadband,
+        },
+        "scenario_ue_profiles": SCENARIO_UE_PROFILES,
+        "ue_override": {
+            "eMBB": args.embbUes,
+            "URLLC": args.urllcUes,
+            "MTC": args.mtcUes,
+        },
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
     }
@@ -448,6 +507,12 @@ def main():
                         help="Scenario name or 'random'")
     parser.add_argument("--scenarios", type=str, default="",
                         help="Comma-separated list for random mode (default: all)")
+    parser.add_argument("--embbUes", type=int, default=0,
+                        help="Override eMBB UE count; 0 uses the scenario profile")
+    parser.add_argument("--urllcUes", type=int, default=0,
+                        help="Override URLLC UE count; 0 uses the scenario profile")
+    parser.add_argument("--mtcUes", type=int, default=0,
+                        help="Override MTC UE count; 0 uses the scenario profile")
     parser.add_argument("--ns3_path", type=str, default=DEFAULT_NS3_PATH)
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT)
     parser.add_argument("--seed", type=int, default=1)
@@ -489,6 +554,23 @@ def main():
                         help="Reward weight for URLLC")
     parser.add_argument("--reward_gamma", type=float, default=0.2667,
                         help="Reward weight for MTC")
+    parser.add_argument("--reward_mode", type=str, default="paper",
+                        choices=["paper", "resource_efficient"],
+                        help="Reward formulation: paper RSLAQ or the resource-efficient contribution")
+    parser.add_argument("--resource_efficiency_weight", type=float, default=0.20,
+                        help="Positive weight for served demand per efficient slice allocation")
+    parser.add_argument("--need_match_weight", type=float, default=0.15,
+                        help="Positive weight for matching PRB share to dynamic slice need")
+    parser.add_argument("--waste_penalty_weight", type=float, default=0.25,
+                        help="Penalty for over-allocating PRBs beyond dynamic slice need")
+    parser.add_argument("--under_allocation_penalty_weight", type=float, default=0.10,
+                        help="Penalty for under-allocating PRBs to active slice need")
+    parser.add_argument("--action_smoothness_weight", type=float, default=0.05,
+                        help="Penalty for abrupt PRB-share changes between control steps")
+    parser.add_argument("--resource_dynamic_need_weight", type=float, default=0.75,
+                        help="Blend factor for dynamic demand versus static RSLAQ weights")
+    parser.add_argument("--resource_waste_deadband", type=float, default=0.03,
+                        help="Allocation-share tolerance before over/under-allocation penalties apply")
     parser.set_defaults(enable_step_logging=True)
     parser.add_argument("--no-step-logging", action="store_false", dest="enable_step_logging",
                         help="Disable per-step step_metrics.csv logging")

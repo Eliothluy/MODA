@@ -117,11 +117,21 @@ def _evaluate_outage_conditions(
     embb = metrics.get(0, {})
     urllc = metrics.get(1, {})
 
-    # eMBB outage (Eq. 13): throughput below minimum AND demand exists
+    # eMBB outage (Eq. 13): throughput below minimum AND demand exists.
+    # The paper-faithful default uses the absolute SLA threshold. Predictive
+    # experiments can opt into a demand-aware cap to avoid penalizing a slice
+    # for not exceeding the offered traffic in low-load periods.
     embb_thr = float(embb.get("throughputMbps_sum", 0.0))
     embb_tx = float(embb.get("dTxBytes_sum", 0.0))
     min_tx = float(config.get("min_tx_bytes_for_outage", 1.0))
-    if embb_thr < sla["embb_min_throughput_mbps"] and embb_tx >= min_tx:
+    embb_threshold = float(sla["embb_min_throughput_mbps"])
+    if config.get("demand_aware_embb_outage", False):
+        period_ms = float(config.get("period_ms", config.get("periodMs", 10.0)))
+        if period_ms > 0:
+            offered_mbps = embb_tx * 8.0 / (period_ms * 1000.0)
+            embb_threshold = min(embb_threshold, offered_mbps)
+    tolerance = float(config.get("embb_outage_tolerance_mbps", 1e-6))
+    if embb_thr + tolerance < embb_threshold and embb_tx >= min_tx:
         flags[0] = True
 
     # URLLC outage (Eq. 14): buffer exceeds threshold
@@ -159,6 +169,184 @@ def _evaluate_soft_conditions(
     return flags
 
 
+def _normalize_reward_mode(mode: Any) -> str:
+    normalized = str(mode or "paper").strip().lower().replace("-", "_")
+    if normalized in ("paper", "rslaq", "rslaq_paper"):
+        return "paper"
+    if normalized in ("resource_efficient", "efficient", "slice_efficient"):
+        return "resource_efficient"
+    raise ValueError(
+        f"Unknown reward_mode={mode!r}. Use 'paper' or 'resource_efficient'."
+    )
+
+
+def _normalize_vector(values: List[float], fallback: List[float]) -> List[float]:
+    clean = [max(float(v), 0.0) for v in values]
+    total = sum(clean)
+    if total <= 0.0:
+        clean = [max(float(v), 0.0) for v in fallback]
+        total = sum(clean)
+    if total <= 0.0:
+        return [1.0 / get_num_slices()] * get_num_slices()
+    return [v / total for v in clean]
+
+
+def _extract_static_weights(action_info: Optional[Dict[str, Any]]) -> List[float]:
+    if action_info and "p_sta_weights" in action_info:
+        try:
+            weights = [float(v) for v in action_info["p_sta_weights"][:get_num_slices()]]
+            return _normalize_vector(weights, [ALPHA, BETA, GAMMA])
+        except (TypeError, ValueError):
+            pass
+    return _normalize_vector([ALPHA, BETA, GAMMA], [ALPHA, BETA, GAMMA])
+
+
+def _extract_allocation_share(
+    metrics: Dict[int, Dict[str, Any]],
+    action_info: Optional[Dict[str, Any]],
+) -> tuple[List[float], List[float]]:
+    allocation_pct: List[float] = []
+    if action_info and "prb_pct" in action_info:
+        try:
+            allocation_pct = [
+                max(float(v), 0.0)
+                for v in action_info["prb_pct"][:get_num_slices()]
+            ]
+        except (TypeError, ValueError):
+            allocation_pct = []
+
+    if len(allocation_pct) != get_num_slices() or sum(allocation_pct) <= 0.0:
+        allocation_pct = [
+            max(float(metrics.get(sid, {}).get("resourceSharePct_mean", 0.0)), 0.0)
+            for sid in range(get_num_slices())
+        ]
+
+    fallback = [100.0 / get_num_slices()] * get_num_slices()
+    allocation_share = _normalize_vector(allocation_pct, fallback)
+    return allocation_pct, allocation_share
+
+
+def _compute_resource_efficiency_terms(
+    metrics: Dict[int, Dict[str, Any]],
+    sla: Dict[str, Any],
+    action_info: Optional[Dict[str, Any]],
+    config: Dict[str, Any],
+) -> tuple[Dict[str, float], Dict[str, Any]]:
+    """
+    Compute resource-efficiency shaping terms.
+
+    This is deliberately a shaping layer over the paper reward: it measures
+    whether PRBs follow active per-slice demand and penalizes waste, but it
+    does not override the RSLAQ terminal SLA logic.
+    """
+    num_slices = get_num_slices()
+    static_weights = _extract_static_weights(action_info)
+    allocation_pct, allocation_share = _extract_allocation_share(metrics, action_info)
+
+    loss_packet_byte_equivalent = float(
+        config.get("loss_packet_byte_equivalent", 1500.0)
+    )
+    dynamic_need_weight = float(config.get("resource_dynamic_need_weight", 0.75))
+    dynamic_need_weight = min(max(dynamic_need_weight, 0.0), 1.0)
+
+    raw_need: List[float] = []
+    served_fraction: List[float] = []
+    for sid in range(num_slices):
+        slice_metrics = metrics.get(sid, {})
+        tx_bytes = max(float(slice_metrics.get("dTxBytes_sum", 0.0)), 0.0)
+        rx_bytes = max(float(slice_metrics.get("dRxBytes_sum", 0.0)), 0.0)
+        buffer_bytes = max(float(slice_metrics.get("bufferBytes_max", 0.0)), 0.0)
+        lost_packets = max(float(slice_metrics.get("dLostPackets_sum", 0.0)), 0.0)
+        throughput = max(float(slice_metrics.get("throughputMbps_sum", 0.0)), 0.0)
+
+        need = tx_bytes + buffer_bytes + lost_packets * loss_packet_byte_equivalent
+
+        if sid == 0:
+            target = float(sla["embb_min_throughput_mbps"])
+            if target > 0.0 and tx_bytes > 0.0 and throughput < target:
+                deficit = min((target - throughput) / target, 1.0)
+                need *= 1.0 + deficit
+        elif sid == 1:
+            threshold = float(sla["urllc_outage_bfs_bytes"])
+            if threshold > 0.0:
+                buffer_pressure = min(buffer_bytes / threshold, 2.0)
+                need += buffer_pressure * threshold
+        elif sid == 2:
+            target = float(sla.get("mtc_target_throughput", 1.0))
+            if target > 0.0 and tx_bytes > 0.0 and throughput < target:
+                deficit = min((target - throughput) / target, 1.0)
+                need *= 1.0 + 0.5 * deficit
+
+        raw_need.append(max(need, 0.0))
+
+        if tx_bytes > 1.0:
+            served_fraction.append(min(rx_bytes / tx_bytes, 1.0))
+        else:
+            served_fraction.append(1.0 if need <= 1e-9 else 0.0)
+
+    demand_share = _normalize_vector(raw_need, static_weights)
+    need_share = [
+        (1.0 - dynamic_need_weight) * static_weights[sid]
+        + dynamic_need_weight * demand_share[sid]
+        for sid in range(num_slices)
+    ]
+    need_share = _normalize_vector(need_share, static_weights)
+
+    allocation_distance = 0.5 * sum(
+        abs(allocation_share[sid] - need_share[sid]) for sid in range(num_slices)
+    )
+    need_allocation_match = max(0.0, 1.0 - allocation_distance)
+
+    deadband = float(config.get("resource_waste_deadband", 0.03))
+    deadband = max(deadband, 0.0)
+    over_allocation = sum(
+        max(allocation_share[sid] - need_share[sid] - deadband, 0.0)
+        for sid in range(num_slices)
+    )
+    under_allocation = sum(
+        max(need_share[sid] - allocation_share[sid] - deadband, 0.0)
+        for sid in range(num_slices)
+    )
+
+    served_score = sum(
+        need_share[sid] * served_fraction[sid] for sid in range(num_slices)
+    )
+    resource_efficiency = served_score * need_allocation_match
+
+    action_smoothness_penalty = 0.0
+    if action_info and "previous_prb_pct" in action_info:
+        try:
+            previous_pct = [
+                max(float(v), 0.0)
+                for v in action_info["previous_prb_pct"][:num_slices]
+            ]
+            previous_share = _normalize_vector(previous_pct, allocation_share)
+            action_smoothness_penalty = 0.5 * sum(
+                abs(allocation_share[sid] - previous_share[sid])
+                for sid in range(num_slices)
+            )
+        except (TypeError, ValueError):
+            action_smoothness_penalty = 0.0
+
+    terms = {
+        "resource_efficiency": resource_efficiency,
+        "need_allocation_match": need_allocation_match,
+        "over_allocation": over_allocation,
+        "under_allocation": under_allocation,
+        "action_smoothness_penalty": action_smoothness_penalty,
+    }
+    debug = {
+        "allocation_pct": allocation_pct,
+        "allocation_share": allocation_share,
+        "static_weights": static_weights,
+        "raw_need": raw_need,
+        "demand_share": demand_share,
+        "need_share": need_share,
+        "served_fraction": served_fraction,
+    }
+    return terms, debug
+
+
 def compute_rslaq_reward(
     metrics: Dict[int, Dict[str, Any]],
     scenario: str,
@@ -188,6 +376,7 @@ def compute_rslaq_reward(
     if config is None:
         config = {}
 
+    reward_mode = _normalize_reward_mode(config.get("reward_mode", "paper"))
     sla = SLA_BY_SCENARIO.get(scenario, SLA_BY_SCENARIO["normal"])
     warmup_steps = int(config.get("warmup_steps", 5))
     consecutive_outage_steps = int(config.get("consecutive_outage_steps", 5))
@@ -305,6 +494,7 @@ def compute_rslaq_reward(
 
     result.debug_info = {
         "scenario": scenario,
+        "reward_mode": reward_mode,
         "embb_throughput": embb_thr,
         "urllc_bufferBytes_max": urllc_max_bfs,
         "mtc_throughput": mtc_thr,
@@ -316,5 +506,44 @@ def compute_rslaq_reward(
         "avg_mtc_thr_per_ue": avg_mtc_thr,
         "normalized_bfs": normalized_bfs,
     }
+
+    if reward_mode == "resource_efficient":
+        resource_terms, resource_debug = _compute_resource_efficiency_terms(
+            metrics, sla, action_info, config
+        )
+        eff_weight = float(config.get("resource_efficiency_weight", 0.20))
+        match_weight = float(config.get("need_match_weight", 0.15))
+        waste_weight = float(config.get("waste_penalty_weight", 0.25))
+        under_weight = float(config.get("under_allocation_penalty_weight", 0.10))
+        smooth_weight = float(config.get("action_smoothness_weight", 0.05))
+
+        shaping = 0.0
+        if not result.terminated:
+            shaping = (
+                eff_weight * resource_terms["resource_efficiency"]
+                + match_weight * resource_terms["need_allocation_match"]
+                - waste_weight * resource_terms["over_allocation"]
+                - under_weight * resource_terms["under_allocation"]
+                - smooth_weight * resource_terms["action_smoothness_penalty"]
+            )
+            result.reward += shaping
+
+        result.optimization_terms.update(resource_terms)
+        result.optimization_terms.update({
+            "resource_efficient_shaping": shaping,
+            "resource_efficient_reward": result.reward,
+        })
+        result.debug_info.update(resource_terms)
+        result.debug_info.update(resource_debug)
+        result.debug_info.update({
+            "resource_efficiency_weights": {
+                "resource_efficiency_weight": eff_weight,
+                "need_match_weight": match_weight,
+                "waste_penalty_weight": waste_weight,
+                "under_allocation_penalty_weight": under_weight,
+                "action_smoothness_weight": smooth_weight,
+            },
+            "resource_efficient_shaping": shaping,
+        })
 
     return result

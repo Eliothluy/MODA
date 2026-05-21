@@ -1,7 +1,0 @@
-scenario,slice,direction,sla_delay_ms,measured_avg_delay_ms,sla_pdr,measured_effective_pdr,sla_throughput_mbps,measured_throughput_mbps,delay_violation,pdr_violation,throughput_violation,overall_violation
-greenran_normal,VIDEO_EMBB,UL,100.0,3535.098,0.9900,0.0757,25.00,5.81,1,1,1,1
-greenran_normal,VIDEO_EMBB,DL,100.0,5018.703,0.9900,0.0708,0.61,0.06,1,1,1,1
-greenran_normal,SENSOR_MMTC,UL,5000.0,14.706,0.9500,0.6500,0.00,0.00,0,1,0,1
-greenran_normal,SENSOR_MMTC,DL,5000.0,0.000,0.9500,0.0000,0.00,0.00,0,0,0,0
-greenran_normal,GENERIC_EMBB,UL,150.0,18.045,0.9800,0.2812,1.28,0.42,0,1,1,1
-greenran_normal,GENERIC_EMBB,DL,150.0,3910.499,0.9800,0.0005,90.00,0.05,1,1,1,1

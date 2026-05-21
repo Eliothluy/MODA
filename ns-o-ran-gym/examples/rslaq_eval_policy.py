@@ -34,6 +34,34 @@ DEFAULT_NS3_PATH = os.path.join(
 )
 DEFAULT_OUTPUT = os.path.join(os.path.dirname(__file__), "..", "results", "eval")
 
+SCENARIO_UE_PROFILES = {
+    "low_traffic": (2, 2, 6),
+    "normal": (5, 5, 10),
+    "congestion": (15, 10, 35),
+    "stressed": (8, 12, 20),
+    "insufficient_resources": (20, 10, 40),
+}
+
+
+def apply_ue_profile(config, scenario, args):
+    cli_profile = (args.embbUes, args.urllcUes, args.mtcUes)
+    if all(v > 0 for v in cli_profile):
+        profile = cli_profile
+    elif any(v > 0 for v in cli_profile):
+        raise ValueError("Provide --embbUes, --urllcUes and --mtcUes together, or leave all as 0")
+    else:
+        profile = SCENARIO_UE_PROFILES.get(scenario, SCENARIO_UE_PROFILES["normal"])
+
+    config["embbUes"] = [int(profile[0])]
+    config["urllcUes"] = [int(profile[1])]
+    config["mtcUes"] = [int(profile[2])]
+    return profile
+
+
+def ue_profile_from_config(config):
+    return tuple(int(config[k][0]) for k in ("embbUes", "urllcUes", "mtcUes"))
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -190,6 +218,9 @@ def evaluate_agent(
                 "avg_action_embb": avg_action[0],
                 "avg_action_urllc": avg_action[1],
                 "avg_action_mtc": avg_action[2],
+                "embb_ues": ue_profile_from_config(env.scenario_configuration)[0],
+                "urllc_ues": ue_profile_from_config(env.scenario_configuration)[1],
+                "mtc_ues": ue_profile_from_config(env.scenario_configuration)[2],
             }
         )
 
@@ -202,6 +233,12 @@ def main():
     parser.add_argument("--algo", type=str, required=True, choices=["sac", "ddqn"])
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--scenario", type=str, default="normal")
+    parser.add_argument("--embbUes", type=int, default=0,
+                        help="Override eMBB UE count; 0 uses the scenario profile")
+    parser.add_argument("--urllcUes", type=int, default=0,
+                        help="Override URLLC UE count; 0 uses the scenario profile")
+    parser.add_argument("--mtcUes", type=int, default=0,
+                        help="Override MTC UE count; 0 uses the scenario profile")
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--eval_seeds", type=str, default="",
@@ -244,6 +281,7 @@ def main():
         "seed": [args.seed],
         "periodMs": [args.periodMs],
     }
+    ue_profile = apply_ue_profile(env_config, args.scenario, args)
 
     action_mode = "continuous" if args.algo == "sac" else "discrete"
     include_scheduler = bool(args.include_scheduler and args.algo == "ddqn")
@@ -379,6 +417,12 @@ def main():
         "scenario": args.scenario,
         "episodes": args.episodes,
         "seed": args.seed,
+        "num_ues_per_slice": {
+            "eMBB": ue_profile[0],
+            "URLLC": ue_profile[1],
+            "MTC": ue_profile[2],
+        },
+        "num_ues": sum(ue_profile),
     }
     with open(os.path.join(args.output, f"eval_{run_id}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)

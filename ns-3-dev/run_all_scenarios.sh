@@ -25,6 +25,7 @@ DRAIN_TIME_SEC="${DRAIN_TIME_SEC:-0.2}"
 PERIOD_MS="${PERIOD_MS:-10}"
 TX_POWER="${TX_POWER:-43}"
 TDD_PATTERN="${TDD_PATTERN:-D|D|8D|4GB|4U|U|U}"
+RLC_MODE="${RLC_MODE:-um}"
 SEEDS="${SEEDS:-1}"
 RUNS="${RUNS:-1}"
 STOP_ON_FAILURE="${STOP_ON_FAILURE:-0}"
@@ -71,7 +72,7 @@ echo "Scenarios    : ${SCENARIOS[*]}"
 echo "Baselines    : ${BASELINE_MODES[*]}"
 echo "Seeds        : ${SEED_LIST[*]}"
 echo "Runs         : ${RUN_LIST[*]}"
-echo "Sim config   : simTime=${SIM_TIME}s appStart=${APP_START}s drain=${DRAIN_TIME_SEC}s period=${PERIOD_MS}ms"
+echo "Sim config   : simTime=${SIM_TIME}s appStart=${APP_START}s drain=${DRAIN_TIME_SEC}s period=${PERIOD_MS}ms rlcMode=${RLC_MODE}"
 echo ""
 
 echo "Building rslaq-sim..."
@@ -145,6 +146,7 @@ for scenario in "${SCENARIOS[@]}"; do
                     --run=${run} \
                     --txPower=${TX_POWER} \
                     --tddPattern=${TDD_PATTERN} \
+                    --rlcMode=${RLC_MODE} \
                     --outputDir=${OUTPUT_ROOT}" > "$log_file" 2>&1; then
 
                     validation_message="$(validate_outputs "$result_dir")"

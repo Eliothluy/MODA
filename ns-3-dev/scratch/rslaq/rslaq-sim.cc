@@ -6,7 +6,8 @@
  * e troca de arquivos CSV (rslaq-kpms.txt, rslaq_actions_for_ns3.csv).
  *
  * Topologia: 1 gNB, N UEs (eMBB + URLLC + MTC configuráveis)
- * PHY: 2.59 GHz (n38), 10 MHz, numerologia mu=0 (SCS 15 kHz)
+ * PHY default: RAN650 n78 + AW3161 outdoor panel, 3.55 GHz, 100 MHz,
+ * numerologia mu=1 (SCS 30 kHz)
  */
 
 #include "rslaq-mac-scheduler.h"
@@ -91,13 +92,16 @@ static const std::vector<double> P_STA_WEIGHTS = {0.33, 0.40, 0.27};
 
 static const uint32_t NUM_SLICES = 3;
 
-static uint32_t g_numUeEmbb = 5;
-static uint32_t g_numUeUrllc = 5;
-static uint32_t g_numUeMtc = 10;
+static uint32_t g_numUeEmbb = 0;
+static uint32_t g_numUeUrllc = 0;
+static uint32_t g_numUeMtc = 0;
 
 struct ScenarioConfig
 {
     std::string name;
+    uint32_t embbUes;
+    uint32_t urllcUes;
+    uint32_t mtcUes;
     uint64_t embbRateBps;
     uint64_t urllcRateBps;
     uint64_t mtcRateBps;
@@ -191,11 +195,11 @@ static std::map<std::string, ScenarioConfig>
 InitScenarios()
 {
     std::map<std::string, ScenarioConfig> m;
-    m["low_traffic"] = {"low_traffic", 5000000, 1000000, 2000000, 1500, 50, 100};
-    m["normal"] = {"normal", 70000000, 1000000, 2000000, 1500, 50, 100};
-    m["congestion"] = {"congestion", 100000000, 1000000, 100000000, 1500, 50, 100};
-    m["stressed"] = {"stressed", 100000000, 1000000, 100000000, 1500, 50, 100};
-    m["insufficient_resources"] = {"insufficient_resources", 100000000, 2000000, 100000000, 1500, 50, 100};
+    m["low_traffic"] = {"low_traffic", 2, 2, 6, 55000000, 1000000, 1000000, 1500, 50, 100};
+    m["normal"] = {"normal", 5, 5, 10, 70000000, 1000000, 2000000, 1500, 50, 100};
+    m["congestion"] = {"congestion", 15, 10, 35, 180000000, 5000000, 60000000, 1500, 100, 500};
+    m["stressed"] = {"stressed", 8, 12, 20, 100000000, 3000000, 25000000, 1500, 100, 500};
+    m["insufficient_resources"] = {"insufficient_resources", 20, 10, 40, 220000000, 5000000, 70000000, 1500, 100, 500};
     return m;
 }
 
@@ -217,6 +221,15 @@ ToUpper(std::string s)
 {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
         return static_cast<char>(std::toupper(c));
+    });
+    return s;
+}
+
+static std::string
+ToLower(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
     });
     return s;
 }
@@ -619,13 +632,18 @@ StatsCallback()
 }
 
 static void
-WriteSummaryCsv(const std::string& outputDir, const std::string& scenarioName, const std::string& baselineMode)
+WriteSummaryCsv(const std::string& outputDir,
+                const ScenarioConfig& scenario,
+                const std::string& scenarioName,
+                const std::string& baselineMode)
 {
     std::ofstream out(outputDir + "/summary.csv", std::ios::out | std::ios::trunc);
     out << "scenario,baseline_mode,slice,throughput_mbps_mean,throughput_mbps_p50,"
         << "throughput_mbps_p95,delay_ms_mean,delay_ms_p95,delay_ms_p99,jitter_ms_mean,"
         << "pdr_pct,plr_pct,buffer_bytes_mean,buffer_bytes_p95,buffer_bytes_p99,"
-        << "rsh_real_pct_mean,allocated_rbg_total,rx_bytes_total,tx_bytes_total\n";
+        << "rsh_real_pct_mean,budget_utilization_pct_mean,unused_budget_pct_mean,"
+        << "allocation_fidelity_pct_mean,offered_load_satisfaction_pct,"
+        << "sla_satisfaction_pct,allocated_rbg_total,rx_bytes_total,tx_bytes_total\n";
 
     std::vector<RslaqMacScheduler::SliceAllocationStats> allocStats;
     if (g_schedulerPtr)
@@ -665,12 +683,30 @@ WriteSummaryCsv(const std::string& outputDir, const std::string& scenarioName, c
 
         uint32_t idx = static_cast<uint32_t>(slice);
         std::string rshMean = "NA";
+        std::string budgetUtilizationMean = "NA";
+        std::string unusedBudgetMean = "NA";
+        std::string allocationFidelityMean = "NA";
         std::string allocatedTotal = "NA";
         if (idx < allocStats.size() && allocStats[idx].samples > 0)
         {
-            rshMean = CsvValue(allocStats[idx].rshRealPctSum / allocStats[idx].samples);
-            allocatedTotal = std::to_string(allocStats[idx].allocatedRbgTotal);
+            const auto& alloc = allocStats[idx];
+            rshMean = CsvValue(alloc.rshRealPctSum / alloc.samples);
+            allocationFidelityMean = CsvValue(alloc.allocationFidelityPctSum / alloc.samples);
+            allocatedTotal = std::to_string(alloc.allocatedRbgTotal);
+            if (alloc.samplesWithBudget > 0)
+            {
+                budgetUtilizationMean = CsvValue(alloc.budgetUtilizationPctSum / alloc.samplesWithBudget);
+                unusedBudgetMean = CsvValue(alloc.unusedBudgetPctSum / alloc.samplesWithBudget);
+            }
         }
+
+        double offeredLoadMbps = static_cast<double>(RateForSlice(scenario, slice)) / 1e6;
+        double offeredLoadSatisfactionPct = (offeredLoadMbps > 0.0)
+                                               ? std::min(100.0, 100.0 * throughputMean / offeredLoadMbps)
+                                               : std::numeric_limits<double>::quiet_NaN();
+        double slaSatisfactionPct = (SLA_MIN_MBPS[idx] > 0.0)
+                                        ? std::min(100.0, 100.0 * throughputMean / SLA_MIN_MBPS[idx])
+                                        : std::numeric_limits<double>::quiet_NaN();
 
         double bufferMean = std::numeric_limits<double>::quiet_NaN();
         if (!bufferSamples.empty())
@@ -693,6 +729,11 @@ WriteSummaryCsv(const std::string& outputDir, const std::string& scenarioName, c
             << CsvValue(Percentile(bufferSamples, 95.0), 2) << ","
             << CsvValue(Percentile(bufferSamples, 99.0), 2) << ","
             << rshMean << ","
+            << budgetUtilizationMean << ","
+            << unusedBudgetMean << ","
+            << allocationFidelityMean << ","
+            << CsvValue(offeredLoadSatisfactionPct, 3) << ","
+            << CsvValue(slaSatisfactionPct, 3) << ","
             << allocatedTotal << ","
             << agg.rxBytes << ","
             << agg.txBytes << "\n";
@@ -712,11 +753,15 @@ WriteMetadataJson(const std::string& outputDir,
                   const std::string& duplexMode,
                   const std::string& tddPatternRequested,
                   const std::string& tddPatternApplied,
+                  const std::string& rlcMode,
                   bool dlOnly,
                   bool embbSlaFeasible)
 {
     std::ofstream out(outputDir + "/metadata.json", std::ios::out | std::ios::trunc);
     auto mbps = [](uint64_t bps) { return static_cast<double>(bps) / 1e6; };
+    auto mbpsPerUe = [](uint64_t bps, uint32_t ues) {
+        return ues == 0 ? 0.0 : static_cast<double>(bps) / 1e6 / static_cast<double>(ues);
+    };
     out << "{\n"
         << "  \"scenario\": \"" << scenario.name << "\",\n"
         << "  \"baseline_mode\": \"" << baselineMode << "\",\n"
@@ -727,6 +772,9 @@ WriteMetadataJson(const std::string& outputDir,
         << "  \"drain_time_sec\": " << drainTimeSec << ",\n"
         << "  \"num_gnbs\": 1,\n"
         << "  \"num_ues\": " << (g_numUeEmbb + g_numUeUrllc + g_numUeMtc) << ",\n"
+        << "  \"num_ues_per_slice\": {\"eMBB\": " << g_numUeEmbb
+        << ", \"URLLC\": " << g_numUeUrllc
+        << ", \"MTC\": " << g_numUeMtc << "},\n"
         << "  \"slices\": [\"eMBB\", \"URLLC\", \"MTC\"],\n"
         << "  \"slice_weights_configured\": [";
     for (size_t i = 0; i < weights.size(); ++i)
@@ -741,6 +789,12 @@ WriteMetadataJson(const std::string& outputDir,
         << "  \"traffic_mbps_per_slice\": {\"eMBB\": " << mbps(scenario.embbRateBps)
         << ", \"URLLC\": " << mbps(scenario.urllcRateBps)
         << ", \"MTC\": " << mbps(scenario.mtcRateBps) << "},\n"
+        << "  \"traffic_mbps_per_ue\": {\"eMBB\": " << mbpsPerUe(scenario.embbRateBps, g_numUeEmbb)
+        << ", \"URLLC\": " << mbpsPerUe(scenario.urllcRateBps, g_numUeUrllc)
+        << ", \"MTC\": " << mbpsPerUe(scenario.mtcRateBps, g_numUeMtc) << "},\n"
+        << "  \"packet_size_bytes_per_slice\": {\"eMBB\": " << scenario.embbPktSize
+        << ", \"URLLC\": " << scenario.urllcPktSize
+        << ", \"MTC\": " << scenario.mtcPktSize << "},\n"
         << "  \"offered_load_mbps_per_slice\": {\"eMBB\": " << mbps(scenario.embbRateBps)
         << ", \"URLLC\": " << mbps(scenario.urllcRateBps)
         << ", \"MTC\": " << mbps(scenario.mtcRateBps) << "},\n"
@@ -752,6 +806,13 @@ WriteMetadataJson(const std::string& outputDir,
         << ", \"MTC\": " << SLA_MIN_MBPS[2] << "},\n"
         << "  \"sla_feasible_by_offered_load\": " << (embbSlaFeasible ? "true" : "false") << ",\n"
         << "  \"duplex_mode\": \"" << duplexMode << "\",\n"
+        << "  \"rlc_mode\": \"" << rlcMode << "\",\n"
+        << "  \"resource_efficiency_metrics\": {"
+        << "\"budget_utilization_pct\": \"allocated_rbg / budget_rbg * 100\", "
+        << "\"unused_budget_pct\": \"max(0, budget_rbg - allocated_rbg) / budget_rbg * 100\", "
+        << "\"allocation_fidelity_pct\": \"100 - abs(rsh_real_pct - effective_weight * 100)\", "
+        << "\"offered_load_satisfaction_pct\": \"throughput_mbps_mean / offered_load_mbps * 100, capped at 100\", "
+        << "\"sla_satisfaction_pct\": \"throughput_mbps_mean / sla_min_mbps * 100, capped at 100\"},\n"
         << "  \"tdd_pattern_requested\": \"" << tddPatternRequested << "\",\n"
         << "  \"tdd_pattern_applied\": \"" << tddPatternApplied << "\",\n"
         << "  \"dl_only\": " << (dlOnly ? "true" : "false") << ",\n"
@@ -1016,7 +1077,18 @@ main(int argc, char* argv[])
     double drainTimeSec = 0.2;
     uint32_t indicationPeriodMs = 10;
     std::string tddPattern = "D|D|8D|4GB|4U|U|U";
-    double txPowerDbm = 43.0;
+    std::string rlcMode = "um";
+    double centralFrequency = 3.55e9;
+    double bandwidth = 100e6;
+    uint16_t numerology = 1;
+    double txPowerDbm = 37.0 + 10.0 * std::log10(4.0);
+    double gnbNoiseFigureDb = 4.0;
+    double gnbHeightM = 10.0;
+    double ueHeightM = 1.5;
+    double ueRadiusM = 100.0;
+    double gnbDowntiltDeg = 6.0;
+    double gnbBearingDeg = 0.0;
+    bool shadowingEnabled = true;
     std::string weightsStr = "0.3333,0.4000,0.2667";
     std::string baselineMode = "slice_weighted_pf";
     std::string intraAlgo = "PF";
@@ -1034,10 +1106,21 @@ main(int argc, char* argv[])
     cmd.AddValue("outputDir", "Output directory", outputDir);
     cmd.AddValue("periodMs", "Stats indication period (ms)", indicationPeriodMs);
     cmd.AddValue("tddPattern", "TDD slot pattern string", tddPattern);
-    cmd.AddValue("txPower", "gNB TX power (dBm)", txPowerDbm);
-    cmd.AddValue("embbUes", "Number of eMBB UEs", g_numUeEmbb);
-    cmd.AddValue("urllcUes", "Number of URLLC UEs", g_numUeUrllc);
-    cmd.AddValue("mtcUes", "Number of MTC UEs", g_numUeMtc);
+    cmd.AddValue("rlcMode", "RLC mode for data radio bearers: am or um", rlcMode);
+    cmd.AddValue("centralFrequency", "NR carrier center frequency (Hz)", centralFrequency);
+    cmd.AddValue("bandwidth", "NR channel bandwidth (Hz)", bandwidth);
+    cmd.AddValue("numerology", "NR numerology (mu, where SCS = 15 kHz * 2^mu)", numerology);
+    cmd.AddValue("txPower", "gNB aggregate TX power over all antenna ports (dBm)", txPowerDbm);
+    cmd.AddValue("gnbNoiseFigure", "gNB receiver noise figure (dB)", gnbNoiseFigureDb);
+    cmd.AddValue("gnbHeight", "gNB antenna height (m)", gnbHeightM);
+    cmd.AddValue("ueHeight", "UE antenna height (m)", ueHeightM);
+    cmd.AddValue("ueRadius", "Uniform outdoor UE placement radius around the gNB (m)", ueRadiusM);
+    cmd.AddValue("gnbDowntiltDeg", "gNB panel downtilt angle (degrees)", gnbDowntiltDeg);
+    cmd.AddValue("gnbBearingDeg", "gNB panel bearing angle on the x-y plane (degrees)", gnbBearingDeg);
+    cmd.AddValue("shadowing", "Enable 3GPP pathloss shadowing", shadowingEnabled);
+    cmd.AddValue("embbUes", "Number of eMBB UEs (0 uses the scenario profile)", g_numUeEmbb);
+    cmd.AddValue("urllcUes", "Number of URLLC UEs (0 uses the scenario profile)", g_numUeUrllc);
+    cmd.AddValue("mtcUes", "Number of MTC UEs (0 uses the scenario profile)", g_numUeMtc);
     cmd.AddValue("weights", "Slice weights as comma-separated list (eMBB,URLLC,MTC)", weightsStr);
     cmd.AddValue("baselineMode",
                  "pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|slice_custom",
@@ -1066,7 +1149,20 @@ main(int argc, char* argv[])
     }
 
     const ScenarioConfig scenario = scenarios.at(scenarioName);
+    const bool useScenarioUeProfile =
+        (g_numUeEmbb == 0 && g_numUeUrllc == 0 && g_numUeMtc == 0);
+    if (useScenarioUeProfile)
+    {
+        g_numUeEmbb = scenario.embbUes;
+        g_numUeUrllc = scenario.urllcUes;
+        g_numUeMtc = scenario.mtcUes;
+    }
+    else if (g_numUeEmbb == 0 || g_numUeUrllc == 0 || g_numUeMtc == 0)
+    {
+        NS_FATAL_ERROR("Provide all three UE overrides (--embbUes, --urllcUes, --mtcUes) or leave all as 0 to use the scenario profile");
+    }
     const uint32_t numUeTotal = g_numUeEmbb + g_numUeUrllc + g_numUeMtc;
+    rlcMode = ToLower(rlcMode);
 
     if (simTimeSec <= drainTimeSec)
     {
@@ -1076,10 +1172,34 @@ main(int argc, char* argv[])
     {
         NS_FATAL_ERROR("simTimeSec - drainTimeSec must be greater than appStartSec");
     }
-    NS_ASSERT_MSG(numUeTotal == 20, "RSLAQ experiments require numUes == 20");
-    NS_ASSERT_MSG(g_numUeEmbb == 5, "RSLAQ experiments require eMBB UEs == 5");
-    NS_ASSERT_MSG(g_numUeUrllc == 5, "RSLAQ experiments require URLLC UEs == 5");
-    NS_ASSERT_MSG(g_numUeMtc == 10, "RSLAQ experiments require MTC UEs == 10");
+    if (centralFrequency <= 0.0)
+    {
+        NS_FATAL_ERROR("centralFrequency must be positive");
+    }
+    if (bandwidth <= 0.0)
+    {
+        NS_FATAL_ERROR("bandwidth must be positive");
+    }
+    if (gnbHeightM <= 0.0 || ueHeightM <= 0.0)
+    {
+        NS_FATAL_ERROR("gnbHeight and ueHeight must be positive");
+    }
+    if (ueRadiusM <= 0.0)
+    {
+        NS_FATAL_ERROR("ueRadius must be positive");
+    }
+    if (gnbDowntiltDeg < 0.0 || gnbDowntiltDeg > 10.0)
+    {
+        NS_FATAL_ERROR("gnbDowntiltDeg must be within the AW3161 eRET range [0, 10]");
+    }
+    if (numUeTotal == 0)
+    {
+        NS_FATAL_ERROR("At least one UE must be configured");
+    }
+    if (rlcMode != "am" && rlcMode != "um")
+    {
+        NS_FATAL_ERROR("rlcMode must be either 'am' or 'um'");
+    }
 
     std::vector<double> sliceWeights = ParseWeights(weightsStr);
     if (sliceWeights.size() != NUM_SLICES)
@@ -1118,7 +1238,8 @@ main(int argc, char* argv[])
     {
         std::ofstream alloc(outputDir + "/slice_alloc.csv", std::ios::out | std::ios::trunc);
         alloc << "timestamp_ms,slice,configured_weight,budget_rbg,allocated_rbg,"
-              << "total_allocated_rbg,rsh_real_pct,active_ues,effective_weight,"
+              << "total_allocated_rbg,rsh_real_pct,budget_utilization_pct,"
+              << "unused_budget_pct,allocation_fidelity_pct,active_ues,effective_weight,"
               << "beam_id,has_demand,reason,redistributed_idle_rbg,rntis\n";
     }
 
@@ -1139,24 +1260,33 @@ main(int argc, char* argv[])
 
     g_indicationPeriodMs = indicationPeriodMs;
 
-    const double centralFrequency = 2.59e9;
-    const double bandwidth = 10e6;
-    const uint16_t numerology = 0;
     const uint16_t baseDlPort = 12000;
+    const double scsKhz = 15.0 * std::pow(2.0, numerology);
+    const double gnbDowntiltRad = gnbDowntiltDeg * std::acos(-1.0) / 180.0;
+    const double gnbBearingRad = gnbBearingDeg * std::acos(-1.0) / 180.0;
 
     std::cout << "========================================\n"
               << "  RSLAQ Simulation (Slice-Aware + IPC)\n"
               << "========================================\n"
               << "Scenario     : " << scenario.name << "\n"
+              << "RF profile   : RAN650 n78 + AW3161-E-F-V2 outdoor panel\n"
               << "Frequency    : " << centralFrequency / 1e9 << " GHz\n"
               << "Bandwidth    : " << bandwidth / 1e6 << " MHz\n"
-              << "Numerology   : " << numerology << " (SCS 15 kHz)\n"
+              << "Numerology   : " << numerology << " (SCS " << scsKhz << " kHz)\n"
               << "UEs          : " << numUeTotal
               << " (eMBB=" << g_numUeEmbb
               << " URLLC=" << g_numUeUrllc
               << " MTC=" << g_numUeMtc << ")\n"
+              << "UE area      : uniform disc radius " << ueRadiusM
+              << " m, UE height " << ueHeightM << " m\n"
+              << "gNB height   : " << gnbHeightM << " m\n"
+              << "gNB antenna  : 4 ports, +/-45 deg pol, 17.9 dBi, 65x7 deg, tilt "
+              << gnbDowntiltDeg << " deg, bearing " << gnbBearingDeg << " deg\n"
               << "SimTime      : " << simTimeSec << " s\n"
               << "TxPower      : " << txPowerDbm << " dBm\n"
+              << "gNB NF       : " << gnbNoiseFigureDb << " dB\n"
+              << "RLC mode     : " << ToUpper(rlcMode) << "\n"
+              << "Shadowing    : " << (shadowingEnabled ? "enabled" : "disabled") << "\n"
               << "Stats period : " << indicationPeriodMs << " ms\n"
               << "BaselineMode : " << baselineMode << "\n"
               << "IntraAlgo    : " << (g_useSliceScheduler ? IntraAlgoName(sliceAlgos[0]) : "NA") << "\n"
@@ -1208,6 +1338,9 @@ main(int argc, char* argv[])
     RngSeedManager::SetRun(run);
 
     Config::SetDefault("ns3::NrRlcUm::MaxTxBufferSize", UintegerValue(10485760));
+    Config::SetDefault("ns3::NrGnbRrc::QosFlowToRlcMapping",
+                       EnumValue(rlcMode == "am" ? NrGnbRrc::RLC_AM_ALWAYS
+                                                  : NrGnbRrc::RLC_UM_ALWAYS));
     Config::SetDefault("ns3::ThreeGppChannelModel::UpdatePeriod", TimeValue(MilliSeconds(0)));
 
     // ---- Nodes ----
@@ -1223,17 +1356,21 @@ main(int argc, char* argv[])
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
     {
         Ptr<ListPositionAllocator> pos = CreateObject<ListPositionAllocator>();
-        pos->Add(Vector(0.0, 0.0, 10.0));
+        pos->Add(Vector(0.0, 0.0, gnbHeightM));
         mobility.SetPositionAllocator(pos);
         mobility.Install(gNbNodes);
     }
     {
-        Ptr<RandomRectanglePositionAllocator> pos =
-            CreateObject<RandomRectanglePositionAllocator>();
-        pos->SetAttribute("X", StringValue("ns3::UniformRandomVariable[Min=-30|Max=30]"));
-        pos->SetAttribute("Y", StringValue("ns3::UniformRandomVariable[Min=-30|Max=30]"));
         MobilityHelper ueMob;
-        ueMob.SetPositionAllocator(pos);
+        ueMob.SetPositionAllocator("ns3::UniformDiscPositionAllocator",
+                                   "rho",
+                                   DoubleValue(ueRadiusM),
+                                   "X",
+                                   DoubleValue(0.0),
+                                   "Y",
+                                   DoubleValue(0.0),
+                                   "Z",
+                                   DoubleValue(ueHeightM));
         ueMob.SetMobilityModel("ns3::ConstantPositionMobilityModel");
         ueMob.Install(ueNodes);
     }
@@ -1249,10 +1386,19 @@ main(int argc, char* argv[])
     nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(1));
     nrHelper->SetUeAntennaAttribute("AntennaElement",
                                      PointerValue(CreateObject<IsotropicAntennaModel>()));
+    Ptr<CosineAntennaModel> gnbPanelElement = CreateObject<CosineAntennaModel>();
+    gnbPanelElement->SetAttribute("HorizontalBeamwidth", DoubleValue(65.0));
+    gnbPanelElement->SetAttribute("VerticalBeamwidth", DoubleValue(7.0));
+    gnbPanelElement->SetAttribute("MaxGain", DoubleValue(17.9));
     nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(1));
-    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(1));
-    nrHelper->SetGnbAntennaAttribute("AntennaElement",
-                                      PointerValue(CreateObject<IsotropicAntennaModel>()));
+    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(2));
+    nrHelper->SetGnbAntennaAttribute("IsDualPolarized", BooleanValue(true));
+    nrHelper->SetGnbAntennaAttribute("NumHorizontalPorts", UintegerValue(2));
+    nrHelper->SetGnbAntennaAttribute("NumVerticalPorts", UintegerValue(1));
+    nrHelper->SetGnbAntennaAttribute("PolSlantAngle", DoubleValue(45.0 * std::acos(-1.0) / 180.0));
+    nrHelper->SetGnbAntennaAttribute("DowntiltAngle", DoubleValue(gnbDowntiltRad));
+    nrHelper->SetGnbAntennaAttribute("BearingAngle", DoubleValue(gnbBearingRad));
+    nrHelper->SetGnbAntennaAttribute("AntennaElement", PointerValue(gnbPanelElement));
 
     // ---- Spectrum: 1 CC / 1 BWP ----
     CcBwpCreator ccBwpCreator;
@@ -1263,7 +1409,7 @@ main(int argc, char* argv[])
     Ptr<NrChannelHelper> channelHelper = CreateObject<NrChannelHelper>();
     channelHelper->ConfigureFactories("UMi", "Default", "ThreeGpp");
     channelHelper->SetChannelConditionModelAttribute("UpdatePeriod", TimeValue(MilliSeconds(0)));
-    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
+    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(shadowingEnabled));
     channelHelper->AssignChannelsToBands({band});
 
     BandwidthPartInfoPtrVector allBwps = CcBwpCreator::GetAllBwps({band});
@@ -1284,6 +1430,7 @@ main(int argc, char* argv[])
     // ---- PHY configuration ----
     nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)->SetAttribute("Numerology", UintegerValue(numerology));
     nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)->SetAttribute("TxPower", DoubleValue(txPowerDbm));
+    nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)->SetAttribute("NoiseFigure", DoubleValue(gnbNoiseFigureDb));
     nrHelper->GetGnbPhy(gnbNetDev.Get(0), 0)->SetPattern(appliedTddPattern);
     for (uint32_t i = 0; i < ueNetDev.GetN(); ++i)
     {
@@ -1569,7 +1716,7 @@ main(int argc, char* argv[])
                   << "  TX/RX pkts : " << m.txPackets << " / " << m.rxPackets << "\n\n";
     }
 
-    WriteSummaryCsv(outputDir, scenarioName, baselineMode);
+    WriteSummaryCsv(outputDir, scenario, scenarioName, baselineMode);
     WriteMetadataJson(outputDir,
                       scenario,
                       baselineMode,
@@ -1582,6 +1729,7 @@ main(int argc, char* argv[])
                       duplexMode,
                       tddPattern,
                       appliedTddPattern,
+                      rlcMode,
                       dlOnly,
                       embbSlaFeasible);
 

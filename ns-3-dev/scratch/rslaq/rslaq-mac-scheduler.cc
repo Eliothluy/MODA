@@ -284,7 +284,8 @@ RslaqMacScheduler::OpenCsvFiles() const
         std::string path = prefix + "slice_alloc.csv";
         m_sliceAllocCsv.open(path, std::ios::out | std::ios::trunc);
         m_sliceAllocCsv << "timestamp_ms,slice,configured_weight,budget_rbg,allocated_rbg,"
-                           "total_allocated_rbg,rsh_real_pct,active_ues,effective_weight,"
+                           "total_allocated_rbg,rsh_real_pct,budget_utilization_pct,"
+                           "unused_budget_pct,allocation_fidelity_pct,active_ues,effective_weight,"
                            "beam_id,has_demand,reason,redistributed_idle_rbg,rntis\n";
         m_sliceAllocCsv.flush();
     }
@@ -822,12 +823,30 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                                     ? 100.0 * static_cast<double>(sliceAllocatedVec[s]) /
                                           static_cast<double>(totalAllocatedRbg)
                                     : 0.0;
+            double budgetUtilizationPct = (sliceRbgBudget[s] > 0)
+                                              ? 100.0 * static_cast<double>(sliceAllocatedVec[s]) /
+                                                    static_cast<double>(sliceRbgBudget[s])
+                                              : 0.0;
+            budgetUtilizationPct = std::clamp(budgetUtilizationPct, 0.0, 100.0);
+            double unusedBudgetPct = (sliceRbgBudget[s] > 0) ? 100.0 - budgetUtilizationPct : 0.0;
+            double targetSharePct = effectiveWeight[s] * 100.0;
+            double allocationFidelityPct = std::clamp(100.0 - std::abs(rshRealPct - targetSharePct),
+                                                      0.0,
+                                                      100.0);
 
             if (m_sliceAllocationStats.size() == m_numSlices)
             {
                 m_sliceAllocationStats[s].samples += 1;
+                if (sliceRbgBudget[s] > 0)
+                {
+                    m_sliceAllocationStats[s].samplesWithBudget += 1;
+                    m_sliceAllocationStats[s].budgetUtilizationPctSum += budgetUtilizationPct;
+                    m_sliceAllocationStats[s].unusedBudgetPctSum += unusedBudgetPct;
+                }
+                m_sliceAllocationStats[s].budgetRbgTotal += sliceRbgBudget[s];
                 m_sliceAllocationStats[s].allocatedRbgTotal += sliceAllocatedVec[s];
                 m_sliceAllocationStats[s].rshRealPctSum += rshRealPct;
+                m_sliceAllocationStats[s].allocationFidelityPctSum += allocationFidelityPct;
             }
 
             if (logThisSlot && m_sliceAllocCsv.is_open())
@@ -843,6 +862,9 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                                 << sliceAllocatedVec[s] << ","
                                 << totalAllocatedRbg << ","
                                 << std::setprecision(4) << rshRealPct << ","
+                                << std::setprecision(4) << budgetUtilizationPct << ","
+                                << std::setprecision(4) << unusedBudgetPct << ","
+                                << std::setprecision(4) << allocationFidelityPct << ","
                                 << sliceUeVec[s].size() << ","
                                 << std::setprecision(4) << effectiveWeight[s] << ","
                                 << beamIdStr << ","

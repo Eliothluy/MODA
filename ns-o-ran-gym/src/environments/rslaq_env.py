@@ -153,7 +153,12 @@ class RslaqEnv(NsOranEnv):
         self.action_space = action_space
 
         self.num_slices = get_num_slices()
-        self.num_ues = scenario_configuration.get("ues", [20])[0]
+        if all(k in scenario_configuration for k in ("embbUes", "urllcUes", "mtcUes")):
+            self.num_ues = sum(
+                int(scenario_configuration[k][0]) for k in ("embbUes", "urllcUes", "mtcUes")
+            )
+        else:
+            self.num_ues = int(scenario_configuration.get("ues", [20])[0])
 
         self._base_seed = int(scenario_configuration.get("seed", [1])[0])
         self._episode_count = 0
@@ -164,6 +169,7 @@ class RslaqEnv(NsOranEnv):
         self.kpi_dict: dict = {}
         self.num_steps = 0
         self.latest_action_info: dict = {}
+        self.reward_mode = str(self.sla_config.get("reward_mode", "paper"))
         self._step_log_path: str | None = None
         self._step_log_initialized = False
 
@@ -301,8 +307,10 @@ class RslaqEnv(NsOranEnv):
                 entry = entry + (sch,)
             actions.append(entry)
 
+        previous_prb_pct = self.latest_action_info.get("prb_pct")
         self.latest_action_info = {
             "prb_pct": prb_pct.tolist(),
+            "previous_prb_pct": previous_prb_pct,
             "scheduler_id": int(scheduler_id),
             "scheduler_name": scheduler_id_to_name(int(scheduler_id)) if scheduler_id >= 0 else "PF(default)",
             "action_mode": self.action_mode,
@@ -401,6 +409,7 @@ class RslaqEnv(NsOranEnv):
             "episode",
             "step",
             "algo_mode",
+            "reward_mode",
             "slice_id",
             "slice",
             "throughput_mbps",
@@ -419,6 +428,12 @@ class RslaqEnv(NsOranEnv):
             "scheduler_name",
             "raw_action",
             "reward",
+            "resource_efficiency",
+            "need_allocation_match",
+            "over_allocation",
+            "under_allocation",
+            "action_smoothness_penalty",
+            "resource_efficient_shaping",
             "outage_flag",
             "soft_flag",
             "terminated",
@@ -437,6 +452,7 @@ class RslaqEnv(NsOranEnv):
         scheduler_name = action_info.get("scheduler_name", "PF(default)")
         outage_flags = info.get("outage_flags", {})
         soft_flags = info.get("soft_flags", {})
+        reward_debug = info.get("reward_debug", {})
         current_seed = int(self.scenario_configuration.get("seed", [self._base_seed])[0])
         sim_id = self.sim_result.get("meta", {}).get("id", "") if self.sim_result else ""
 
@@ -453,6 +469,7 @@ class RslaqEnv(NsOranEnv):
                     self._episode_count,
                     self.num_steps,
                     self.action_mode,
+                    self.reward_mode,
                     sid,
                     slice_name(sid),
                     metrics.get("throughputMbps_sum", 0.0),
@@ -471,6 +488,12 @@ class RslaqEnv(NsOranEnv):
                     scheduler_name,
                     raw_action_str,
                     reward_val,
+                    reward_debug.get("resource_efficiency", 0.0),
+                    reward_debug.get("need_allocation_match", 0.0),
+                    reward_debug.get("over_allocation", 0.0),
+                    reward_debug.get("under_allocation", 0.0),
+                    reward_debug.get("action_smoothness_penalty", 0.0),
+                    reward_debug.get("resource_efficient_shaping", 0.0),
                     bool(outage_flags.get(sid, False)),
                     bool(soft_flags.get(sid, False)),
                     bool(self.terminated),
@@ -491,6 +514,7 @@ class RslaqEnv(NsOranEnv):
             "max_steps": self.max_steps,
             "scenario": self.scenario_name,
             "action_info": self.latest_action_info.copy(),
+            "reward_mode": self.reward_mode,
             "raw_action": raw_action,
         }
 

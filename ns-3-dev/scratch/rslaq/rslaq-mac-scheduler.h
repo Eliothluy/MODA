@@ -100,8 +100,13 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     struct SliceAllocationStats
     {
         uint64_t samples = 0;
+        uint64_t samplesWithBudget = 0;
+        uint64_t budgetRbgTotal = 0;
         uint64_t allocatedRbgTotal = 0;
         double rshRealPctSum = 0.0;
+        double budgetUtilizationPctSum = 0.0;
+        double unusedBudgetPctSum = 0.0;
+        double allocationFidelityPctSum = 0.0;
     };
 
     std::vector<SliceAllocationStats> GetSliceAllocationStats() const;

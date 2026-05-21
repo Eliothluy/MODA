@@ -1,0 +1,3 @@
+Gere gráficos comparativos, como está na pasta /home/elioth/Documentos/artigo_jussi/analysis_rslaq_validation/controlled_20260514_175546/, mas adicionando os resultados preditivos, depois avalie os resultados, gere um relatório, se o resultado superar o rslaq.
+  Resultados no /home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results_controlled/predictive_forecaster_sac/20260518_132018/
+

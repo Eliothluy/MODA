@@ -49,6 +49,29 @@ SCENARIOS = [
     "insufficient_resources",
 ]
 
+SCENARIO_UE_PROFILES = {
+    "low_traffic": (2, 2, 6),
+    "normal": (5, 5, 10),
+    "congestion": (15, 10, 35),
+    "stressed": (8, 12, 20),
+    "insufficient_resources": (20, 10, 40),
+}
+
+
+def apply_ue_profile(config, scenario, args):
+    cli_profile = (args.embbUes, args.urllcUes, args.mtcUes)
+    if all(v > 0 for v in cli_profile):
+        profile = cli_profile
+    elif any(v > 0 for v in cli_profile):
+        raise ValueError("Provide --embbUes, --urllcUes and --mtcUes together, or leave all as 0")
+    else:
+        profile = SCENARIO_UE_PROFILES.get(scenario, SCENARIO_UE_PROFILES["normal"])
+
+    config["embbUes"] = [int(profile[0])]
+    config["urllcUes"] = [int(profile[1])]
+    config["mtcUes"] = [int(profile[2])]
+    return profile
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -272,6 +295,7 @@ def train_ddqn(args):
         "seed_cycle": [args.seed_cycle],
         "periodMs": [args.periodMs],
     }
+    current_ue_profile = apply_ue_profile(config, scenario_list[0], args)
 
     sla_config = {
         "max_buffer_bytes": args.max_buffer_bytes,
@@ -334,6 +358,9 @@ def train_ddqn(args):
                 "action_embb",
                 "action_urllc",
                 "action_mtc",
+                "embb_ues",
+                "urllc_ues",
+                "mtc_ues",
             ]
         )
 
@@ -344,6 +371,8 @@ def train_ddqn(args):
     for ep in range(args.episodes):
         chosen_scenario = choose_scenario(ep, mode, scenario_list)
         env.scenario_configuration["scenario"] = [chosen_scenario]
+        current_ue_profile = apply_ue_profile(env.scenario_configuration, chosen_scenario, args)
+        env.num_ues = sum(current_ue_profile)
         env.scenario_name = chosen_scenario
 
         obs, info = env.reset()
@@ -412,6 +441,9 @@ def train_ddqn(args):
                     f"{prb_pct[0]:.2f}",
                     f"{prb_pct[1]:.2f}",
                     f"{prb_pct[2]:.2f}",
+                    current_ue_profile[0],
+                    current_ue_profile[1],
+                    current_ue_profile[2],
                 ]
             )
 
@@ -440,6 +472,12 @@ def train_ddqn(args):
         "p_sta_static_fraction": args.p_sta_static_fraction,
         "p_sta_weights": p_sta_weights.tolist(),
         "reward_weights": [args.reward_alpha, args.reward_beta, args.reward_gamma],
+        "scenario_ue_profiles": SCENARIO_UE_PROFILES,
+        "ue_override": {
+            "eMBB": args.embbUes,
+            "URLLC": args.urllcUes,
+            "MTC": args.mtcUes,
+        },
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
     }
@@ -457,6 +495,12 @@ def main():
                         help="Scenario name or 'random'")
     parser.add_argument("--scenarios", type=str, default="",
                         help="Comma-separated list for random mode (default: all)")
+    parser.add_argument("--embbUes", type=int, default=0,
+                        help="Override eMBB UE count; 0 uses the scenario profile")
+    parser.add_argument("--urllcUes", type=int, default=0,
+                        help="Override URLLC UE count; 0 uses the scenario profile")
+    parser.add_argument("--mtcUes", type=int, default=0,
+                        help="Override MTC UE count; 0 uses the scenario profile")
     parser.add_argument("--ns3_path", type=str, default=DEFAULT_NS3_PATH)
     parser.add_argument("--output", type=str, default=DEFAULT_OUTPUT)
     parser.add_argument("--seed", type=int, default=1)
