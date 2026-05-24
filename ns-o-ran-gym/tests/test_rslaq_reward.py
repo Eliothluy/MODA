@@ -437,6 +437,47 @@ def test_resource_efficient_debug_terms():
     assert result.debug_info["reward_mode"] == "resource_efficient"
 
 
+
+def test_sla_violation_can_penalize_without_terminating():
+    """DDQN can keep the paper Eq. 12 penalty while using ntsr for reset."""
+    metrics = _good_metrics()
+    metrics[0]["throughputMbps_sum"] = 5.0
+    config = {
+        **INSTANT_OUTAGE_CONFIG,
+        "terminate_on_sla_violation": False,
+    }
+    result = compute_rslaq_reward(
+        metrics, scenario="normal", step_count=POST_WARMUP, config=config
+    )
+    assert result.outage_flags[0] is True
+    assert result.reward == -ALPHA
+    assert not result.terminated
+    assert result.debug_info["sla_violation"] is True
+    assert result.debug_info["terminate_on_sla_violation"] is False
+
+
+def test_resource_efficient_does_not_shape_nonterminal_sla_penalty():
+    """Eq. 12 penalties are not diluted when DDQN keeps the episode alive."""
+    metrics = _good_metrics()
+    metrics[0]["throughputMbps_sum"] = 5.0
+    config = {
+        **INSTANT_OUTAGE_CONFIG,
+        "reward_mode": "resource_efficient",
+        "terminate_on_sla_violation": False,
+    }
+    result = compute_rslaq_reward(
+        metrics,
+        scenario="normal",
+        action_info={"prb_pct": [90.0, 5.0, 5.0]},
+        config=config,
+        step_count=POST_WARMUP,
+    )
+    assert result.outage_flags[0] is True
+    assert result.reward == -ALPHA
+    assert not result.terminated
+    assert result.optimization_terms["resource_efficient_shaping"] == 0.0
+
+
 # ── Metadata tests ───────────────────────────────────────────────────
 
 def test_optimization_terms_keys():
@@ -535,4 +576,6 @@ if __name__ == "__main__":
     test_resource_efficient_penalizes_over_allocation()
     test_resource_efficient_keeps_outage_terminal_reward()
     test_resource_efficient_debug_terms()
+    test_sla_violation_can_penalize_without_terminating()
+    test_resource_efficient_does_not_shape_nonterminal_sla_penalty()
     print("All reward tests passed.")

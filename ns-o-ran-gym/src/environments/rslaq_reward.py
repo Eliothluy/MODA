@@ -380,6 +380,7 @@ def compute_rslaq_reward(
     sla = SLA_BY_SCENARIO.get(scenario, SLA_BY_SCENARIO["normal"])
     warmup_steps = int(config.get("warmup_steps", 5))
     consecutive_outage_steps = int(config.get("consecutive_outage_steps", 5))
+    terminate_on_sla_violation = bool(config.get("terminate_on_sla_violation", True))
 
     alpha = config.get("alpha", ALPHA)
     beta = config.get("beta", BETA)
@@ -472,15 +473,20 @@ def compute_rslaq_reward(
     outage_slices = [sid for sid, flag in result.outage_flags.items() if flag]
     soft_slices = [sid for sid, flag in result.soft_flags.items() if flag]
 
+    sla_violation = bool(outage_slices or soft_slices)
+    terminal_reason = "none"
+
     if outage_slices:
         # Eq. 12: r = -Σ(φ_j * ω_j), terminal
         weights_map = {0: alpha, 1: beta, 2: gamma_val}
         result.reward = -sum(weights_map[sid] for sid in outage_slices)
-        result.terminated = True
+        result.terminated = terminate_on_sla_violation
+        terminal_reason = "outage"
     elif soft_slices:
         # Eq. 12: r = 0, terminal (soft SLA violation)
         result.reward = 0.0
-        result.terminated = True
+        result.terminated = terminate_on_sla_violation
+        terminal_reason = "soft"
     else:
         result.reward = opt_reward
         result.terminated = False
@@ -501,6 +507,9 @@ def compute_rslaq_reward(
         "mtc_tdp": float(mtc_metrics.get("dLostPackets_sum", 0.0)),
         "outage_slices": outage_slices,
         "soft_slices": soft_slices,
+        "sla_violation": sla_violation,
+        "terminate_on_sla_violation": terminate_on_sla_violation,
+        "terminal_reason": terminal_reason if result.terminated else "none",
         "action_info": action_info or {},
         "avg_embb_thr_per_ue": avg_embb_thr,
         "avg_mtc_thr_per_ue": avg_mtc_thr,
@@ -518,7 +527,7 @@ def compute_rslaq_reward(
         smooth_weight = float(config.get("action_smoothness_weight", 0.05))
 
         shaping = 0.0
-        if not result.terminated:
+        if not sla_violation:
             shaping = (
                 eff_weight * resource_terms["resource_efficiency"]
                 + match_weight * resource_terms["need_allocation_match"]

@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slice Resource Efficiency Report</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 40px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 5px;
+        }
+        h3 {
+            color: #555;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+            font-weight: bold;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .metric-card {
+            background-color: #ecf0f1;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+            border-left: 4px solid #3498db;
+        }
+        .metric-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .metric-label {
+            color: #7f8c8d;
+            font-size: 14px;
+        }
+        .algorithm-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+        }
+        .best {
+            background-color: #d4edda !important;
+            font-weight: bold;
+        }
+        .worst {
+            background-color: #f8d7da !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Slice Resource Efficiency Analysis Report</h1>
+        <p>RSLAQ NS-O-RAN-Gym Results Analysis</p>
+        <p><strong>Generated:</strong> 2026-05-22 13:54:06</p>
+
+        <h2>Executive Summary</h2>
+        <div class="metric-card">
+            <div class="metric-value">225 slice instances analyzed</div>
+            <div class="metric-label">Total data points across all algorithms and scenarios</div>
+        </div>
+
+        <div class="metric-card" style="border-left-color: #3498db">
+            <h3>DDQN Paper</h3>
+            <div style="display: flex; gap: 30px;">
+                <div>
+                    <div class="metric-value">3.70 Mbps</div>
+                    <div class="metric-label">Avg Throughput</div>
+                </div>
+                <div>
+                    <div class="metric-value">20.54%</div>
+                    <div class="metric-label">Avg PDR</div>
+                </div>
+                <div>
+                    <div class="metric-value">4.15%</div>
+                    <div class="metric-label">Avg Outage Rate</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="metric-card" style="border-left-color: #e74c3c">
+            <h3>SAC Paper</h3>
+            <div style="display: flex; gap: 30px;">
+                <div>
+                    <div class="metric-value">3.69 Mbps</div>
+                    <div class="metric-label">Avg Throughput</div>
+                </div>
+                <div>
+                    <div class="metric-value">20.99%</div>
+                    <div class="metric-label">Avg PDR</div>
+                </div>
+                <div>
+                    <div class="metric-value">4.12%</div>
+                    <div class="metric-label">Avg Outage Rate</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="metric-card" style="border-left-color: #27ae60">
+            <h3>SAC Resource Efficient</h3>
+            <div style="display: flex; gap: 30px;">
+                <div>
+                    <div class="metric-value">3.70 Mbps</div>
+                    <div class="metric-label">Avg Throughput</div>
+                </div>
+                <div>
+                    <div class="metric-value">20.99%</div>
+                    <div class="metric-label">Avg PDR</div>
+                </div>
+                <div>
+                    <div class="metric-value">4.13%</div>
+                    <div class="metric-label">Avg Outage Rate</div>
+                </div>
+            </div>
+        </div>
+
+        <h2>Scenario: low_traffic</h2>
+        <table>
+            <tr>
+                <th>Algorithm</th>
+                <th>Slice</th>
+                <th>Throughput (Mbps)</th>
+                <th>PDR (%)</th>
+                <th>PLR (%)</th>
+                <th>Resource Share (%)</th>
+                <th>Outage Rate (%)</th>
+        
+            <tr>
+                <td>DDQN Paper</td>
+                <td>eMBB</td>
+                <td>23.66</td>
+                <td>38.88</td>
+                <td>61.12</td>
+                <td>34.23</td>
+                <td>2.57</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>URLLC</td>
+                <td>1.34</td>
+                <td>70.95</td>
+                <td>29.05</td>
+                <td>35.61</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>MTC</td>
+                <td>0.81</td>
+                <td>51.75</td>
+                <td>48.25</td>
+                <td>30.16</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>eMBB</td>
+                <td>24.05</td>
+                <td>39.93</td>
+                <td>60.07</td>
+                <td>32.93</td>
+                <td>1.52</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>URLLC</td>
+                <td>1.36</td>
+                <td>73.20</td>
+                <td>26.80</td>
+                <td>36.67</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>MTC</td>
+                <td>0.81</td>
+                <td>53.07</td>
+                <td>46.93</td>
+                <td>30.40</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>eMBB</td>
+                <td>23.99</td>
+                <td>39.83</td>
+                <td>60.17</td>
+                <td>33.18</td>
+                <td>1.83</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>URLLC</td>
+                <td>1.36</td>
+                <td>72.83</td>
+                <td>27.17</td>
+                <td>36.45</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>MTC</td>
+                <td>0.81</td>
+                <td>53.18</td>
+                <td>46.82</td>
+                <td>30.37</td>
+                <td>0.00</td>
+            </tr>
+</table>
+        <h2>Scenario: normal</h2>
+        <table>
+            <tr>
+                <th>Algorithm</th>
+                <th>Slice</th>
+                <th>Throughput (Mbps)</th>
+                <th>PDR (%)</th>
+                <th>PLR (%)</th>
+                <th>Resource Share (%)</th>
+                <th>Outage Rate (%)</th>
+        
+            <tr>
+                <td>DDQN Paper</td>
+                <td>eMBB</td>
+                <td>11.31</td>
+                <td>15.76</td>
+                <td>84.24</td>
+                <td>34.06</td>
+                <td>8.00</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>URLLC</td>
+                <td>0.96</td>
+                <td>36.64</td>
+                <td>63.36</td>
+                <td>35.71</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>MTC</td>
+                <td>1.28</td>
+                <td>33.66</td>
+                <td>66.34</td>
+                <td>30.23</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>eMBB</td>
+                <td>10.51</td>
+                <td>14.87</td>
+                <td>85.13</td>
+                <td>33.03</td>
+                <td>8.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>URLLC</td>
+                <td>0.96</td>
+                <td>37.12</td>
+                <td>62.88</td>
+                <td>36.47</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>MTC</td>
+                <td>1.30</td>
+                <td>34.33</td>
+                <td>65.67</td>
+                <td>30.50</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>eMBB</td>
+                <td>10.51</td>
+                <td>14.87</td>
+                <td>85.13</td>
+                <td>33.03</td>
+                <td>8.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>URLLC</td>
+                <td>0.96</td>
+                <td>37.12</td>
+                <td>62.88</td>
+                <td>36.47</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>MTC</td>
+                <td>1.30</td>
+                <td>34.33</td>
+                <td>65.67</td>
+                <td>30.50</td>
+                <td>0.00</td>
+            </tr>
+</table>
+        <h2>Scenario: congestion</h2>
+        <table>
+            <tr>
+                <th>Algorithm</th>
+                <th>Slice</th>
+                <th>Throughput (Mbps)</th>
+                <th>PDR (%)</th>
+                <th>PLR (%)</th>
+                <th>Resource Share (%)</th>
+                <th>Outage Rate (%)</th>
+        
+            <tr>
+                <td>DDQN Paper</td>
+                <td>eMBB</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>33.95</td>
+                <td>20.00</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>URLLC</td>
+                <td>0.00</td>
+                <td>0.07</td>
+                <td>99.93</td>
+                <td>35.74</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>MTC</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>30.31</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>eMBB</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>33.02</td>
+                <td>20.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>URLLC</td>
+                <td>0.00</td>
+                <td>0.07</td>
+                <td>99.93</td>
+                <td>36.50</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>MTC</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>30.48</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>eMBB</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>33.02</td>
+                <td>20.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>URLLC</td>
+                <td>0.00</td>
+                <td>0.07</td>
+                <td>99.93</td>
+                <td>36.50</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>MTC</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>30.48</td>
+                <td>0.00</td>
+            </tr>
+</table>
+        <h2>Scenario: stressed</h2>
+        <table>
+            <tr>
+                <th>Algorithm</th>
+                <th>Slice</th>
+                <th>Throughput (Mbps)</th>
+                <th>PDR (%)</th>
+                <th>PLR (%)</th>
+                <th>Resource Share (%)</th>
+                <th>Outage Rate (%)</th>
+        
+            <tr>
+                <td>DDQN Paper</td>
+                <td>eMBB</td>
+                <td>8.74</td>
+                <td>8.61</td>
+                <td>91.39</td>
+                <td>34.27</td>
+                <td>11.64</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>URLLC</td>
+                <td>2.04</td>
+                <td>35.79</td>
+                <td>64.21</td>
+                <td>35.82</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>MTC</td>
+                <td>5.30</td>
+                <td>15.70</td>
+                <td>84.30</td>
+                <td>29.91</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>eMBB</td>
+                <td>8.73</td>
+                <td>8.62</td>
+                <td>91.38</td>
+                <td>33.01</td>
+                <td>12.26</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>URLLC</td>
+                <td>2.07</td>
+                <td>36.85</td>
+                <td>63.15</td>
+                <td>36.58</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>MTC</td>
+                <td>5.57</td>
+                <td>16.42</td>
+                <td>83.58</td>
+                <td>30.41</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>eMBB</td>
+                <td>8.81</td>
+                <td>8.70</td>
+                <td>91.30</td>
+                <td>33.05</td>
+                <td>12.05</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>URLLC</td>
+                <td>2.07</td>
+                <td>36.96</td>
+                <td>63.04</td>
+                <td>36.53</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>MTC</td>
+                <td>5.65</td>
+                <td>16.60</td>
+                <td>83.40</td>
+                <td>30.42</td>
+                <td>0.00</td>
+            </tr>
+</table>
+        <h2>Scenario: insufficient_resources</h2>
+        <table>
+            <tr>
+                <th>Algorithm</th>
+                <th>Slice</th>
+                <th>Throughput (Mbps)</th>
+                <th>PDR (%)</th>
+                <th>PLR (%)</th>
+                <th>Resource Share (%)</th>
+                <th>Outage Rate (%)</th>
+        
+            <tr>
+                <td>DDQN Paper</td>
+                <td>eMBB</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>34.04</td>
+                <td>20.00</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>URLLC</td>
+                <td>0.02</td>
+                <td>0.33</td>
+                <td>99.67</td>
+                <td>35.61</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>DDQN Paper</td>
+                <td>MTC</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>30.35</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>eMBB</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>33.02</td>
+                <td>20.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>URLLC</td>
+                <td>0.02</td>
+                <td>0.33</td>
+                <td>99.67</td>
+                <td>36.51</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Paper</td>
+                <td>MTC</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>30.47</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>eMBB</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>33.02</td>
+                <td>20.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>URLLC</td>
+                <td>0.02</td>
+                <td>0.33</td>
+                <td>99.67</td>
+                <td>36.51</td>
+                <td>0.00</td>
+            </tr>
+
+            <tr>
+                <td>SAC Resource Efficient</td>
+                <td>MTC</td>
+                <td>0.00</td>
+                <td>0.00</td>
+                <td>100.00</td>
+                <td>30.47</td>
+                <td>0.00</td>
+            </tr>
+</table>
+        <h2>Algorithm Comparison by Slice</h2>
+        <table>
+            <tr>
+                <th>Slice</th>
+                <th>Algorithm</th>
+                <th>Avg Throughput</th>
+                <th>Avg PDR</th>
+                <th>Avg Outage Rate</th>
+                <th>Best For</th>
+        </table>
+
+        <h2>Key Findings</h2>
+        <ul>
+    <li><strong>Best Overall Throughput:</strong> SAC Resource Efficient (3.70 Mbps)</li>    <li><strong>Best Packet Delivery Ratio:</strong> SAC Paper (20.99%)</li>    <li><strong>Lowest Outage Rate:</strong> SAC Paper (4.12%)</li>
+        </ul>
+
+        <h2>Methodology</h2>
+        <p>This report analyzes slice efficiency metrics from RSLAQ NS-O-RAN-Gym experiments:</p>
+        <ul>
+            <li><strong>Algorithms:</strong> SAC Paper, SAC Resource Efficient, DDQN Paper</li>
+            <li><strong>Slices:</strong> eMBB, URLLC, MTC</li>
+            <li><strong>Scenarios:</strong> low_traffic, normal, congestion, stressed, insufficient_resources</li>
+            <li><strong>Seeds:</strong> 5 independent runs per scenario</li>
+        </ul>
+
+        <h2>Metrics Explained</h2>
+        <ul>
+            <li><strong>Throughput:</strong> Average data rate per slice in Mbps</li>
+            <li><strong>PDR (Packet Delivery Ratio):</strong> Percentage of successfully delivered packets</li>
+            <li><strong>PLR (Packet Loss Ratio):</strong> Percentage of lost packets</li>
+            <li><strong>Resource Share:</strong> Percentage of total resources allocated to the slice</li>
+            <li><strong>Outage Rate:</strong> Percentage of time the slice experiences service disruption</li>
+        </ul>
+    </div>
+</body>
+</html>

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Controlled RSLAQ validation campaign.
 #
-# Runs three comparable lines over the same scenarios/seeds/budget:
+# Runs four comparable lines over the same scenarios/seeds/budget:
 #   1) network-only ns-3 baselines, without DRL optimization;
-#   2) SAC with the paper-faithful RSLAQ reward;
-#   3) SAC with the resource-efficient reward contribution.
-#
-# DDQN can still be enabled with RUN_DDQN=1 for legacy comparisons.
+#   2) DDQN with the paper-faithful RSLAQ reward;
+#   3) SAC with the paper-faithful RSLAQ reward;
+#   4) SAC with the resource-efficient reward contribution.
 
 set -Eeuo pipefail
 
@@ -29,7 +28,7 @@ EPISODES="$(python3 -c "import math; print(math.ceil(${INTERACTION_STEPS}/${EPIS
 
 APP_START="${APP_START:-0.5}"
 PERIOD_MS="${PERIOD_MS:-10}"
-SIM_TIME="$(python3 -c "print(${APP_START} + (${EPISODE_STEPS} * ${PERIOD_MS}) / 1000.0 + 0.2)")"
+SIM_TIME="${SIM_TIME:-5.0}"
 CONSECUTIVE_OUTAGE_STEPS="${CONSECUTIVE_OUTAGE_STEPS:-5}"
 WARMUP_STEPS="${WARMUP_STEPS:-5}"
 SEED_CYCLE="${SEED_CYCLE:-999999}"
@@ -65,7 +64,7 @@ RESOURCE_DYNAMIC_NEED_WEIGHT="${RESOURCE_DYNAMIC_NEED_WEIGHT:-0.75}"
 RESOURCE_WASTE_DEADBAND="${RESOURCE_WASTE_DEADBAND:-0.03}"
 
 RUN_BASELINES="${RUN_BASELINES:-1}"
-RUN_DDQN="${RUN_DDQN:-0}"
+RUN_DDQN="${RUN_DDQN:-1}"
 RUN_PAPER_SAC="${RUN_PAPER_SAC:-1}"
 RUN_RESOURCE_EFFICIENT_SAC="${RUN_RESOURCE_EFFICIENT_SAC:-1}"
 BASELINE_MODES="${BASELINE_MODES:-pure_rr pure_pf pure_bcqi}"
@@ -84,7 +83,7 @@ RSLAQ controlled validation
   P_STA weights:     ${P_STA_WEIGHTS}
   reward weights:    ${REWARD_ALPHA},${REWARD_BETA},${REWARD_GAMMA}
   baselines:         ${RUN_BASELINES} (${BASELINE_MODES})
-  DDQN paper:        ${RUN_DDQN}
+  DDQN RSLAQ:        ${RUN_DDQN}
   SAC paper:         ${RUN_PAPER_SAC}
   SAC contribution:  ${RUN_RESOURCE_EFFICIENT_SAC}
   contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}
@@ -111,7 +110,7 @@ cd "${GYM_DIR}"
 run_ddqn_paper() {
     local scenario="$1"
     local seed="$2"
-    echo "[DDQN paper] scenario=${scenario} seed=${seed}"
+    echo "[DDQN RSLAQ] scenario=${scenario} seed=${seed}"
     python3 examples/rslaq_train_ddqn.py \
         --scenario "${scenario}" \
         --episodes "${EPISODES}" \
