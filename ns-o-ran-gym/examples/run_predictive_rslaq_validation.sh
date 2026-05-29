@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Predictive RSLAQ validation campaign.
 #
-# Trains a temporal KPI forecaster from an existing paper-faithful campaign,
+# Trains a temporal KPI forecaster from ns-3 network-only baseline data,
 # runs predictive SAC with the same interaction budget, and compares results.
 
 set -Eeuo pipefail
@@ -14,21 +14,22 @@ RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
 EXPERIMENT_LINE="${EXPERIMENT_LINE:-predictive_forecaster_sac}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${GYM_DIR}/results_controlled/${EXPERIMENT_LINE}/${RUN_TAG}}"
 
-BASELINE_ROOT="${BASELINE_ROOT:-${GYM_DIR}/results_controlled/paper_faithful/20260514_175546}"
-FORECAST_SOURCE_ROOT="${FORECAST_SOURCE_ROOT:-${BASELINE_ROOT}}"
+BASELINE_ROOT="${BASELINE_ROOT:-${GYM_DIR}/results_controlled/rslaq_sla_resource_efficiency/latest}"
+FORECAST_SOURCE_ROOT="${FORECAST_SOURCE_ROOT:-${NS3_DIR}/results_rslaq_network_only}"
+FORECAST_SOURCE_FORMAT="${FORECAST_SOURCE_FORMAT:-baseline}"
 
 SCENARIOS_INPUT="${SCENARIOS:-low_traffic normal congestion stressed insufficient_resources}"
 SEEDS_INPUT="${SEEDS:-1 2 3 4 5}"
 read -r -a SCENARIOS <<< "${SCENARIOS_INPUT}"
 read -r -a SEEDS <<< "${SEEDS_INPUT}"
 
-INTERACTION_STEPS="${INTERACTION_STEPS:-5000}"
+INTERACTION_STEPS="${INTERACTION_STEPS:-20000}"
 EPISODE_STEPS="${EPISODE_STEPS:-100}"
 EPISODES="$(python3 -c "import math; print(math.ceil(${INTERACTION_STEPS}/${EPISODE_STEPS}))")"
 
 APP_START="${APP_START:-0.5}"
 PERIOD_MS="${PERIOD_MS:-10}"
-SIM_TIME="$(python3 -c "print(${APP_START} + (${EPISODE_STEPS} * ${PERIOD_MS}) / 1000.0 + 0.2)")"
+SIM_TIME="${SIM_TIME:-$(python3 -c "print(${APP_START} + (${EPISODE_STEPS} * ${PERIOD_MS}) / 1000.0 + 0.5)")}"
 CONSECUTIVE_OUTAGE_STEPS="${CONSECUTIVE_OUTAGE_STEPS:-5}"
 WARMUP_STEPS="${WARMUP_STEPS:-5}"
 SEED_CYCLE="${SEED_CYCLE:-999999}"
@@ -38,6 +39,14 @@ P_STA_WEIGHTS="${P_STA_WEIGHTS:-0.3333,0.4000,0.2667}"
 REWARD_ALPHA="${REWARD_ALPHA:-0.3333}"
 REWARD_BETA="${REWARD_BETA:-0.4000}"
 REWARD_GAMMA="${REWARD_GAMMA:-0.2667}"
+REWARD_MODE="${REWARD_MODE:-resource_efficient}"
+RESOURCE_EFFICIENCY_WEIGHT="${RESOURCE_EFFICIENCY_WEIGHT:-0.20}"
+NEED_MATCH_WEIGHT="${NEED_MATCH_WEIGHT:-0.20}"
+WASTE_PENALTY_WEIGHT="${WASTE_PENALTY_WEIGHT:-0.20}"
+UNDER_ALLOCATION_PENALTY_WEIGHT="${UNDER_ALLOCATION_PENALTY_WEIGHT:-0.20}"
+ACTION_SMOOTHNESS_WEIGHT="${ACTION_SMOOTHNESS_WEIGHT:-0.05}"
+RESOURCE_DYNAMIC_NEED_WEIGHT="${RESOURCE_DYNAMIC_NEED_WEIGHT:-0.75}"
+RESOURCE_WASTE_DEADBAND="${RESOURCE_WASTE_DEADBAND:-0.03}"
 
 FORECAST_SEQUENCE_LEN="${FORECAST_SEQUENCE_LEN:-8}"
 FORECAST_HORIZON="${FORECAST_HORIZON:-5}"
@@ -55,78 +64,113 @@ SAC_TAU="${SAC_TAU:-0.005}"
 SAC_ALPHA="${SAC_ALPHA:-0.1}"
 RISK_PENALTY="${RISK_PENALTY:-0.5}"
 SOFT_PENALTY="${SOFT_PENALTY:-0.2}"
+BUILD_NS3="${BUILD_NS3:-1}"
+RUN_FORECASTER="${RUN_FORECASTER:-1}"
+RUN_PREDICTIVE_SAC="${RUN_PREDICTIVE_SAC:-1}"
+RUN_COMPARISON="${RUN_COMPARISON:-1}"
 
 mkdir -p "${OUTPUT_ROOT}"
 
 echo "RSLAQ predictive validation"
 echo "  line:              ${EXPERIMENT_LINE}"
 echo "  output:            ${OUTPUT_ROOT}"
-echo "  baseline:          ${BASELINE_ROOT}"
+echo "  comparison base:   ${BASELINE_ROOT}"
 echo "  forecast source:   ${FORECAST_SOURCE_ROOT}"
+echo "  forecast format:   ${FORECAST_SOURCE_FORMAT}"
 echo "  scenarios:         ${SCENARIOS[*]}"
 echo "  seeds:             ${SEEDS[*]}"
 echo "  budget:            ${EPISODES} episodes x ${EPISODE_STEPS} steps = $((EPISODES * EPISODE_STEPS))"
 echo "  simTime:           ${SIM_TIME}s"
 echo "  forecast:          seq=${FORECAST_SEQUENCE_LEN}, horizon=${FORECAST_HORIZON}"
 echo "  penalties:         outage=${RISK_PENALTY}, soft=${SOFT_PENALTY}"
+echo "  reward mode:       ${REWARD_MODE}"
+echo "  contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}"
+echo "  run forecaster:    ${RUN_FORECASTER}"
+echo "  run predictive SAC:${RUN_PREDICTIVE_SAC}"
+echo "  run comparison:    ${RUN_COMPARISON}"
 
-cd "${NS3_DIR}"
-./ns3 build rslaq-sim
+if [[ "${BUILD_NS3}" == "1" ]]; then
+    cd "${NS3_DIR}"
+    ./ns3 build rslaq-sim
+else
+    echo "[build] Skipping ns-3 build because BUILD_NS3=${BUILD_NS3}"
+fi
 
 cd "${GYM_DIR}"
 
 FORECASTER_DIR="${OUTPUT_ROOT}/forecaster"
-python3 examples/rslaq_train_forecaster.py \
-    --source_root "${FORECAST_SOURCE_ROOT}" \
-    --output "${FORECASTER_DIR}" \
-    --sequence_len "${FORECAST_SEQUENCE_LEN}" \
-    --forecast_horizon "${FORECAST_HORIZON}" \
-    --hidden_dim "${FORECASTER_HIDDEN_DIM}" \
-    --epochs "${FORECASTER_EPOCHS}" \
-    --batch_size "${FORECASTER_BATCH_SIZE}" \
-    --lr "${FORECASTER_LR}" \
-    --limit_files "${FORECASTER_LIMIT_FILES}"
+if [[ "${RUN_FORECASTER}" == "1" ]]; then
+    python3 examples/rslaq_train_forecaster.py \
+        --source_root "${FORECAST_SOURCE_ROOT}" \
+        --source_format "${FORECAST_SOURCE_FORMAT}" \
+        --output "${FORECASTER_DIR}" \
+        --sequence_len "${FORECAST_SEQUENCE_LEN}" \
+        --forecast_horizon "${FORECAST_HORIZON}" \
+        --hidden_dim "${FORECASTER_HIDDEN_DIM}" \
+        --epochs "${FORECASTER_EPOCHS}" \
+        --batch_size "${FORECASTER_BATCH_SIZE}" \
+        --lr "${FORECASTER_LR}" \
+        --limit_files "${FORECASTER_LIMIT_FILES}"
+else
+    echo "[forecaster] Skipping forecaster training because RUN_FORECASTER=${RUN_FORECASTER}"
+fi
 
 FORECASTER_CHECKPOINT="${FORECASTER_DIR}/forecaster_best.pt"
 
-for scenario in "${SCENARIOS[@]}"; do
-    for seed in "${SEEDS[@]}"; do
-        echo "[Predictive SAC] scenario=${scenario} seed=${seed}"
-        python3 examples/rslaq_train_predictive_sac.py \
-            --scenario "${scenario}" \
-            --episodes "${EPISODES}" \
-            --seed "${seed}" \
-            --seed_cycle "${SEED_CYCLE}" \
-            --simTime "${SIM_TIME}" \
-            --appStart "${APP_START}" \
-            --periodMs "${PERIOD_MS}" \
-            --max_steps "${EPISODE_STEPS}" \
-            --observation_mode paper \
-            --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
-            --warmup_steps "${WARMUP_STEPS}" \
-            --buffer_size "${SAC_BUFFER_SIZE}" \
-            --batch_size "${SAC_BATCH_SIZE}" \
-            --lr "${SAC_LR}" \
-            --gamma "${SAC_GAMMA}" \
-            --tau "${SAC_TAU}" \
-            --alpha "${SAC_ALPHA}" \
-            --p_sta_static_fraction "${P_STA_STATIC_FRACTION}" \
-            --p_sta_weights "${P_STA_WEIGHTS}" \
-            --reward_alpha "${REWARD_ALPHA}" \
-            --reward_beta "${REWARD_BETA}" \
-            --reward_gamma "${REWARD_GAMMA}" \
-            --risk_penalty "${RISK_PENALTY}" \
-            --soft_penalty "${SOFT_PENALTY}" \
-            --forecaster_checkpoint "${FORECASTER_CHECKPOINT}" \
-            --sequence_len "${FORECAST_SEQUENCE_LEN}" \
-            --output "${OUTPUT_ROOT}/predictive_sac_${scenario}_seed${seed}"
+if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
+    for scenario in "${SCENARIOS[@]}"; do
+        for seed in "${SEEDS[@]}"; do
+            echo "[Predictive SAC] scenario=${scenario} seed=${seed}"
+            python3 examples/rslaq_train_predictive_sac.py \
+                --scenario "${scenario}" \
+                --episodes "${EPISODES}" \
+                --seed "${seed}" \
+                --seed_cycle "${SEED_CYCLE}" \
+                --simTime "${SIM_TIME}" \
+                --appStart "${APP_START}" \
+                --periodMs "${PERIOD_MS}" \
+                --max_steps "${EPISODE_STEPS}" \
+                --observation_mode paper \
+                --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
+                --warmup_steps "${WARMUP_STEPS}" \
+                --buffer_size "${SAC_BUFFER_SIZE}" \
+                --batch_size "${SAC_BATCH_SIZE}" \
+                --lr "${SAC_LR}" \
+                --gamma "${SAC_GAMMA}" \
+                --tau "${SAC_TAU}" \
+                --alpha "${SAC_ALPHA}" \
+                --p_sta_static_fraction "${P_STA_STATIC_FRACTION}" \
+                --p_sta_weights "${P_STA_WEIGHTS}" \
+                --reward_alpha "${REWARD_ALPHA}" \
+                --reward_beta "${REWARD_BETA}" \
+                --reward_gamma "${REWARD_GAMMA}" \
+                --reward_mode "${REWARD_MODE}" \
+                --resource_efficiency_weight "${RESOURCE_EFFICIENCY_WEIGHT}" \
+                --need_match_weight "${NEED_MATCH_WEIGHT}" \
+                --waste_penalty_weight "${WASTE_PENALTY_WEIGHT}" \
+                --under_allocation_penalty_weight "${UNDER_ALLOCATION_PENALTY_WEIGHT}" \
+                --action_smoothness_weight "${ACTION_SMOOTHNESS_WEIGHT}" \
+                --resource_dynamic_need_weight "${RESOURCE_DYNAMIC_NEED_WEIGHT}" \
+                --resource_waste_deadband "${RESOURCE_WASTE_DEADBAND}" \
+                --risk_penalty "${RISK_PENALTY}" \
+                --soft_penalty "${SOFT_PENALTY}" \
+                --forecaster_checkpoint "${FORECASTER_CHECKPOINT}" \
+                --sequence_len "${FORECAST_SEQUENCE_LEN}" \
+                --output "${OUTPUT_ROOT}/predictive_sac_${scenario}_seed${seed}"
+        done
     done
-done
+else
+    echo "[Predictive SAC] Skipping policy training because RUN_PREDICTIVE_SAC=${RUN_PREDICTIVE_SAC}"
+fi
 
-python3 examples/compare_rslaq_campaigns.py \
-    --baseline_root "${BASELINE_ROOT}" \
-    --predictive_root "${OUTPUT_ROOT}" \
-    --output "${OUTPUT_ROOT}/comparison"
+if [[ "${RUN_COMPARISON}" == "1" ]]; then
+    python3 examples/compare_rslaq_campaigns.py \
+        --baseline_root "${BASELINE_ROOT}" \
+        --predictive_root "${OUTPUT_ROOT}" \
+        --output "${OUTPUT_ROOT}/comparison"
+else
+    echo "[comparison] Skipping comparison because RUN_COMPARISON=${RUN_COMPARISON}"
+fi
 
 cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
 {
@@ -134,6 +178,7 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "run_tag": "${RUN_TAG}",
   "baseline_root": "${BASELINE_ROOT}",
   "forecast_source_root": "${FORECAST_SOURCE_ROOT}",
+  "forecast_source_format": "${FORECAST_SOURCE_FORMAT}",
   "scenarios": "${SCENARIOS[*]}",
   "seeds": "${SEEDS[*]}",
   "episodes": ${EPISODES},
@@ -148,7 +193,21 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "soft_penalty": ${SOFT_PENALTY},
   "p_sta_static_fraction": ${P_STA_STATIC_FRACTION},
   "p_sta_weights": "${P_STA_WEIGHTS}",
+  "reward_mode": "${REWARD_MODE}",
   "reward_weights": "${REWARD_ALPHA},${REWARD_BETA},${REWARD_GAMMA}",
+  "resource_efficient_reward": {
+    "resource_efficiency_weight": ${RESOURCE_EFFICIENCY_WEIGHT},
+    "need_match_weight": ${NEED_MATCH_WEIGHT},
+    "waste_penalty_weight": ${WASTE_PENALTY_WEIGHT},
+    "under_allocation_penalty_weight": ${UNDER_ALLOCATION_PENALTY_WEIGHT},
+    "action_smoothness_weight": ${ACTION_SMOOTHNESS_WEIGHT},
+    "resource_dynamic_need_weight": ${RESOURCE_DYNAMIC_NEED_WEIGHT},
+    "resource_waste_deadband": ${RESOURCE_WASTE_DEADBAND}
+  },
+  "build_ns3": ${BUILD_NS3},
+  "run_forecaster": ${RUN_FORECASTER},
+  "run_predictive_sac": ${RUN_PREDICTIVE_SAC},
+  "run_comparison": ${RUN_COMPARISON},
   "demand_aware_embb_outage": true
 }
 EOF

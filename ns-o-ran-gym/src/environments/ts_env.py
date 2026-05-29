@@ -5,6 +5,8 @@ import logging
 import numpy as np
 
 class TrafficSteeringEnv(NsOranEnv):
+    """Gymnasium environment for the ns-O-RAN traffic-steering use case."""
+
     def __init__(self, ns3_path:str, scenario_configuration:dict, output_folder:str, optimized:bool, verbose=False, time_factor=0.001, Cf=1.0, lambdaf=0.1):
         """Environment specific parameters:
             verbose (bool): enables logging
@@ -41,6 +43,7 @@ class TrafficSteeringEnv(NsOranEnv):
         self.lambdaf = lambdaf
 
     def _compute_action(self, action) -> list[tuple]:    
+        """Convert a multi-discrete UE target-cell action into handover commands."""
         # action from multidiscrete shall become a list of ueId, targetCell.
         # If a targetCell is 0, it means No Handover, thus we don't send it
         action_list = []
@@ -53,10 +56,12 @@ class TrafficSteeringEnv(NsOranEnv):
         return action_list
 
     def _fill_datalake_usecase(self):
+        """No-op hook because the TS base datalake loading is sufficient."""
         # We don't need fill_datalake_usecase in TS use case
         pass
 
     def _get_obs(self) -> list:
+        """Read the latest traffic-steering KPMs as the environment observation."""
         ue_kpms = self.datalake.read_kpms(self.last_timestamp, self.columns_state)                          
         # 'TB.TOTNBRDLINITIAL.QPSK_RATIO', 'TB.TOTNBRDLINITIAL.16QAM_RATIO', 'TB.TOTNBRDLINITIAL.64QAM_RATIO'
         # From per-UE values we need to extract per-Cell Values
@@ -71,6 +76,7 @@ class TrafficSteeringEnv(NsOranEnv):
         return self.observations
     
     def _compute_reward(self) -> float:
+        """Compute throughput-gain reward with a handover-frequency penalty."""
         # Computes the reward for the traffic steering environment. Based off journal on TS
         # The total reward is the sum of per ue rewards, calculated as the difference in the
         # logarithmic throughput between indication periodicities. If an UE experienced an HO,

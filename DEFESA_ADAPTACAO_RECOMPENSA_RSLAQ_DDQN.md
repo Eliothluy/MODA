@@ -1,4 +1,4 @@
-# Defesa da Adaptacao da Recompensa RSLAQ para Treinamento DDQN
+# Defesa da Adaptacao da Recompensa RSLAQ para Treinamento DRL
 
 ## Contexto
 
@@ -9,7 +9,7 @@ Este trabalho implementa o RSLAQ, proposto no artigo _RSLAQ: A Robust SLA-driven
 - Eq. 13-15: condicoes de outage e soft SLA;
 - Eq. 16-18: termos de otimizacao para eMBB, URLLC e MTC.
 
-Durante a validacao experimental, observou-se que os episodios de DDQN eram interrompidos sistematicamente no quinto passo de controle. A causa nao era o fim da simulacao ns-3 nem o horizonte periodico do RSLAQ, mas a ativacao imediata da condicao terminal da Eq. 12 apos a janela de confirmacao de outage.
+Durante a validacao experimental, observou-se que os episodios de treinamento DRL eram interrompidos sistematicamente no quinto passo de controle. A causa nao era o fim da simulacao ns-3 nem o horizonte periodico do RSLAQ, mas a ativacao imediata da condicao terminal da Eq. 12 apos a janela de confirmacao de outage.
 
 ## Problema Observado
 
@@ -26,7 +26,7 @@ Assim, quando o slice eMBB permanecia abaixo do SLA minimo durante os primeiros 
 
 Esse comportamento gera tres problemas metodologicos:
 
-1. O replay buffer do DDQN recebe trajetorias muito curtas e pouco diversas.
+1. O replay buffer dos agentes off-policy recebe trajetorias muito curtas e pouco diversas.
 2. O agente aprende majoritariamente a partir de estados transitorios de inicializacao do ns-3.
 3. O treinamento deixa de seguir o reset periodico de `ntsr` passos usado no roteiro do artigo.
 
@@ -47,7 +47,7 @@ r_t = 0, se houver soft SLA violation
 r_t = r_opt, caso contrario
 ```
 
-A diferenca esta apenas na dinamica de treinamento do DDQN:
+A diferenca esta apenas na dinamica de treinamento dos agentes DRL:
 
 ```text
 done_t = True somente no reset periodico ntsr
@@ -65,7 +65,7 @@ Na implementacao, isso foi introduzido pela opcao:
 terminate_on_sla_violation = False
 ```
 
-para o treinamento DDQN. A opcao antiga continua disponivel com:
+para os treinamentos DDQN e SAC. A opcao antiga continua disponivel com:
 
 ```text
 --terminate-on-sla-violation
@@ -77,7 +77,7 @@ A defesa central e que a adaptacao preserva a semantica da recompensa RSLAQ, mas
 
 Uma forma adequada de descrever no artigo e:
 
-> To avoid premature episode truncation caused by simulator warm-up transients, we decouple SLA-violation penalization from episode termination during DDQN training. The reward assigned to SLA outage states remains identical to the RSLAQ formulation, i.e., the weighted negative penalty of Eq. 12. However, the environment does not force an immediate reset after such violation; instead, the episode follows the periodic reset horizon `ntsr`, as described in Algorithm 1. This preserves the SLA-driven learning signal while allowing the agent to collect longer state-action trajectories and populate the replay buffer with recovery dynamics.
+> To avoid premature episode truncation caused by simulator warm-up transients, we decouple SLA-violation penalization from episode termination during DDQN/SAC training. The reward assigned to SLA outage states remains identical to the RSLAQ formulation, i.e., the weighted negative penalty of Eq. 12. However, the environment does not force an immediate reset after such violation; instead, the episode follows the periodic reset horizon `ntsr`, as described in Algorithm 1. This preserves the SLA-driven learning signal while allowing the agent to collect longer state-action trajectories and populate the replay buffer with recovery dynamics.
 
 Essa decisao e defensavel porque:
 
@@ -86,7 +86,7 @@ Essa decisao e defensavel porque:
 - o agente continua recebendo sinal negativo quando viola SLA;
 - o episodio passa a representar uma janela operacional continua, mais proxima de um xApp em execucao;
 - o reset periodico `ntsr` fica alinhado com o algoritmo de treinamento do RSLAQ;
-- o DDQN passa a observar tanto falha quanto recuperacao, melhorando a qualidade das transicoes no replay buffer.
+- DDQN e SAC passam a observar tanto falha quanto recuperacao, melhorando a qualidade das transicoes no replay buffer.
 
 ## Relacao Com o Artigo Original
 
@@ -103,7 +103,7 @@ A adaptacao proposta nao altera as equacoes de recompensa. Ela altera apenas a p
 
 ## Impacto Esperado no Treinamento
 
-Com episodios limitados a 5 passos, o DDQN recebe poucas amostras por episodio e tende a aprender a partir de transicoes quase identicas, dominadas por estados iniciais ruins. Ao manter o episodio ate `ntsr`, o replay buffer passa a conter:
+Com episodios limitados a 5 passos, os agentes recebem poucas amostras por episodio e tendem a aprender a partir de transicoes quase identicas, dominadas por estados iniciais ruins. Ao manter o episodio ate `ntsr`, o replay buffer passa a conter:
 
 - estados antes da violacao;
 - estados durante a violacao;
@@ -127,7 +127,7 @@ Recomenda-se reportar:
 
 Uma frase recomendada para a secao experimental:
 
-> During training, SLA violations are treated as non-absorbing penalized states. This prevents the DDQN replay buffer from being dominated by short warm-up trajectories. During evaluation, SLA violations are still explicitly measured and reported per slice, ensuring that the non-terminal training treatment does not hide QoS failures.
+> During training, SLA violations are treated as non-absorbing penalized states. This prevents the off-policy replay buffers from being dominated by short warm-up trajectories. During evaluation, SLA violations are still explicitly measured and reported per slice, ensuring that the non-terminal training treatment does not hide QoS failures.
 
 ## Ameacas a Validade
 
@@ -135,8 +135,8 @@ A principal ameaca e que a variante nao terminal pode parecer menos estrita do q
 
 Tambem e recomendavel comparar:
 
-- DDQN com terminacao por SLA;
-- DDQN com penalidade nao terminal;
+- DDQN e SAC com terminacao por SLA;
+- DDQN e SAC com penalidade nao terminal;
 - baselines ns-3 puros, como RR, PF e BCQI.
 
 Desse modo, a adaptacao e apresentada como uma escolha de estabilidade de treinamento, nao como relaxamento dos requisitos de QoS.

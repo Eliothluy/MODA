@@ -1,0 +1,4 @@
+scenario,baseline_mode,slice,throughput_mbps_mean,throughput_mbps_p50,throughput_mbps_p95,delay_ms_mean,delay_ms_p95,delay_ms_p99,jitter_ms_mean,pdr_pct,plr_pct,buffer_bytes_mean,buffer_bytes_p95,buffer_bytes_p99,rsh_real_pct_mean,budget_utilization_pct_mean,unused_budget_pct_mean,allocation_fidelity_pct_mean,offered_load_satisfaction_pct,sla_satisfaction_pct,allocated_rbg_total,rx_bytes_total,tx_bytes_total
+stressed,pure_bcqi,eMBB,52.0534,1.2224,13.4464,24.898,527.107,1548.531,1.384,51.103,0.000,NA,NA,NA,NA,NA,NA,NA,52.053,100.000,NA,61162784,119685184
+stressed,pure_bcqi,URLLC,2.7951,0.3072,0.4096,5.924,5.721,25.800,1.245,72.801,0.000,NA,NA,NA,NA,NA,NA,NA,93.169,100.000,NA,3284224,4511232
+stressed,pure_bcqi,MTC,17.1602,1.2672,1.6896,6.358,6.469,28.788,1.103,65.012,0.000,NA,NA,NA,NA,NA,NA,NA,68.641,100.000,NA,20163264,31014720

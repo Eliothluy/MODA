@@ -297,6 +297,14 @@ def train(args):
         "alpha": args.reward_alpha,
         "beta": args.reward_beta,
         "gamma": args.reward_gamma,
+        "reward_mode": args.reward_mode,
+        "resource_efficiency_weight": args.resource_efficiency_weight,
+        "need_match_weight": args.need_match_weight,
+        "waste_penalty_weight": args.waste_penalty_weight,
+        "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+        "action_smoothness_weight": args.action_smoothness_weight,
+        "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
+        "resource_waste_deadband": args.resource_waste_deadband,
         "demand_aware_embb_outage": args.demand_aware_embb_outage,
         "period_ms": args.periodMs,
     }
@@ -471,6 +479,16 @@ def train(args):
         "p_sta_static_fraction": args.p_sta_static_fraction,
         "p_sta_weights": p_sta_weights.tolist(),
         "reward_weights": [args.reward_alpha, args.reward_beta, args.reward_gamma],
+        "reward_mode": args.reward_mode,
+        "resource_efficiency_reward": {
+            "resource_efficiency_weight": args.resource_efficiency_weight,
+            "need_match_weight": args.need_match_weight,
+            "waste_penalty_weight": args.waste_penalty_weight,
+            "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+            "action_smoothness_weight": args.action_smoothness_weight,
+            "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
+            "resource_waste_deadband": args.resource_waste_deadband,
+        },
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
     }
@@ -519,6 +537,16 @@ def main():
     parser.add_argument("--reward_alpha", type=float, default=0.3333)
     parser.add_argument("--reward_beta", type=float, default=0.4000)
     parser.add_argument("--reward_gamma", type=float, default=0.2667)
+    parser.add_argument("--reward_mode", type=str, default="resource_efficient",
+                        choices=["paper", "resource_efficient"],
+                        help="Predictive SAC reward formulation")
+    parser.add_argument("--resource_efficiency_weight", type=float, default=0.20)
+    parser.add_argument("--need_match_weight", type=float, default=0.20)
+    parser.add_argument("--waste_penalty_weight", type=float, default=0.20)
+    parser.add_argument("--under_allocation_penalty_weight", type=float, default=0.20)
+    parser.add_argument("--action_smoothness_weight", type=float, default=0.05)
+    parser.add_argument("--resource_dynamic_need_weight", type=float, default=0.75)
+    parser.add_argument("--resource_waste_deadband", type=float, default=0.03)
     parser.set_defaults(demand_aware_embb_outage=True)
     parser.add_argument("--paper-faithful-outage", action="store_false",
                         dest="demand_aware_embb_outage")

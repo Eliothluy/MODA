@@ -5,9 +5,21 @@
  * Protótipo de scheduler slice-aware com controle DRL via semáforos POSIX
  * e troca de arquivos CSV (rslaq-kpms.txt, rslaq_actions_for_ns3.csv).
  *
- * Topologia: 1 gNB, N UEs (eMBB + URLLC + MTC configuráveis)
- * PHY default: RAN650 n78 + AW3161 outdoor panel, 3.55 GHz, 100 MHz,
- * numerologia mu=1 (SCS 30 kHz)
+ * Topologia 5G usada no experimento:
+ *   remoteHost -- P2P 100 Gbps -- PGW/EPC -- gNB NR -- UEs NR
+ *
+ * - 1 gNB em posição fixa no centro da célula.
+ * - N UEs estáticos distribuídos uniformemente em disco ao redor do gNB.
+ * - Três slices lógicos por faixa de UE ID: eMBB, URLLC e MTC.
+ * - Tráfego sempre downlink: remoteHost envia UDP/OnOff para cada UE.
+ * - Uma porta UDP por UE permite mapear FlowMonitor -> UE -> slice.
+ * - PHY default: RAN650 n78 + AW3161 outdoor panel, 3.55 GHz, 100 MHz,
+ *   numerologia mu=1 (SCS 30 kHz), canal 3GPP UMi.
+ *
+ * Modos de execução:
+ * - standalone/baseline: gera timeseries.csv, slice_alloc.csv, summary.csv.
+ * - IPC com Python: a cada periodMs escreve rslaq-kpms.txt, sinaliza o Gym,
+ *   lê rslaq_actions_for_ns3.csv e atualiza o RslaqMacScheduler.
  */
 
 #include "rslaq-mac-scheduler.h"
@@ -98,18 +110,29 @@ static uint32_t g_numUeMtc = 0;
 
 struct ScenarioConfig
 {
+    /** Nome e perfil de carga do cenário RSLAQ. */
     std::string name;
+    /** Quantidade de UEs por slice; 0 no CLI usa estes valores do perfil. */
     uint32_t embbUes;
     uint32_t urllcUes;
     uint32_t mtcUes;
+    /** Carga UDP downlink total por slice, dividida igualmente entre seus UEs. */
     uint64_t embbRateBps;
     uint64_t urllcRateBps;
     uint64_t mtcRateBps;
+    /** Tamanho dos pacotes UDP por slice, refletindo diferentes perfis de serviço. */
     uint32_t embbPktSize;
     uint32_t urllcPktSize;
     uint32_t mtcPktSize;
 };
 
+/**
+ * @brief Classifica um UE ID sequencial no slice RSLAQ correspondente.
+ *
+ * Os UEs sao criados em blocos contiguos: primeiro todos eMBB, depois URLLC,
+ * depois MTC. Essa convencao e usada tanto para configurar o scheduler quanto
+ * para agregar estatisticas do FlowMonitor por slice.
+ */
 static SliceType
 GetSliceForUe(uint16_t ueId)
 {
@@ -191,6 +214,12 @@ PktSizeForSlice(const ScenarioConfig& sc, SliceType s)
     }
 }
 
+/**
+ * @brief Define os cinco perfis de carga usados nos experimentos RSLAQ.
+ *
+ * Cada perfil fixa numero de UEs, taxa total por slice e tamanho de pacote.
+ * O trafego por UE e calculado mais adiante como taxa_do_slice / num_ues_do_slice.
+ */
 static std::map<std::string, ScenarioConfig>
 InitScenarios()
 {
@@ -286,6 +315,13 @@ IntraAlgoFromActionId(int schedulerId)
     }
 }
 
+/**
+ * @brief Seleciona o scheduler nativo ou customizado conforme o baseline.
+ *
+ * Modos pure_* usam schedulers 5G-LENA nativos sem particionamento por slice.
+ * Modos slice_* instalam RslaqMacScheduler, que separa RBGs por slice antes
+ * de aplicar RR/PF/BCQI dentro de cada slice.
+ */
 static TypeId
 NativeSchedulerForMode(const std::string& baselineMode)
 {
@@ -310,6 +346,13 @@ IsPureMode(const std::string& baselineMode)
     return baselineMode == "pure_rr" || baselineMode == "pure_pf" || baselineMode == "pure_bcqi";
 }
 
+/**
+ * @brief Converte o baseline CLI em pesos de slice e algoritmo intra-slice.
+ *
+ * Retorna false para pure_rr/pure_pf/pure_bcqi, indicando que o scheduler
+ * customizado nao deve ser usado. Para modos slice-aware, preenche p_j e
+ * algos com a politica inicial do RslaqMacScheduler.
+ */
 static bool
 ConfigureBaselineMode(const std::string& baselineMode,
                       const std::vector<double>& weightsArg,
@@ -385,6 +428,13 @@ ConfigureBaselineMode(const std::string& baselineMode,
     return true;
 }
 
+/**
+ * @brief Normaliza o padrao TDD textual para o formato esperado pelo 5G-LENA.
+ *
+ * A palavra "article" ou o padrao compacto do artigo vira uma sequencia
+ * DL/DL/DL/S/UL/UL/UL. Se o padrao nao puder ser interpretado, o simulador
+ * cai para um modo DL-only simplificado para manter os experimentos executaveis.
+ */
 static std::string
 NormalizeTddPatternForNr(const std::string& requested, bool* applied)
 {
@@ -443,6 +493,7 @@ NormalizeTddPatternForNr(const std::string& requested, bool* applied)
 
 struct UeStats
 {
+    /** Estatisticas acumuladas e deltas por UE para timeseries e summary. */
     uint16_t ueId = 0;
     SliceType slice = SliceType::EMBB;
     uint64_t txBytes = 0;
@@ -467,6 +518,7 @@ struct UeStats
 
 struct SliceAggStats
 {
+    /** Agregados finais por slice calculados a partir do FlowMonitor. */
     uint64_t txBytes = 0;
     uint64_t rxBytes = 0;
     uint32_t txPackets = 0;
@@ -478,6 +530,7 @@ struct SliceAggStats
 
 struct SimState
 {
+    /** Estado global de medicao usado no modo standalone/baseline. */
     std::map<uint16_t, UeStats> ueStats;
     std::map<SliceType, SliceAggStats> sliceStats;
     std::ofstream statsFile;
@@ -524,6 +577,13 @@ CsvValue(double value, uint32_t precision = 4)
 // Callback de estatísticas baseline (standalone)
 // ---------------------------------------------------------------------------
 
+/**
+ * @brief Amostra periodicamente o FlowMonitor e escreve timeseries.csv.
+ *
+ * Este callback e independente do Gym: ele mede vazao, perdas, buffer estimado
+ * e share configurado por UE/slice para comparacoes de baseline. No modo IPC,
+ * ele continua util para gerar os mesmos artefatos de diagnostico.
+ */
 static void
 StatsCallback()
 {
@@ -843,8 +903,16 @@ WriteMetadataJson(const std::string& outputDir,
  * @brief Escreve rslaq-kpms.txt e sinaliza o gym via semáforo.
  *        Depois espera ação do agente, lê o CSV e atualiza o scheduler.
  *
- * Formato KPM:
- *   timestamp,ueImsi,sliceId,txBytes,plr,resourceSharePct,lostPackets,throughputMbps
+ * Ciclo IPC por periodo de indicacao:
+ *   1. FlowMonitor agrega fluxos UDP e mapeia porta destino -> UE -> slice.
+ *   2. O simulador escreve KPIs delta em rslaq-kpms.txt.
+ *   3. sem_metrics_* libera o passo Python/Gym.
+ *   4. O Python escreve rslaq_actions_for_ns3.csv e libera sem_control_*.
+ *   5. O simulador le PRB% finais e scheduler_id por slice e reconfigura MAC.
+ *
+ * Formato KPM atual:
+ *   timestamp,ueImsi,sliceId,dTxBytes,dRxBytes,plr,resourceSharePct,
+ *   dLostPackets,throughputMbps,bufferBytes
  */
 static void
 KpmAndControlCallback()
@@ -1066,6 +1134,16 @@ KpmAndControlCallback()
 int
 main(int argc, char* argv[])
 {
+    /*
+     * Fluxo principal do cenário 5G:
+     * 1. Ler CLI e selecionar o perfil de carga RSLAQ.
+     * 2. Criar topologia EPC + 1 gNB + UEs + remoteHost.
+     * 3. Configurar canal NR, antenas, numerologia, TDD e RLC.
+     * 4. Instalar dispositivos NR, IP, rotas e anexar UEs ao gNB.
+     * 5. Mapear UE/RNTI/slice apos attach e configurar o scheduler.
+     * 6. Instalar trafego UDP downlink por UE.
+     * 7. Agendar callbacks de estatistica e, opcionalmente, IPC com Python.
+     */
     auto scenarios = InitScenarios();
 
     std::string scenarioName = "normal";
@@ -1344,6 +1422,8 @@ main(int argc, char* argv[])
     Config::SetDefault("ns3::ThreeGppChannelModel::UpdatePeriod", TimeValue(MilliSeconds(0)));
 
     // ---- Nodes ----
+    // Topologia logica: remoteHost conectado ao PGW/EPC por P2P, um gNB NR e
+    // todos os UEs NR servidos por esse gNB. Nao ha handover nem multiplas celulas.
     NodeContainer gNbNodes;
     gNbNodes.Create(1);
     NodeContainer ueNodes;
@@ -1352,6 +1432,8 @@ main(int argc, char* argv[])
     remoteHostContainer.Create(1);
 
     // ---- Mobility ----
+    // gNB fixo no centro; UEs fixos em disco uniforme ao redor do gNB. Isso
+    // isola o estudo de slicing/scheduler, evitando variabilidade de mobilidade.
     MobilityHelper mobility;
     mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
     {
@@ -1376,6 +1458,8 @@ main(int argc, char* argv[])
     }
 
     // ---- NR Helpers ----
+    // NrHelper cria PHY/MAC/RLC/RRC; EPC helper adiciona PGW e caminho IP para
+    // trafego externo. O scheduler instalado depende do baselineMode.
     Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
     nrHelper->SetEpcHelper(epcHelper);
@@ -1401,6 +1485,8 @@ main(int argc, char* argv[])
     nrHelper->SetGnbAntennaAttribute("AntennaElement", PointerValue(gnbPanelElement));
 
     // ---- Spectrum: 1 CC / 1 BWP ----
+    // Um carrier component e um bandwidth part representam uma celula NR simples.
+    // O canal 3GPP UMi modela propagacao urbana micro com shadowing configuravel.
     CcBwpCreator ccBwpCreator;
     CcBwpCreator::SimpleOperationBandConf bandConf(centralFrequency, bandwidth, 1);
     bandConf.m_numBwp = 1;
@@ -1438,6 +1524,8 @@ main(int argc, char* argv[])
     }
 
     // ---- EPC backhaul ----
+    // Link P2P de alta capacidade para que o gargalo relevante seja a RAN/scheduler,
+    // nao o core/backhaul entre remoteHost e PGW.
     Ptr<Node> pgw = epcHelper->GetPgwNode();
     PointToPointHelper p2ph;
     p2ph.SetDeviceAttribute("DataRate", DataRateValue(DataRate("100Gbps")));
@@ -1488,6 +1576,8 @@ main(int argc, char* argv[])
     }
 
     // Mapeamento RNTI real pós-attach
+    // O scheduler trabalha com RNTI, mas o gerador de trafego e o FlowMonitor usam
+    // UE ID/porta. Este callback une UE ID, IMSI, RNTI, IP, porta e slice.
     double mappingTime = std::min(0.1, appStartSec - 0.05);
     if (mappingTime < 0.0)
         mappingTime = 0.05;
@@ -1564,6 +1654,8 @@ main(int argc, char* argv[])
     });
 
     // ---- Applications (DL traffic) ----
+    // Para cada UE, instala-se um UdpServer no UE e um OnOff UDP no remoteHost.
+    // Cada porta identifica unicamente um UE e permite recuperar o slice via mapa.
     ApplicationContainer serverApps;
     ApplicationContainer clientApps;
     std::map<uint16_t, uint16_t> portToUeId;

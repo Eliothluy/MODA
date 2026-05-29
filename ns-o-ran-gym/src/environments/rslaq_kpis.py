@@ -8,6 +8,7 @@ observation matrix used by the DRL agent.
 import csv
 import glob
 import os
+import warnings
 from typing import Dict, Any
 import numpy as np
 
@@ -46,6 +47,8 @@ def parse_kpm_file(
     if not os.path.exists(kpm_path):
         return _build_return_dict(slice_data, latest_ts)
 
+    rows_to_process = []
+    raw_slice_ids = set()
     with open(kpm_path, "r", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -59,27 +62,47 @@ def parse_kpm_file(
 
             try:
                 raw_slice_id = int(row.get("sliceId", -1))
-                slice_id = normalize_slice_id(raw_slice_id)
             except (ValueError, KeyError):
                 continue
 
-            if slice_id not in slice_data:
-                continue
+            rows_to_process.append((row, raw_slice_id))
+            raw_slice_ids.add(raw_slice_id)
 
-            sd = slice_data[slice_id]
-            sd["dTxBytes_sum"] += float(row.get("dTxBytes", 0.0))
-            sd["dRxBytes_sum"] += float(row.get("dRxBytes", 0.0))
-            sd["plr_sum"] += float(row.get("plr", 0.0))
-            
-            # Extração do Buffer e rastreio do Valor Máximo (Para Equação 17)
-            ue_buffer = float(row.get("bufferBytes", 0.0))
-            sd["bufferBytes_sum"] += ue_buffer
-            sd["bufferBytes_max"] = max(sd["bufferBytes_max"], ue_buffer)
-            
-            sd["resourceSharePct_sum"] += float(row.get("resourceSharePct", 0.0))
-            sd["dLostPackets_sum"] += float(row.get("dLostPackets", 0.0))
-            sd["throughputMbps_sum"] += float(row.get("throughputMbps", 0.0))
-            sd["ue_count"] += 1.0
+    legacy_one_based = 0 not in raw_slice_ids and 3 in raw_slice_ids
+    if legacy_one_based:
+        warnings.warn(
+            "Detected legacy 1-based slice ids in KPM file. Converting them to 0-based ids.",
+            stacklevel=2,
+        )
+
+    for row, raw_slice_id in rows_to_process:
+        try:
+            if legacy_one_based:
+                slice_id = raw_slice_id - 1
+                if slice_id not in range(get_num_slices()):
+                    raise ValueError
+            else:
+                slice_id = normalize_slice_id(raw_slice_id)
+        except ValueError:
+            continue
+
+        if slice_id not in slice_data:
+            continue
+
+        sd = slice_data[slice_id]
+        sd["dTxBytes_sum"] += float(row.get("dTxBytes", 0.0))
+        sd["dRxBytes_sum"] += float(row.get("dRxBytes", 0.0))
+        sd["plr_sum"] += float(row.get("plr", 0.0))
+
+        # Extração do Buffer e rastreio do Valor Máximo (Para Equação 17)
+        ue_buffer = float(row.get("bufferBytes", 0.0))
+        sd["bufferBytes_sum"] += ue_buffer
+        sd["bufferBytes_max"] = max(sd["bufferBytes_max"], ue_buffer)
+
+        sd["resourceSharePct_sum"] += float(row.get("resourceSharePct", 0.0))
+        sd["dLostPackets_sum"] += float(row.get("dLostPackets", 0.0))
+        sd["throughputMbps_sum"] += float(row.get("throughputMbps", 0.0))
+        sd["ue_count"] += 1.0
 
     return _build_return_dict(slice_data, latest_ts)
 

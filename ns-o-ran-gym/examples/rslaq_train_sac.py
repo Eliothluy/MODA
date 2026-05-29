@@ -300,6 +300,7 @@ def train_sac(args):
         "max_buffer_bytes": args.max_buffer_bytes,
         "warmup_steps": args.warmup_steps,
         "consecutive_outage_steps": args.consecutive_outage_steps,
+        "terminate_on_sla_violation": args.terminate_on_sla_violation,
         "alpha": args.reward_alpha,
         "beta": args.reward_beta,
         "gamma": args.reward_gamma,
@@ -475,6 +476,7 @@ def train_sac(args):
         "p_sta_weights": p_sta_weights.tolist(),
         "reward_mode": args.reward_mode,
         "reward_weights": [args.reward_alpha, args.reward_beta, args.reward_gamma],
+        "terminate_on_sla_violation": args.terminate_on_sla_violation,
         "resource_efficiency_reward": {
             "resource_efficiency_weight": args.resource_efficiency_weight,
             "need_match_weight": args.need_match_weight,
@@ -544,6 +546,10 @@ def main():
                         help="Steps to suppress terminal conditions at episode start")
     parser.add_argument("--consecutive_outage_steps", type=int, default=5,
                         help="Consecutive steps below threshold to declare outage (default 5 = 50ms)")
+    parser.set_defaults(terminate_on_sla_violation=False)
+    parser.add_argument("--terminate-on-sla-violation", action="store_true",
+                        dest="terminate_on_sla_violation",
+                        help="End the episode on outage/soft SLA violation. Default keeps SAC episodes on the configured max_steps horizon.")
     parser.add_argument("--p_sta_static_fraction", type=float, default=0.5,
                         help="Static fraction in P_STA decomposition")
     parser.add_argument("--p_sta_weights", type=str, default="0.3333,0.4000,0.2667",

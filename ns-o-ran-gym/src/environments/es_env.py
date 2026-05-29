@@ -1,4 +1,3 @@
-from typing_extensions import override
 import numpy as np
 import pandas as pd
 from nsoran.ns_env import NsOranEnv 
@@ -6,6 +5,7 @@ import pandas as pd
 import glob
 import csv
 import os
+from typing import override
 
 # Reward function components
 # 'SUM_QOSFLOW_PDCPPDUVOLUMEDL_FILTER' represents the sum of individual QoS flow volume for downlink PDU per cell.
@@ -47,6 +47,7 @@ import os
 
 
 class EnergySavingEnv(NsOranEnv):
+    """Gymnasium environment for the ns-O-RAN energy-saving use case."""
     
     gnb_state_keys = {
             "timestamp": "INTEGER",
@@ -56,12 +57,16 @@ class EnergySavingEnv(NsOranEnv):
         } 
         
     def __init__(self, ns3_path:str, scenario_configuration:dict, output_folder:str, optimized:bool, do_heuristic:bool = True):
+        """Initialize energy-saving action/state definitions and reward parameters."""
         super().__init__(ns3_path=ns3_path, scenario='scenario-three', scenario_configuration=scenario_configuration,
                 output_folder=output_folder, optimized=optimized,
                 control_header = ['timestamp','cellId','hoAllowed'], log_file='EsActions.txt', control_file='es_actions_for_ns3.csv')
         
         self.folder_name = "Simulation"
-        self.ns3_simulation_time = scenario_configuration['simTime']*1000
+        sim_time = scenario_configuration['simTime']
+        if isinstance(sim_time, list):
+            sim_time = sim_time[0]
+        self.ns3_simulation_time = float(sim_time) * 1000
         self.columns_state = ['EEKPI_RL_2', 'EEKPI_RL_3', 'EEKPI_RL_4', 'EEKPI_RL_5', 'EEKPI_RL_6', 'EEKPI_RL_7', 'EEKPI_RL_8',
             'ES_ON_COST_2', 'ES_ON_COST_3', 'ES_ON_COST_4', 'ES_ON_COST_5', 'ES_ON_COST_6', 'ES_ON_COST_7', 'ES_ON_COST_8',
             'QosFlow.PdcpPduVolumeDL_Filter_2', 'QosFlow.PdcpPduVolumeDL_Filter_3', 'QosFlow.PdcpPduVolumeDL_Filter_4', 'QosFlow.PdcpPduVolumeDL_Filter_5', 'QosFlow.PdcpPduVolumeDL_Filter_6', 'QosFlow.PdcpPduVolumeDL_Filter_7', 'QosFlow.PdcpPduVolumeDL_Filter_8',
@@ -144,6 +149,7 @@ class EnergySavingEnv(NsOranEnv):
 
     @override
     def _get_obs(self):
+        """Build the latest per-cell observation tuple from UE-centric KPMs."""
         # ["cellId", "QOSFLOW_PDCPPDUVOLUMEDL_FILTER", "TB_TOTNBRDL_1", "L3servingSINR", "RRU_PRBUSEDDL", "TB_TOTNBRDLINITIAL_64QAM", "TB_TOTNBRDLINITIAL_QPSK", "TB_TOTNBRDLINITIAL_16QAM", "ES_STATE"] #Database (1=ON, 0=OFF), Mavnenir(1=OFF, 0=ON)
         kpms_raw = ["nrCellId", "QosFlow.PdcpPduVolumeDL_Filter", "TB.TotNbrDl.1", "L3 serving SINR", "RRU.PrbUsedDl", "TB.TotNbrDlInitial.64Qam", "TB.TotNbrDlInitial.Qpsk", "TB.TotNbrDlInitial.16Qam"]       
         ue_kpms = self.datalake.read_kpms(self.last_timestamp, kpms_raw) 
@@ -176,6 +182,7 @@ class EnergySavingEnv(NsOranEnv):
         
     @override
     def _compute_reward(self):
+        """Compute and persist the energy-saving reward for the current step."""
         # Since reward kpms are the same as state kpms
         cell_df = self.observations[self.columns_reward].copy()
         # Grafana db 
@@ -204,6 +211,7 @@ class EnergySavingEnv(NsOranEnv):
 
     @override
     def _init_datalake_usecase(self):
+        """Create use-case tables for base-station states and Grafana metrics."""
         # Grafana table
         grafana_keys = {
             "timestamp": "INTEGER",
@@ -222,6 +230,7 @@ class EnergySavingEnv(NsOranEnv):
 
     @override
     def _fill_datalake_usecase(self):
+        """Load base-station state rows emitted by ns-3 into the datalake."""
         for file_path in glob.glob(os.path.join(self.sim_path, 'bsState.txt')):
             with open(file_path, 'r') as csvfile:
                 for row in csv.DictReader(csvfile, delimiter=' '):
@@ -251,6 +260,7 @@ class EnergySavingEnv(NsOranEnv):
         return df
         
     def rename_columns(self, columns, cell_no):
+        """Append a cell suffix to each column name."""
         cols = []
         for i in columns:
             cols.append(i+'_'+str(cell_no))

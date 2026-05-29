@@ -18,6 +18,34 @@ import numpy as np
 DEFAULT_WEIGHTS = np.array([0.3333, 0.4000, 0.2667], dtype=np.float32)
 
 
+def _prepare_p_sta_params(
+    weights: np.ndarray | None,
+    static_fraction: float,
+) -> tuple[np.ndarray, float]:
+    """Validate and normalize P_STA weights and static-fraction inputs."""
+    if weights is None:
+        weights = DEFAULT_WEIGHTS
+    weights = np.asarray(weights, dtype=np.float64).flatten()
+    if weights.shape[0] != 3:
+        raise ValueError(f"weights must have shape (3,), got {weights.shape}")
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("weights must contain only finite values")
+    if np.any(weights < 0.0):
+        raise ValueError("weights must be non-negative")
+
+    total = weights.sum()
+    if total <= 0.0:
+        raise ValueError("weights must sum to a positive value")
+    weights = weights / total
+
+    static_fraction = float(static_fraction)
+    if not np.isfinite(static_fraction):
+        raise ValueError("static_fraction must be finite")
+    if static_fraction < 0.0 or static_fraction > 1.0:
+        raise ValueError("static_fraction must be in [0, 1]")
+    return weights, static_fraction
+
+
 def _softmax(x: np.ndarray) -> np.ndarray:
     """Numerically stable softmax."""
     x = np.asarray(x, dtype=np.float64)
@@ -90,13 +118,13 @@ def continuous_action_to_prb(
     Returns:
         Array of shape (3,) with PRB percentages summing to ~100.0.
     """
-    if weights is None:
-        weights = DEFAULT_WEIGHTS
-    weights = np.asarray(weights, dtype=np.float64)
+    weights, static_fraction = _prepare_p_sta_params(weights, static_fraction)
     raw_action = np.asarray(raw_action, dtype=np.float64).flatten()
 
     if raw_action.shape[0] != 3:
         raise ValueError(f"raw_action must have shape (3,), got {raw_action.shape}")
+    if not np.all(np.isfinite(raw_action)):
+        raise ValueError("raw_action must contain only finite values")
 
     p_opt = _softmax(raw_action)
     if apply_p_sta:
@@ -130,9 +158,7 @@ def discrete_action_to_prb(
         Tuple (prb_percentages, scheduler_id).
         If the action table does not include scheduler, scheduler_id is -1.
     """
-    if weights is None:
-        weights = DEFAULT_WEIGHTS
-    weights = np.asarray(weights, dtype=np.float64)
+    weights, static_fraction = _prepare_p_sta_params(weights, static_fraction)
 
     if action_idx < 0 or action_idx >= len(action_table):
         raise ValueError(f"action_idx {action_idx} out of range [0, {len(action_table)})")
@@ -147,6 +173,10 @@ def discrete_action_to_prb(
         raise ValueError(f"Unexpected action table entry format: {entry}")
 
     p_opt = np.array([p0, p1, p2], dtype=np.float64)
+    if not np.all(np.isfinite(p_opt)) or np.any(p_opt < 0.0):
+        raise ValueError(f"Action table entry must contain non-negative finite values: {entry}")
+    if p_opt.sum() <= 0.0:
+        raise ValueError(f"Action table entry must sum to a positive value: {entry}")
     # Ensure it sums to 1.0 (guard against float rounding)
     p_opt /= p_opt.sum()
 

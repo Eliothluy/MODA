@@ -133,6 +133,11 @@ void
 RslaqMacScheduler::SetSliceConfiguration(const std::vector<double>& prbWeights,
                                           const std::vector<IntraSliceAlgorithm>& algorithms)
 {
+    /*
+     * Runtime control point used by both static baselines and the Python agent.
+     * prbWeights is the slice share vector [eMBB, URLLC, MTC]; algorithms stores
+     * the intra-slice policy applied after each slice receives its RBG budget.
+     */
     NS_LOG_FUNCTION(this);
     NS_ASSERT_MSG(prbWeights.size() == algorithms.size(), "Weights and algorithms must have same size");
     NS_ASSERT_MSG(prbWeights.size() == m_numSlices, "Must match configured number of slices");
@@ -170,6 +175,10 @@ void
 RslaqMacScheduler::SetSliceUeMapping(uint32_t numSlices,
                                       const std::vector<std::vector<uint32_t>>& sliceUeRnti)
 {
+    /*
+     * Called once after attach, when real RNTIs are known. The simulator maps
+     * UE IDs to slices, but the MAC scheduler receives active users by RNTI.
+     */
     NS_LOG_FUNCTION(this);
     m_numSlices = numSlices;
     m_sliceUeRnti = sliceUeRnti;
@@ -440,6 +449,14 @@ RslaqMacScheduler::LogHarqState(uint64_t callId, uint64_t timeMs) const
 NrMacSchedulerNs3::BeamSymbolMap
 RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) const
 {
+    /*
+     * Core slice-aware allocation loop:
+     * 1. Group active DL UEs by their configured slice RNTI mapping.
+     * 2. Detect which slices currently have downlink demand.
+     * 3. Redistribute the available RBG budget only among active-demand slices.
+     * 4. Sort UEs inside each slice by RR/PF/BCQI and allocate RBGs round-robin.
+     * 5. Export per-slice and per-UE diagnostics for later reward/analysis.
+     */
     NS_LOG_FUNCTION(this);
     NS_LOG_DEBUG("AssignDLRBG: #beams=" << activeDl.size() << " symAvail=" << symAvail);
 

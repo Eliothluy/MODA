@@ -99,6 +99,7 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
 
     struct SliceAllocationStats
     {
+        /** Aggregate MAC allocation counters exported to summary.csv. */
         uint64_t samples = 0;
         uint64_t samplesWithBudget = 0;
         uint64_t budgetRbgTotal = 0;
@@ -188,7 +189,7 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     uint32_t m_numSlices{0};
     std::vector<double> m_prbWeights;                     // per-slice PRB proportion
     std::vector<IntraSliceAlgorithm> m_intraAlgorithms;    // per-slice algorithm
-    std::vector<std::vector<uint32_t>> m_sliceUeRnti;      // RNTIs per slice
+    std::vector<std::vector<uint32_t>> m_sliceUeRnti;      // RNTIs per slice; filled after attach
 
     double m_timeWindow{99.0}; //!< PF averaging time window
     double m_alpha{0.0};       //!< PF fairness index (0 = full fairness)
@@ -205,7 +206,7 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     mutable std::ofstream m_harqTrackingCsv;
     mutable std::ofstream m_activeDlDiagCsv;
 
-    // Instrumentation: call counter and tracking
+    // Instrumentation: call counter and tracking for MAC-level diagnostic CSVs.
     mutable uint64_t m_dlSchedCallSeq{0};
     mutable uint32_t m_currentSlot{0};
     mutable uint32_t m_bwpId{0};

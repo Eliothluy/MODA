@@ -305,6 +305,14 @@ def train_ddqn(args):
         "alpha": args.reward_alpha,
         "beta": args.reward_beta,
         "gamma": args.reward_gamma,
+        "reward_mode": args.reward_mode,
+        "resource_efficiency_weight": args.resource_efficiency_weight,
+        "need_match_weight": args.need_match_weight,
+        "waste_penalty_weight": args.waste_penalty_weight,
+        "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+        "action_smoothness_weight": args.action_smoothness_weight,
+        "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
+        "resource_waste_deadband": args.resource_waste_deadband,
     }
     p_sta_weights = parse_weights(args.p_sta_weights)
 
@@ -346,6 +354,7 @@ def train_ddqn(args):
             [
                 "episode",
                 "scenario",
+                "reward_mode",
                 "total_reward",
                 "avg_reward",
                 "outage_count",
@@ -429,6 +438,7 @@ def train_ddqn(args):
                 [
                     ep + 1,
                     chosen_scenario,
+                    args.reward_mode,
                     f"{ep_reward:.4f}",
                     f"{avg100:.4f}",
                     ep_outages,
@@ -472,7 +482,17 @@ def train_ddqn(args):
         "apply_p_sta": args.apply_p_sta,
         "p_sta_static_fraction": args.p_sta_static_fraction,
         "p_sta_weights": p_sta_weights.tolist(),
+        "reward_mode": args.reward_mode,
         "reward_weights": [args.reward_alpha, args.reward_beta, args.reward_gamma],
+        "resource_efficiency_reward": {
+            "resource_efficiency_weight": args.resource_efficiency_weight,
+            "need_match_weight": args.need_match_weight,
+            "waste_penalty_weight": args.waste_penalty_weight,
+            "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+            "action_smoothness_weight": args.action_smoothness_weight,
+            "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
+            "resource_waste_deadband": args.resource_waste_deadband,
+        },
         "terminate_on_sla_violation": args.terminate_on_sla_violation,
         "scenario_ue_profiles": SCENARIO_UE_PROFILES,
         "ue_override": {
@@ -564,6 +584,22 @@ def main():
                         help="Reward weight for URLLC")
     parser.add_argument("--reward_gamma", type=float, default=0.2667,
                         help="Reward weight for MTC")
+    parser.add_argument("--reward_mode", type=str, default="paper",
+                        help="Reward mode: paper or resource_efficient")
+    parser.add_argument("--resource_efficiency_weight", type=float, default=0.20,
+                        help="Weight for served-resource efficiency shaping")
+    parser.add_argument("--need_match_weight", type=float, default=0.15,
+                        help="Weight for PRB allocation-to-need matching")
+    parser.add_argument("--waste_penalty_weight", type=float, default=0.25,
+                        help="Penalty weight for PRB over-allocation")
+    parser.add_argument("--under_allocation_penalty_weight", type=float, default=0.10,
+                        help="Penalty weight for PRB under-allocation")
+    parser.add_argument("--action_smoothness_weight", type=float, default=0.05,
+                        help="Penalty weight for action oscillation")
+    parser.add_argument("--resource_dynamic_need_weight", type=float, default=0.75,
+                        help="Blend between static slice weights and dynamic demand need")
+    parser.add_argument("--resource_waste_deadband", type=float, default=0.03,
+                        help="Deadband before over/under-allocation penalties apply")
     parser.set_defaults(enable_step_logging=True)
     parser.add_argument("--no-step-logging", action="store_false", dest="enable_step_logging",
                         help="Disable per-step step_metrics.csv logging")

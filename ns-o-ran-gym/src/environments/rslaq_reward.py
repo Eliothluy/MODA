@@ -76,6 +76,8 @@ SLA_BY_SCENARIO: Dict[str, Dict[str, Any]] = {
 
 @dataclass
 class RewardResult:
+    """Container returned by the RSLAQ reward computation."""
+
     reward: float = 0.0
     terminated: bool = False
     truncated: bool = False
@@ -170,10 +172,17 @@ def _evaluate_soft_conditions(
 
 
 def _normalize_reward_mode(mode: Any) -> str:
+    """Return the canonical reward mode name from user-facing aliases."""
     normalized = str(mode or "paper").strip().lower().replace("-", "_")
     if normalized in ("paper", "rslaq", "rslaq_paper"):
         return "paper"
-    if normalized in ("resource_efficient", "efficient", "slice_efficient"):
+    if normalized in (
+        "resource_efficient",
+        "efficient_resource",
+        "efficiente_resource",
+        "efficient",
+        "slice_efficient",
+    ):
         return "resource_efficient"
     raise ValueError(
         f"Unknown reward_mode={mode!r}. Use 'paper' or 'resource_efficient'."
@@ -181,6 +190,7 @@ def _normalize_reward_mode(mode: Any) -> str:
 
 
 def _normalize_vector(values: List[float], fallback: List[float]) -> List[float]:
+    """Normalize non-negative values, falling back to defaults when empty."""
     clean = [max(float(v), 0.0) for v in values]
     total = sum(clean)
     if total <= 0.0:
@@ -192,6 +202,7 @@ def _normalize_vector(values: List[float], fallback: List[float]) -> List[float]
 
 
 def _extract_static_weights(action_info: Optional[Dict[str, Any]]) -> List[float]:
+    """Extract normalized P_STA static weights from action metadata."""
     if action_info and "p_sta_weights" in action_info:
         try:
             weights = [float(v) for v in action_info["p_sta_weights"][:get_num_slices()]]
@@ -205,6 +216,7 @@ def _extract_allocation_share(
     metrics: Dict[int, Dict[str, Any]],
     action_info: Optional[Dict[str, Any]],
 ) -> tuple[List[float], List[float]]:
+    """Return raw PRB percentages and normalized allocation shares."""
     allocation_pct: List[float] = []
     if action_info and "prb_pct" in action_info:
         try:
@@ -516,43 +528,42 @@ def compute_rslaq_reward(
         "normalized_bfs": normalized_bfs,
     }
 
-    if reward_mode == "resource_efficient":
-        resource_terms, resource_debug = _compute_resource_efficiency_terms(
-            metrics, sla, action_info, config
+    resource_terms, resource_debug = _compute_resource_efficiency_terms(
+        metrics, sla, action_info, config
+    )
+    eff_weight = float(config.get("resource_efficiency_weight", 0.20))
+    match_weight = float(config.get("need_match_weight", 0.15))
+    waste_weight = float(config.get("waste_penalty_weight", 0.25))
+    under_weight = float(config.get("under_allocation_penalty_weight", 0.10))
+    smooth_weight = float(config.get("action_smoothness_weight", 0.05))
+
+    shaping = 0.0
+    if reward_mode == "resource_efficient" and not sla_violation:
+        shaping = (
+            eff_weight * resource_terms["resource_efficiency"]
+            + match_weight * resource_terms["need_allocation_match"]
+            - waste_weight * resource_terms["over_allocation"]
+            - under_weight * resource_terms["under_allocation"]
+            - smooth_weight * resource_terms["action_smoothness_penalty"]
         )
-        eff_weight = float(config.get("resource_efficiency_weight", 0.20))
-        match_weight = float(config.get("need_match_weight", 0.15))
-        waste_weight = float(config.get("waste_penalty_weight", 0.25))
-        under_weight = float(config.get("under_allocation_penalty_weight", 0.10))
-        smooth_weight = float(config.get("action_smoothness_weight", 0.05))
+        result.reward += shaping
 
-        shaping = 0.0
-        if not sla_violation:
-            shaping = (
-                eff_weight * resource_terms["resource_efficiency"]
-                + match_weight * resource_terms["need_allocation_match"]
-                - waste_weight * resource_terms["over_allocation"]
-                - under_weight * resource_terms["under_allocation"]
-                - smooth_weight * resource_terms["action_smoothness_penalty"]
-            )
-            result.reward += shaping
-
-        result.optimization_terms.update(resource_terms)
-        result.optimization_terms.update({
-            "resource_efficient_shaping": shaping,
-            "resource_efficient_reward": result.reward,
-        })
-        result.debug_info.update(resource_terms)
-        result.debug_info.update(resource_debug)
-        result.debug_info.update({
-            "resource_efficiency_weights": {
-                "resource_efficiency_weight": eff_weight,
-                "need_match_weight": match_weight,
-                "waste_penalty_weight": waste_weight,
-                "under_allocation_penalty_weight": under_weight,
-                "action_smoothness_weight": smooth_weight,
-            },
-            "resource_efficient_shaping": shaping,
-        })
+    result.optimization_terms.update(resource_terms)
+    result.optimization_terms.update({
+        "resource_efficient_shaping": shaping,
+        "resource_efficient_reward": result.reward,
+    })
+    result.debug_info.update(resource_terms)
+    result.debug_info.update(resource_debug)
+    result.debug_info.update({
+        "resource_efficiency_weights": {
+            "resource_efficiency_weight": eff_weight,
+            "need_match_weight": match_weight,
+            "waste_penalty_weight": waste_weight,
+            "under_allocation_penalty_weight": under_weight,
+            "action_smoothness_weight": smooth_weight,
+        },
+        "resource_efficient_shaping": shaping,
+    })
 
     return result

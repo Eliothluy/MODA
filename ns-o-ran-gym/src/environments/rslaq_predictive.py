@@ -11,18 +11,25 @@ from __future__ import annotations
 import csv
 import glob
 import os
+import re
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence
 
 import numpy as np
-import torch
-import torch.nn as nn
+
+try:
+    import torch
+    import torch.nn as nn
+except ImportError:  # pragma: no cover - exercised only without optional ML deps
+    torch = None
+    nn = None
 
 from .rslaq_kpis import (
     DEFAULT_MAX_BTX,
     DEFAULT_MAX_BUFFER_BYTES,
     DEFAULT_MAX_TDP,
 )
+from .rslaq_reward import compute_rslaq_reward
 
 
 SCENARIOS = [
@@ -39,6 +46,37 @@ RISK_DIM = 6
 SCENARIO_DIM = len(SCENARIOS)
 FEATURE_DIM = OBS_DIM + ACTION_DIM + 1 + RISK_DIM + SCENARIO_DIM
 FORECAST_DIM = RISK_DIM + OBS_DIM
+
+SLICE_NAME_TO_ID = {
+    "embb": 0,
+    "eMBB": 0,
+    "urllc": 1,
+    "URLLC": 1,
+    "mtc": 2,
+    "MTC": 2,
+}
+
+DEFAULT_RESOURCE_EFFICIENT_REWARD_CONFIG = {
+    "reward_mode": "resource_efficient",
+    "warmup_steps": 0,
+    "consecutive_outage_steps": 1,
+    "resource_efficiency_weight": 0.20,
+    "need_match_weight": 0.20,
+    "waste_penalty_weight": 0.20,
+    "under_allocation_penalty_weight": 0.20,
+    "action_smoothness_weight": 0.05,
+    "resource_dynamic_need_weight": 0.75,
+    "resource_waste_deadband": 0.03,
+}
+
+
+def _require_torch():
+    """Return torch modules or raise a clear error for optional ML features."""
+    if torch is None or nn is None:
+        raise ImportError(
+            "rslaq_predictive requires PyTorch. Install it with `pip install nsoran[ml]`."
+        )
+    return torch, nn
 
 
 @dataclass(frozen=True)
@@ -58,6 +96,7 @@ class StepFrame:
 
 
 def _safe_float(value, default: float = 0.0) -> float:
+    """Convert a value to float, returning a default for malformed inputs."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -65,6 +104,7 @@ def _safe_float(value, default: float = 0.0) -> float:
 
 
 def _safe_int(value, default: int = 0) -> int:
+    """Convert a value to int through float parsing, or return a default."""
     try:
         return int(float(value))
     except (TypeError, ValueError):
@@ -72,16 +112,30 @@ def _safe_int(value, default: int = 0) -> int:
 
 
 def _as_bool(value) -> bool:
+    """Parse common textual truthy values from CSV fields."""
     return str(value).strip().lower() in {"1", "true", "yes", "y"}
 
 
+def _slice_id(value) -> int:
+    """Parse either canonical slice names or numeric slice IDs."""
+    text = str(value).strip()
+    if text in SLICE_NAME_TO_ID:
+        return SLICE_NAME_TO_ID[text]
+    lowered = text.lower()
+    if lowered in SLICE_NAME_TO_ID:
+        return SLICE_NAME_TO_ID[lowered]
+    return _safe_int(text, -1)
+
+
 def _clip_norm(value: float, cap: float) -> float:
+    """Normalize a value by a positive cap and clip it to [0, 1]."""
     if cap <= 0:
         return 0.0
     return float(np.clip(value / cap, 0.0, 1.0))
 
 
 def scenario_one_hot(scenario: str) -> np.ndarray:
+    """Encode a scenario name as a one-hot vector."""
     vec = np.zeros(SCENARIO_DIM, dtype=np.float32)
     if scenario in SCENARIOS:
         vec[SCENARIOS.index(scenario)] = 1.0
@@ -156,7 +210,172 @@ def rows_to_frame(rows: Sequence[dict]) -> StepFrame:
     )
 
 
+def _path_value(path: str, prefix: str, default: str = "") -> str:
+    """Extract ``prefix=value`` metadata from a baseline output path."""
+    for part in os.path.normpath(path).split(os.sep):
+        if part.startswith(prefix):
+            return part[len(prefix):]
+    return default
+
+
+def _seed_from_path(path: str) -> int:
+    """Extract seed from baseline run directories like ``seed=1_run=1``."""
+    match = re.search(r"seed=(\d+)", path)
+    return int(match.group(1)) if match else 0
+
+
+def _baseline_run_dir(timeseries_path: str) -> str:
+    return os.path.dirname(timeseries_path)
+
+
+def _load_slice_allocations(run_dir: str) -> dict[int, list[float]]:
+    """Load per-timestamp slice allocation percentages from ``slice_alloc.csv``."""
+    path = os.path.join(run_dir, "slice_alloc.csv")
+    if not os.path.exists(path):
+        return {}
+
+    allocations: dict[int, list[float]] = {}
+    with open(path, "r", newline="") as f:
+        for row in csv.DictReader(f):
+            timestamp = _safe_int(row.get("timestamp_ms"), -1)
+            sid = _slice_id(row.get("slice"))
+            if timestamp < 0 or sid not in (0, 1, 2):
+                continue
+            pct = _safe_float(row.get("rsh_real_pct"), _safe_float(row.get("configured_weight")) * 100.0)
+            allocations.setdefault(timestamp, [0.0, 0.0, 0.0])[sid] = max(pct, 0.0)
+    return allocations
+
+
+def _allocation_for_timestamp(
+    timestamp: int,
+    allocations: dict[int, list[float]],
+    metrics: dict[int, dict],
+) -> list[float]:
+    """Return the most recent known baseline allocation for a timestamp."""
+    if timestamp in allocations and sum(allocations[timestamp]) > 0.0:
+        return allocations[timestamp]
+
+    previous = [ts for ts in allocations if ts <= timestamp and sum(allocations[ts]) > 0.0]
+    if previous:
+        return allocations[max(previous)]
+
+    observed = [
+        max(float(metrics.get(sid, {}).get("resourceSharePct_mean", 0.0)), 0.0)
+        for sid in range(3)
+    ]
+    if sum(observed) > 0.0:
+        return observed
+    return [100.0 / 3.0, 100.0 / 3.0, 100.0 / 3.0]
+
+
+def _baseline_metrics_from_rows(rows: Sequence[dict], allocation_pct: list[float]) -> dict[int, dict]:
+    """Aggregate per-UE baseline timeseries rows into per-slice reward metrics."""
+    metrics: dict[int, dict] = {}
+    for sid in range(3):
+        slice_rows = [row for row in rows if _slice_id(row.get("slice")) == sid]
+        valid_buffers = [
+            _safe_float(row.get("buffer_bytes"))
+            for row in slice_rows
+            if _safe_float(row.get("buffer_bytes"), -1.0) >= 0.0
+        ]
+        metrics[sid] = {
+            "throughputMbps_sum": sum(_safe_float(row.get("thr_mbps")) for row in slice_rows),
+            "dTxBytes_sum": sum(_safe_float(row.get("tx_bytes_delta")) for row in slice_rows),
+            "dRxBytes_sum": sum(_safe_float(row.get("rx_bytes_delta")) for row in slice_rows),
+            "dLostPackets_sum": sum(_safe_float(row.get("dropped_packets_delta")) for row in slice_rows),
+            "bufferBytes_mean": float(np.mean(valid_buffers)) if valid_buffers else 0.0,
+            "bufferBytes_max": max(valid_buffers) if valid_buffers else 0.0,
+            "resourceSharePct_mean": allocation_pct[sid] if sid < len(allocation_pct) else 0.0,
+            "ue_count": float(len(slice_rows)),
+        }
+    return metrics
+
+
+def _baseline_observation(metrics: dict[int, dict]) -> np.ndarray:
+    """Build a paper-style 4x4 observation from baseline aggregate metrics."""
+    rows = []
+    for sid, name in enumerate(["eMBB", "URLLC", "MTC"]):
+        values = metrics.get(sid, {})
+        rows.append(
+            {
+                "slice_id": sid,
+                "slice": name,
+                "dTxBytes": values.get("dTxBytes_sum", 0.0),
+                "bufferBytes_mean": values.get("bufferBytes_mean", 0.0),
+                "resourceSharePct": values.get("resourceSharePct_mean", 0.0),
+                "dLostPackets": values.get("dLostPackets_sum", 0.0),
+            }
+        )
+    return rows_to_observation(rows)
+
+
+def load_baseline_frames(
+    timeseries_path: str,
+    reward_config: dict | None = None,
+) -> List[StepFrame]:
+    """Load baseline ns-3 ``timeseries.csv`` data as predictive frames.
+
+    The frame reward and SLA flags are recalculated with the resource-efficient
+    RSLAQ reward so offline forecaster targets match the article contribution.
+    """
+    run_dir = _baseline_run_dir(timeseries_path)
+    scenario = _path_value(timeseries_path, "scenario=", "normal")
+    seed = _seed_from_path(timeseries_path)
+    allocations = _load_slice_allocations(run_dir)
+    config = dict(DEFAULT_RESOURCE_EFFICIENT_REWARD_CONFIG)
+    if reward_config:
+        config.update(reward_config)
+
+    grouped: dict[int, list[dict]] = {}
+    with open(timeseries_path, "r", newline="") as f:
+        for row in csv.DictReader(f):
+            timestamp = _safe_int(row.get("timestamp_ms"), -1)
+            if timestamp >= 0:
+                grouped.setdefault(timestamp, []).append(row)
+
+    frames: list[StepFrame] = []
+    previous_action: list[float] | None = None
+    for step, timestamp in enumerate(sorted(grouped), start=1):
+        rows = grouped[timestamp]
+        rough_metrics = _baseline_metrics_from_rows(rows, [0.0, 0.0, 0.0])
+        allocation_pct = _allocation_for_timestamp(timestamp, allocations, rough_metrics)
+        metrics = _baseline_metrics_from_rows(rows, allocation_pct)
+        action_info = {"prb_pct": allocation_pct}
+        if previous_action is not None:
+            action_info["previous_prb_pct"] = previous_action
+        reward = compute_rslaq_reward(
+            metrics,
+            scenario=scenario,
+            action_info=action_info,
+            config=config,
+            step_count=step,
+        )
+        frames.append(
+            StepFrame(
+                sim_id=f"baseline:{scenario}:{_path_value(timeseries_path, 'mode=', 'unknown')}:{seed}",
+                scenario=scenario,
+                seed=seed,
+                episode=1,
+                step=step,
+                obs=_baseline_observation(metrics),
+                action=(np.asarray(allocation_pct, dtype=np.float32) / 100.0),
+                reward=float(reward.reward),
+                outage_flags=np.array(
+                    [bool(reward.outage_flags.get(sid, False)) for sid in range(3)],
+                    dtype=np.float32,
+                ),
+                soft_flags=np.array(
+                    [bool(reward.soft_flags.get(sid, False)) for sid in range(3)],
+                    dtype=np.float32,
+                ),
+            )
+        )
+        previous_action = allocation_pct
+    return frames
+
+
 def frame_to_feature(frame: StepFrame) -> np.ndarray:
+    """Flatten one reconstructed step frame into a forecaster input feature."""
     reward_scaled = (np.clip(frame.reward, -1.0, 2.0) + 1.0) / 3.0
     return np.concatenate(
         [
@@ -171,6 +390,7 @@ def frame_to_feature(frame: StepFrame) -> np.ndarray:
 
 
 def frames_to_target(future_frames: Sequence[StepFrame]) -> np.ndarray:
+    """Build a future-risk and KPI target vector from forecast-horizon frames."""
     outage_risk = np.max([frame.outage_flags for frame in future_frames], axis=0)
     soft_risk = np.max([frame.soft_flags for frame in future_frames], axis=0)
     obs_mean = np.mean([frame.obs.reshape(-1) for frame in future_frames], axis=0)
@@ -194,7 +414,16 @@ def load_step_frames(csv_path: str) -> List[StepFrame]:
 
 
 def find_step_metric_files(source_root: str, limit_files: int | None = None) -> list[str]:
+    """Find step_metrics.csv files below a campaign results directory."""
     files = sorted(glob.glob(os.path.join(source_root, "**", "step_metrics.csv"), recursive=True))
+    if limit_files is not None and limit_files > 0:
+        files = files[:limit_files]
+    return files
+
+
+def find_baseline_timeseries_files(source_root: str, limit_files: int | None = None) -> list[str]:
+    """Find ns-3 network-only baseline ``timeseries.csv`` files."""
+    files = sorted(glob.glob(os.path.join(source_root, "**", "timeseries.csv"), recursive=True))
     if limit_files is not None and limit_files > 0:
         files = files[:limit_files]
     return files
@@ -205,14 +434,29 @@ def build_forecast_sequences(
     sequence_len: int = 8,
     horizon: int = 5,
     limit_files: int | None = None,
+    source_format: str = "auto",
+    reward_config: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[dict]]:
     """Build ``(X, y, meta)`` arrays from a campaign result directory."""
     xs: list[np.ndarray] = []
     ys: list[np.ndarray] = []
     meta: list[dict] = []
 
-    for path in find_step_metric_files(source_root, limit_files=limit_files):
-        frames = load_step_frames(path)
+    source_format = source_format.strip().lower()
+    sources: list[tuple[str, str]] = []
+    if source_format in ("auto", "step_metrics"):
+        sources.extend(("step_metrics", path) for path in find_step_metric_files(source_root))
+    if source_format in ("auto", "baseline"):
+        sources.extend(("baseline", path) for path in find_baseline_timeseries_files(source_root))
+    if limit_files is not None and limit_files > 0:
+        sources = sources[:limit_files]
+
+    for source_type, path in sources:
+        frames = (
+            load_baseline_frames(path, reward_config=reward_config)
+            if source_type == "baseline"
+            else load_step_frames(path)
+        )
         if len(frames) < sequence_len + horizon:
             continue
         features = [frame_to_feature(frame) for frame in frames]
@@ -223,6 +467,7 @@ def build_forecast_sequences(
             meta.append(
                 {
                     "source": path,
+                    "source_type": source_type,
                     "sim_id": frames[end_idx].sim_id,
                     "scenario": frames[end_idx].scenario,
                     "seed": frames[end_idx].seed,
@@ -240,7 +485,7 @@ def build_forecast_sequences(
     return np.asarray(xs, dtype=np.float32), np.asarray(ys, dtype=np.float32), meta
 
 
-class TemporalKpiForecaster(nn.Module):
+class TemporalKpiForecaster(nn.Module if nn is not None else object):
     """Small GRU forecaster for near-future SLA risk and normalized KPIs."""
 
     def __init__(
@@ -251,28 +496,33 @@ class TemporalKpiForecaster(nn.Module):
         num_layers: int = 1,
         dropout: float = 0.0,
     ):
+        """Create the GRU encoder and sigmoid prediction head."""
+        _, nn_mod = _require_torch()
         super().__init__()
         effective_dropout = dropout if num_layers > 1 else 0.0
-        self.gru = nn.GRU(
+        self.gru = nn_mod.GRU(
             input_dim,
             hidden_dim,
             num_layers=num_layers,
             batch_first=True,
             dropout=effective_dropout,
         )
-        self.head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim),
+        self.head = nn_mod.Sequential(
+            nn_mod.Linear(hidden_dim, hidden_dim),
+            nn_mod.ReLU(),
+            nn_mod.Linear(hidden_dim, output_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Predict normalized future SLA risks and KPIs from temporal features."""
+        torch_mod, _ = _require_torch()
         _, hidden = self.gru(x)
         logits = self.head(hidden[-1])
-        return torch.sigmoid(logits)
+        return torch_mod.sigmoid(logits)
 
 
 def empty_feature(scenario: str = "normal") -> np.ndarray:
+    """Return a neutral feature vector used for history left-padding."""
     frame = StepFrame(
         sim_id="",
         scenario=scenario,
@@ -296,10 +546,13 @@ def forecast_from_history(
     device: torch.device | str = "cpu",
 ) -> np.ndarray:
     """Run the forecaster using left-padding when the history is short."""
+    torch_mod, _ = _require_torch()
     items = [np.asarray(item, dtype=np.float32) for item in history]
     pad = [empty_feature(scenario)] * max(0, sequence_len - len(items))
     window = (pad + items)[-sequence_len:]
-    x = torch.as_tensor(np.stack(window), dtype=torch.float32, device=device).unsqueeze(0)
+    x = torch_mod.as_tensor(
+        np.stack(window), dtype=torch_mod.float32, device=device
+    ).unsqueeze(0)
     model.eval()
-    with torch.no_grad():
+    with torch_mod.no_grad():
         return model(x).detach().cpu().numpy().reshape(-1).astype(np.float32)

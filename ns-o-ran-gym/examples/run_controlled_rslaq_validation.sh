@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Controlled RSLAQ validation campaign.
 #
-# Runs four comparable lines over the same scenarios/seeds/budget:
+# Runs five comparable lines over the same scenarios/seeds/budget:
 #   1) network-only ns-3 baselines, without DRL optimization;
 #   2) DDQN with the paper-faithful RSLAQ reward;
-#   3) SAC with the paper-faithful RSLAQ reward;
-#   4) SAC with the resource-efficient reward contribution.
+#   3) DDQNd with the resource-efficient reward contribution;
+#   4) SAC with the paper-faithful RSLAQ reward;
+#   5) SAC with the resource-efficient reward contribution.
 
 set -Eeuo pipefail
 
@@ -22,16 +23,18 @@ SEEDS_INPUT="${SEEDS:-1 2 3 4 5}"
 read -r -a SCENARIOS <<< "${SCENARIOS_INPUT}"
 read -r -a SEEDS <<< "${SEEDS_INPUT}"
 
-INTERACTION_STEPS="${INTERACTION_STEPS:-5000}"
+INTERACTION_STEPS="${INTERACTION_STEPS:-20000}"
 EPISODE_STEPS="${EPISODE_STEPS:-100}"
 EPISODES="$(python3 -c "import math; print(math.ceil(${INTERACTION_STEPS}/${EPISODE_STEPS}))")"
 
 APP_START="${APP_START:-0.5}"
 PERIOD_MS="${PERIOD_MS:-10}"
-SIM_TIME="${SIM_TIME:-5.0}"
+SIM_TIME="${SIM_TIME:-$(python3 -c "print(${APP_START} + (${EPISODE_STEPS} * ${PERIOD_MS}) / 1000.0 + 0.5)")}"
 CONSECUTIVE_OUTAGE_STEPS="${CONSECUTIVE_OUTAGE_STEPS:-5}"
 WARMUP_STEPS="${WARMUP_STEPS:-5}"
 SEED_CYCLE="${SEED_CYCLE:-999999}"
+DDQN_TERMINATE_ON_SLA_VIOLATION="${DDQN_TERMINATE_ON_SLA_VIOLATION:-0}"
+SAC_TERMINATE_ON_SLA_VIOLATION="${SAC_TERMINATE_ON_SLA_VIOLATION:-0}"
 
 P_STA_STATIC_FRACTION="${P_STA_STATIC_FRACTION:-0.5}"
 P_STA_WEIGHTS="${P_STA_WEIGHTS:-0.3333,0.4000,0.2667}"
@@ -39,7 +42,7 @@ REWARD_ALPHA="${REWARD_ALPHA:-0.3333}"
 REWARD_BETA="${REWARD_BETA:-0.4000}"
 REWARD_GAMMA="${REWARD_GAMMA:-0.2667}"
 
-DDQN_BUFFER_SIZE="${DDQN_BUFFER_SIZE:-500}"
+DDQN_BUFFER_SIZE="${DDQN_BUFFER_SIZE:-10000}"
 DDQN_BATCH_SIZE="${DDQN_BATCH_SIZE:-64}"
 DDQN_LR="${DDQN_LR:-0.001}"
 DDQN_GAMMA="${DDQN_GAMMA:-0.80}"
@@ -56,18 +59,28 @@ SAC_TAU="${SAC_TAU:-0.005}"
 SAC_ALPHA="${SAC_ALPHA:-0.1}"
 
 RESOURCE_EFFICIENCY_WEIGHT="${RESOURCE_EFFICIENCY_WEIGHT:-0.20}"
-NEED_MATCH_WEIGHT="${NEED_MATCH_WEIGHT:-0.15}"
-WASTE_PENALTY_WEIGHT="${WASTE_PENALTY_WEIGHT:-0.25}"
-UNDER_ALLOCATION_PENALTY_WEIGHT="${UNDER_ALLOCATION_PENALTY_WEIGHT:-0.10}"
+NEED_MATCH_WEIGHT="${NEED_MATCH_WEIGHT:-0.20}"
+WASTE_PENALTY_WEIGHT="${WASTE_PENALTY_WEIGHT:-0.20}"
+UNDER_ALLOCATION_PENALTY_WEIGHT="${UNDER_ALLOCATION_PENALTY_WEIGHT:-0.20}"
 ACTION_SMOOTHNESS_WEIGHT="${ACTION_SMOOTHNESS_WEIGHT:-0.05}"
 RESOURCE_DYNAMIC_NEED_WEIGHT="${RESOURCE_DYNAMIC_NEED_WEIGHT:-0.75}"
 RESOURCE_WASTE_DEADBAND="${RESOURCE_WASTE_DEADBAND:-0.03}"
 
 RUN_BASELINES="${RUN_BASELINES:-1}"
 RUN_DDQN="${RUN_DDQN:-1}"
+RUN_RESOURCE_EFFICIENT_DDQN="${RUN_RESOURCE_EFFICIENT_DDQN:-1}"
 RUN_PAPER_SAC="${RUN_PAPER_SAC:-1}"
 RUN_RESOURCE_EFFICIENT_SAC="${RUN_RESOURCE_EFFICIENT_SAC:-1}"
 BASELINE_MODES="${BASELINE_MODES:-pure_rr pure_pf pure_bcqi}"
+BUILD_NS3="${BUILD_NS3:-1}"
+DRL_JOBS="${DRL_JOBS:-1}"
+ENABLE_STEP_LOGGING="${ENABLE_STEP_LOGGING:-1}"
+RUN_DRL_COMPARISON="${RUN_DRL_COMPARISON:-1}"
+
+if ! [[ "${DRL_JOBS}" =~ ^[0-9]+$ ]] || (( DRL_JOBS < 1 )); then
+    echo "DRL_JOBS must be a positive integer, got: ${DRL_JOBS}" >&2
+    exit 1
+fi
 
 mkdir -p "${OUTPUT_ROOT}"
 
@@ -84,13 +97,24 @@ RSLAQ controlled validation
   reward weights:    ${REWARD_ALPHA},${REWARD_BETA},${REWARD_GAMMA}
   baselines:         ${RUN_BASELINES} (${BASELINE_MODES})
   DDQN RSLAQ:        ${RUN_DDQN}
+  DDQNd contribution:${RUN_RESOURCE_EFFICIENT_DDQN}
+  DDQN SLA terminal: ${DDQN_TERMINATE_ON_SLA_VIOLATION}
+  SAC SLA terminal:  ${SAC_TERMINATE_ON_SLA_VIOLATION}
   SAC paper:         ${RUN_PAPER_SAC}
   SAC contribution:  ${RUN_RESOURCE_EFFICIENT_SAC}
+  build ns-3:        ${BUILD_NS3}
+  DRL jobs:          ${DRL_JOBS}
+  step logging:      ${ENABLE_STEP_LOGGING}
+  DRL comparison:    ${RUN_DRL_COMPARISON}
   contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}
 EOF
 
-cd "${NS3_DIR}"
-./ns3 build rslaq-sim
+if [[ "${BUILD_NS3}" == "1" ]]; then
+    cd "${NS3_DIR}"
+    ./ns3 build rslaq-sim
+else
+    echo "[build] Skipping ns-3 build because BUILD_NS3=${BUILD_NS3}"
+fi
 
 if [[ "${RUN_BASELINES}" == "1" ]]; then
     echo "[baseline_ns3] Running pure ns-3 baseline matrix"
@@ -98,6 +122,7 @@ if [[ "${RUN_BASELINES}" == "1" ]]; then
     SEEDS="${SEEDS[*]}" \
     RUNS="1" \
     BASELINE_MODES="${BASELINE_MODES}" \
+    BUILD_NS3="0" \
     SIM_TIME="${SIM_TIME}" \
     APP_START="${APP_START}" \
     PERIOD_MS="${PERIOD_MS}" \
@@ -107,10 +132,21 @@ fi
 
 cd "${GYM_DIR}"
 
-run_ddqn_paper() {
-    local scenario="$1"
-    local seed="$2"
-    echo "[DDQN RSLAQ] scenario=${scenario} seed=${seed}"
+run_ddqn() {
+    local reward_mode="$1"
+    local label="$2"
+    local scenario="$3"
+    local seed="$4"
+    local terminal_args=()
+    local step_logging_args=()
+    if [[ "${DDQN_TERMINATE_ON_SLA_VIOLATION}" == "1" ]]; then
+        terminal_args+=(--terminate-on-sla-violation)
+    fi
+    if [[ "${ENABLE_STEP_LOGGING}" != "1" ]]; then
+        step_logging_args+=(--no-step-logging)
+    fi
+
+    echo "[DDQN ${label}] scenario=${scenario} seed=${seed} reward=${reward_mode}"
     python3 examples/rslaq_train_ddqn.py \
         --scenario "${scenario}" \
         --episodes "${EPISODES}" \
@@ -138,7 +174,17 @@ run_ddqn_paper() {
         --reward_alpha "${REWARD_ALPHA}" \
         --reward_beta "${REWARD_BETA}" \
         --reward_gamma "${REWARD_GAMMA}" \
-        --output "${OUTPUT_ROOT}/ddqn_paper_${scenario}_seed${seed}"
+        --reward_mode "${reward_mode}" \
+        --resource_efficiency_weight "${RESOURCE_EFFICIENCY_WEIGHT}" \
+        --need_match_weight "${NEED_MATCH_WEIGHT}" \
+        --waste_penalty_weight "${WASTE_PENALTY_WEIGHT}" \
+        --under_allocation_penalty_weight "${UNDER_ALLOCATION_PENALTY_WEIGHT}" \
+        --action_smoothness_weight "${ACTION_SMOOTHNESS_WEIGHT}" \
+        --resource_dynamic_need_weight "${RESOURCE_DYNAMIC_NEED_WEIGHT}" \
+        --resource_waste_deadband "${RESOURCE_WASTE_DEADBAND}" \
+        "${step_logging_args[@]}" \
+        "${terminal_args[@]}" \
+        --output "${OUTPUT_ROOT}/ddqn_${label}_${scenario}_seed${seed}"
 }
 
 run_sac() {
@@ -146,6 +192,14 @@ run_sac() {
     local label="$2"
     local scenario="$3"
     local seed="$4"
+    local terminal_args=()
+    local step_logging_args=()
+    if [[ "${SAC_TERMINATE_ON_SLA_VIOLATION}" == "1" ]]; then
+        terminal_args+=(--terminate-on-sla-violation)
+    fi
+    if [[ "${ENABLE_STEP_LOGGING}" != "1" ]]; then
+        step_logging_args+=(--no-step-logging)
+    fi
 
     echo "[SAC ${label}] scenario=${scenario} seed=${seed} reward=${reward_mode}"
     python3 examples/rslaq_train_sac.py \
@@ -180,22 +234,398 @@ run_sac() {
         --action_smoothness_weight "${ACTION_SMOOTHNESS_WEIGHT}" \
         --resource_dynamic_need_weight "${RESOURCE_DYNAMIC_NEED_WEIGHT}" \
         --resource_waste_deadband "${RESOURCE_WASTE_DEADBAND}" \
+        "${step_logging_args[@]}" \
+        "${terminal_args[@]}" \
         --output "${OUTPUT_ROOT}/sac_${label}_${scenario}_seed${seed}"
+}
+
+DRL_FAILURES=0
+DRL_RUNNING=0
+
+run_drl_job() {
+    if (( DRL_JOBS == 1 )); then
+        "$@"
+        return
+    fi
+
+    "$@" &
+    DRL_RUNNING=$((DRL_RUNNING + 1))
+    if (( DRL_RUNNING >= DRL_JOBS )); then
+        if ! wait -n; then
+            DRL_FAILURES=$((DRL_FAILURES + 1))
+        fi
+        DRL_RUNNING=$((DRL_RUNNING - 1))
+    fi
+}
+
+wait_for_drl_jobs() {
+    while (( DRL_RUNNING > 0 )); do
+        if ! wait -n; then
+            DRL_FAILURES=$((DRL_FAILURES + 1))
+        fi
+        DRL_RUNNING=$((DRL_RUNNING - 1))
+    done
+
+    if (( DRL_FAILURES > 0 )); then
+        echo "DRL campaign failed: ${DRL_FAILURES} job(s) returned non-zero status" >&2
+        exit 1
+    fi
 }
 
 for scenario in "${SCENARIOS[@]}"; do
     for seed in "${SEEDS[@]}"; do
         if [[ "${RUN_DDQN}" == "1" ]]; then
-            run_ddqn_paper "${scenario}" "${seed}"
+            run_drl_job run_ddqn "paper" "paper" "${scenario}" "${seed}"
+        fi
+        if [[ "${RUN_RESOURCE_EFFICIENT_DDQN}" == "1" ]]; then
+            run_drl_job run_ddqn "resource_efficient" "resource_efficient" "${scenario}" "${seed}"
         fi
         if [[ "${RUN_PAPER_SAC}" == "1" ]]; then
-            run_sac "paper" "paper" "${scenario}" "${seed}"
+            run_drl_job run_sac "paper" "paper" "${scenario}" "${seed}"
         fi
         if [[ "${RUN_RESOURCE_EFFICIENT_SAC}" == "1" ]]; then
-            run_sac "resource_efficient" "resource_efficient" "${scenario}" "${seed}"
+            run_drl_job run_sac "resource_efficient" "resource_efficient" "${scenario}" "${seed}"
         fi
     done
 done
+
+wait_for_drl_jobs
+
+write_drl_comparison() {
+    python3 - "${OUTPUT_ROOT}" <<'PY'
+import csv
+import io
+import json
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+from statistics import mean
+
+root = Path(sys.argv[1])
+
+LINE_SPECS = [
+    {
+        "line": "ddqn_paper",
+        "algo": "ddqn",
+        "reward_mode": "paper",
+        "pattern": re.compile(r"ddqn_paper_(.*)_seed(\d+)$"),
+        "training_log": "ddqn_training_log.csv",
+    },
+    {
+        "line": "ddqn_resource_efficient",
+        "algo": "ddqn",
+        "reward_mode": "resource_efficient",
+        "pattern": re.compile(r"ddqn_resource_efficient_(.*)_seed(\d+)$"),
+        "training_log": "ddqn_training_log.csv",
+    },
+    {
+        "line": "sac_paper",
+        "algo": "sac",
+        "reward_mode": "paper",
+        "pattern": re.compile(r"sac_paper_(.*)_seed(\d+)$"),
+        "training_log": "sac_training_log.csv",
+    },
+    {
+        "line": "sac_resource_efficient",
+        "algo": "sac",
+        "reward_mode": "resource_efficient",
+        "pattern": re.compile(r"sac_resource_efficient_(.*)_seed(\d+)$"),
+        "training_log": "sac_training_log.csv",
+    },
+]
+
+
+def safe_text(path: Path) -> str:
+    return path.read_bytes().replace(b"\x00", b"").decode("utf-8", errors="replace")
+
+
+def read_csv(path: Path):
+    if not path.exists():
+        return []
+    return list(csv.DictReader(io.StringIO(safe_text(path))))
+
+
+def to_float(value, default=0.0):
+    try:
+        if value in (None, "", "NA"):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def to_int(value, default=0):
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def avg(values):
+    values = [value for value in values if value is not None]
+    return mean(values) if values else 0.0
+
+
+def tail_training_summary(run_dir: Path, training_log: str):
+    rows = read_csv(run_dir / training_log)
+    rows = [row for row in rows if to_int(row.get("episode"), -1) > 0]
+    rows.sort(key=lambda row: to_int(row.get("episode")))
+    if not rows:
+        return {"episodes": 0}
+    tail = rows[-10:]
+    return {
+        "episodes": len(rows),
+        "tail_reward": avg(to_float(row.get("total_reward")) for row in tail),
+        "tail_outages": avg(to_float(row.get("outage_count")) for row in tail),
+        "tail_soft": avg(to_float(row.get("soft_count")) for row in tail),
+        "final_avg_reward": to_float(rows[-1].get("avg_reward")),
+        "max_episode": to_int(rows[-1].get("episode")),
+    }
+
+
+def step_summary(run_dir: Path, max_episode: int):
+    lower_episode = max(max_episode - 10, 0) if max_episode > 0 else 0
+    grouped = defaultdict(list)
+    for path in run_dir.glob("*/step_metrics.csv"):
+        for row in read_csv(path):
+            episode = to_int(row.get("episode"), -1)
+            if episode <= lower_episode:
+                continue
+            key = (row.get("sim_id"), row.get("episode"), row.get("step"))
+            grouped[key].append(row)
+
+    step_count = len(grouped)
+    totals = defaultdict(float)
+    slice_totals = defaultdict(lambda: defaultdict(float))
+    slice_counts = defaultdict(int)
+
+    for rows in grouped.values():
+        first = rows[0]
+        has_outage = any(row.get("outage_flag") == "True" for row in rows)
+        has_soft = any(row.get("soft_flag") == "True" for row in rows)
+        totals["outage_rate"] += float(has_outage)
+        totals["soft_rate"] += float(has_soft)
+        totals["violation_rate"] += float(has_outage or has_soft)
+        for name in [
+            "reward", "resource_efficiency", "need_allocation_match",
+            "over_allocation", "under_allocation", "action_smoothness_penalty",
+            "resource_efficient_shaping", "action_embb", "action_urllc", "action_mtc",
+        ]:
+            totals[name] += to_float(first.get(name))
+
+        for row in rows:
+            sid = to_int(row.get("slice_id"), -1)
+            if sid not in (0, 1, 2):
+                continue
+            prefix = ["embb", "urllc", "mtc"][sid]
+            slice_counts[prefix] += 1
+            for metric, column in [
+                ("thr", "throughput_mbps"),
+                ("plr", "plr_pct"),
+                ("buffer", "bufferBytes_mean"),
+                ("lost", "dLostPackets"),
+                ("rsh", "resourceSharePct"),
+            ]:
+                slice_totals[prefix][metric] += to_float(row.get(column))
+
+    denom = max(step_count, 1)
+    result = {"step_count": step_count}
+    for name, total in totals.items():
+        result[name] = total / denom
+    result["sla_reliability"] = 1.0 - result.get("violation_rate", 0.0)
+
+    for prefix in ["embb", "urllc", "mtc"]:
+        denom_slice = max(slice_counts[prefix], 1)
+        for metric, total in slice_totals[prefix].items():
+            result[f"{prefix}_{metric}"] = total / denom_slice
+    rsh_values = [result.get("embb_rsh", 0.0), result.get("urllc_rsh", 0.0), result.get("mtc_rsh", 0.0)]
+    rsh_sq_sum = sum(value * value for value in rsh_values)
+    result["resource_fairness"] = (sum(rsh_values) ** 2) / (3.0 * rsh_sq_sum) if rsh_sq_sum > 0.0 else 0.0
+    return result
+
+
+def collect_runs():
+    rows = []
+    for run_dir in root.iterdir():
+        if not run_dir.is_dir():
+            continue
+        for spec in LINE_SPECS:
+            match = spec["pattern"].match(run_dir.name)
+            if not match:
+                continue
+            scenario, seed = match.group(1), int(match.group(2))
+            training = tail_training_summary(run_dir, spec["training_log"])
+            step = step_summary(run_dir, training.get("max_episode", 0))
+            row = {
+                "line": spec["line"],
+                "algo": spec["algo"],
+                "reward_mode": spec["reward_mode"],
+                "scenario": scenario,
+                "seed": seed,
+                "run_dir": str(run_dir),
+            }
+            row.update(training)
+            row.update(step)
+            rows.append(row)
+            break
+    return rows
+
+
+def aggregate(rows):
+    groups = defaultdict(list)
+    for row in rows:
+        groups[(row["line"], row["algo"], row["reward_mode"], row["scenario"])].append(row)
+
+    numeric_keys = sorted(
+        key
+        for key in {key for row in rows for key in row.keys()}
+        if key not in {"line", "algo", "reward_mode", "scenario", "seed", "run_dir"}
+    )
+    summary_rows = []
+    for key, items in sorted(groups.items()):
+        row = {
+            "line": key[0],
+            "algo": key[1],
+            "reward_mode": key[2],
+            "scenario": key[3],
+            "runs": len(items),
+        }
+        for metric in numeric_keys:
+            row[metric] = avg(to_float(item.get(metric)) for item in items)
+        summary_rows.append(row)
+    return summary_rows
+
+
+def norm_map(rows, metric, higher_is_better=True):
+    values = [to_float(row.get(metric)) for row in rows]
+    lo = min(values) if values else 0.0
+    hi = max(values) if values else 0.0
+    if hi == lo:
+        return {id(row): 0.5 for row in rows}
+    scores = {}
+    for row, value in zip(rows, values):
+        scaled = (value - lo) / (hi - lo)
+        scores[id(row)] = scaled if higher_is_better else 1.0 - scaled
+    return scores
+
+
+def build_rankings(summary_rows):
+    ranked = []
+    by_scenario = defaultdict(list)
+    for row in summary_rows:
+        by_scenario[row["scenario"]].append(row)
+
+    for scenario, rows in sorted(by_scenario.items()):
+        maps = {
+            "sla_reliability": norm_map(rows, "sla_reliability", True),
+            "outage_rate": norm_map(rows, "outage_rate", False),
+            "soft_rate": norm_map(rows, "soft_rate", False),
+            "embb_thr": norm_map(rows, "embb_thr", True),
+            "urllc_plr": norm_map(rows, "urllc_plr", False),
+            "mtc_lost": norm_map(rows, "mtc_lost", False),
+            "resource_efficiency": norm_map(rows, "resource_efficiency", True),
+            "need_allocation_match": norm_map(rows, "need_allocation_match", True),
+            "over_allocation": norm_map(rows, "over_allocation", False),
+            "under_allocation": norm_map(rows, "under_allocation", False),
+            "resource_fairness": norm_map(rows, "resource_fairness", True),
+            "action_smoothness_penalty": norm_map(rows, "action_smoothness_penalty", False),
+        }
+        scored = []
+        for row in rows:
+            key = id(row)
+            sla_score = (
+                0.50 * maps["sla_reliability"][key]
+                + 0.25 * maps["outage_rate"][key]
+                + 0.25 * maps["soft_rate"][key]
+            )
+            service_score = (
+                0.40 * maps["embb_thr"][key]
+                + 0.30 * maps["urllc_plr"][key]
+                + 0.30 * maps["mtc_lost"][key]
+            )
+            resource_score = (
+                0.40 * maps["resource_efficiency"][key]
+                + 0.25 * maps["need_allocation_match"][key]
+                + 0.175 * maps["over_allocation"][key]
+                + 0.175 * maps["under_allocation"][key]
+            )
+            fairness_score = maps["resource_fairness"][key]
+            stability_score = maps["action_smoothness_penalty"][key]
+            score = (
+                0.35 * sla_score
+                + 0.20 * service_score
+                + 0.25 * resource_score
+                + 0.10 * fairness_score
+                + 0.10 * stability_score
+            )
+            out = dict(row)
+            out.update({
+                "score": score,
+                "sla_score": sla_score,
+                "service_score": service_score,
+                "resource_score": resource_score,
+                "fairness_score": fairness_score,
+                "stability_score": stability_score,
+            })
+            scored.append(out)
+
+        scored.sort(key=lambda row: row["score"], reverse=True)
+        for rank, row in enumerate(scored, start=1):
+            row["rank"] = rank
+            ranked.append(row)
+
+    overall = []
+    by_line = defaultdict(list)
+    for row in ranked:
+        by_line[row["line"]].append(row)
+    for line, rows in sorted(by_line.items()):
+        out = {
+            "line": line,
+            "algo": rows[0]["algo"],
+            "reward_mode": rows[0]["reward_mode"],
+            "scenarios": len(rows),
+            "mean_score": avg(row["score"] for row in rows),
+            "mean_rank": avg(row["rank"] for row in rows),
+            "rank_1_count": sum(1 for row in rows if row["rank"] == 1),
+        }
+        overall.append(out)
+    overall.sort(key=lambda row: (-row["mean_score"], row["mean_rank"]))
+    for rank, row in enumerate(overall, start=1):
+        row["overall_rank"] = rank
+    return ranked, overall
+
+def write_csv(path: Path, rows):
+    if not rows:
+        return
+    keys = sorted({key for row in rows for key in row.keys()})
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(rows)
+
+run_rows = collect_runs()
+summary = aggregate(run_rows)
+ranking, overall = build_rankings(summary)
+
+write_csv(root / "drl_comparison_by_run.csv", run_rows)
+write_csv(root / "drl_comparison_summary.csv", summary)
+write_csv(root / "drl_ranking.csv", ranking)
+write_csv(root / "drl_overall_ranking.csv", overall)
+with (root / "drl_comparison.json").open("w") as f:
+    json.dump({"runs": run_rows, "summary": summary, "ranking": ranking, "overall": overall}, f, indent=2)
+
+print(f"[compare] Unified DRL comparison: {len(run_rows)} run(s), {len(summary)} scenario line(s)")
+if ranking:
+    print(f"[compare] Wrote {root / 'drl_ranking.csv'}")
+else:
+    print("[compare] No DRL run directories found")
+PY
+}
+
+if [[ "${RUN_DRL_COMPARISON}" == "1" ]]; then
+    write_drl_comparison
+fi
 
 cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
 {
@@ -212,8 +642,15 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "run_baselines": ${RUN_BASELINES},
   "baseline_modes": "${BASELINE_MODES}",
   "run_ddqn": ${RUN_DDQN},
+  "run_resource_efficient_ddqn": ${RUN_RESOURCE_EFFICIENT_DDQN},
+  "ddqn_terminate_on_sla_violation": ${DDQN_TERMINATE_ON_SLA_VIOLATION},
+  "sac_terminate_on_sla_violation": ${SAC_TERMINATE_ON_SLA_VIOLATION},
   "run_paper_sac": ${RUN_PAPER_SAC},
   "run_resource_efficient_sac": ${RUN_RESOURCE_EFFICIENT_SAC},
+  "build_ns3": ${BUILD_NS3},
+  "drl_jobs": ${DRL_JOBS},
+  "enable_step_logging": ${ENABLE_STEP_LOGGING},
+  "run_drl_comparison": ${RUN_DRL_COMPARISON},
   "p_sta_static_fraction": ${P_STA_STATIC_FRACTION},
   "p_sta_weights": "${P_STA_WEIGHTS}",
   "reward_weights": "${REWARD_ALPHA},${REWARD_BETA},${REWARD_GAMMA}",

@@ -1,4 +1,3 @@
-from typing_extensions import override
 import csv
 import numpy as np
 import uuid
@@ -10,6 +9,7 @@ import os
 import glob
 import warnings
 from collections import deque
+from typing import override
 from posix_ipc import Semaphore, O_CREAT
 from nsoran.ns_env import NsOranEnv
 from nsoran.action_controller import ActionController
@@ -69,6 +69,7 @@ class RslaqEnv(NsOranEnv):
         enable_step_logging: bool = True,
         step_log_file: str = "step_metrics.csv",
     ):
+        """Configure the RSLAQ environment, spaces, simulator defaults, and logging."""
         # Ensure required keys exist
         scenario_configuration.setdefault("simId", [""])
         scenario_configuration.setdefault("periodMs", [10])
@@ -178,6 +179,7 @@ class RslaqEnv(NsOranEnv):
 
     @override
     def reset(self, *, seed=None, options=None):
+        """Reset episode counters, rotate the ns-3 seed, and clear KPI history."""
         self.num_steps = 0
         self._episode_count += 1
         self._current_seed_index = (self._episode_count - 1) // self._seed_cycle
@@ -187,6 +189,7 @@ class RslaqEnv(NsOranEnv):
         return super().reset(seed=seed, options=options)
 
     def start_sim(self):
+        """Start one ns-3 RSLAQ simulation process and initialize IPC resources."""
         if self.is_open:
             raise ValueError(
                 "The environment is open and a new start_sim has been called."
@@ -321,6 +324,7 @@ class RslaqEnv(NsOranEnv):
 
     @override
     def _get_obs(self):
+        """Return the latest RSLAQ observation matrix."""
         return self.observations
 
     @override
@@ -343,6 +347,7 @@ class RslaqEnv(NsOranEnv):
 
     @override
     def _init_datalake_usecase(self):
+        """Initialize use-case-specific datalake tables, if any are needed."""
         pass
 
     @override
@@ -374,6 +379,7 @@ class RslaqEnv(NsOranEnv):
 
     @override
     def step(self, action) -> tuple:
+        """Advance the simulator by one control period and return Gymnasium output."""
         # Base class handles simulation lifecycle (wait, fill datalake, etc.)
         # We call the base logic manually to inject max_steps and info
         if not self.is_simulation_over():

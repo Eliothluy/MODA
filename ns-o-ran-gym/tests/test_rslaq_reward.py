@@ -371,6 +371,33 @@ def test_paper_reward_mode_preserves_default():
     assert default.optimization_terms == paper.optimization_terms
 
 
+def test_paper_reward_mode_exposes_resource_efficiency_diagnostics():
+    """Paper mode logs resource-efficiency metrics without shaping reward."""
+    metrics = _resource_efficiency_metrics()
+    result = compute_rslaq_reward(
+        metrics,
+        scenario="normal",
+        action_info={"prb_pct": [5.0, 90.0, 5.0]},
+        config={
+            "reward_mode": "paper",
+            "resource_dynamic_need_weight": 1.0,
+            "resource_waste_deadband": 0.0,
+        },
+    )
+
+    assert result.reward == result.optimization_terms["opt_reward"]
+    assert result.optimization_terms["resource_efficient_shaping"] == 0.0
+    for key in (
+        "resource_efficiency",
+        "need_allocation_match",
+        "over_allocation",
+        "under_allocation",
+    ):
+        assert key in result.optimization_terms
+        assert key in result.debug_info
+    assert result.optimization_terms["need_allocation_match"] > 0.0
+
+
 def test_resource_efficient_penalizes_over_allocation():
     """The contribution rewards PRB shares that follow active slice need."""
     metrics = _resource_efficiency_metrics()
@@ -399,11 +426,19 @@ def test_resource_efficient_penalizes_over_allocation():
     assert wasteful.optimization_terms["over_allocation"] > matched.optimization_terms["over_allocation"]
 
 
-def test_resource_efficient_keeps_outage_terminal_reward():
-    """Resource efficiency shaping does not dilute terminal SLA penalties."""
+def test_resource_efficient_preserves_outage_terminal_reward():
+    """Resource-efficient diagnostics do not override Eq. 12 outage penalties."""
     metrics = _good_metrics()
     metrics[0]["throughputMbps_sum"] = 5.0
-    config = {**INSTANT_OUTAGE_CONFIG, "reward_mode": "resource_efficient"}
+    config = {
+        **INSTANT_OUTAGE_CONFIG,
+        "reward_mode": "resource_efficient",
+        "resource_efficiency_weight": 0.0,
+        "need_match_weight": 1.0,
+        "waste_penalty_weight": 0.0,
+        "under_allocation_penalty_weight": 0.0,
+        "action_smoothness_weight": 0.0,
+    }
     result = compute_rslaq_reward(
         metrics,
         scenario="normal",
@@ -413,8 +448,9 @@ def test_resource_efficient_keeps_outage_terminal_reward():
     )
     assert result.outage_flags[0] is True
     assert result.terminated
-    assert result.reward == -ALPHA
     assert result.optimization_terms["resource_efficient_shaping"] == 0.0
+    assert result.optimization_terms["need_allocation_match"] > 0.0
+    assert result.reward == -ALPHA
 
 
 def test_resource_efficient_debug_terms():
@@ -456,14 +492,19 @@ def test_sla_violation_can_penalize_without_terminating():
     assert result.debug_info["terminate_on_sla_violation"] is False
 
 
-def test_resource_efficient_does_not_shape_nonterminal_sla_penalty():
-    """Eq. 12 penalties are not diluted when DDQN keeps the episode alive."""
+def test_resource_efficient_preserves_nonterminal_sla_penalty():
+    """Resource-efficient diagnostics keep Eq. 12 penalties without reset."""
     metrics = _good_metrics()
     metrics[0]["throughputMbps_sum"] = 5.0
     config = {
         **INSTANT_OUTAGE_CONFIG,
         "reward_mode": "resource_efficient",
         "terminate_on_sla_violation": False,
+        "resource_efficiency_weight": 0.0,
+        "need_match_weight": 1.0,
+        "waste_penalty_weight": 0.0,
+        "under_allocation_penalty_weight": 0.0,
+        "action_smoothness_weight": 0.0,
     }
     result = compute_rslaq_reward(
         metrics,
@@ -473,9 +514,10 @@ def test_resource_efficient_does_not_shape_nonterminal_sla_penalty():
         step_count=POST_WARMUP,
     )
     assert result.outage_flags[0] is True
-    assert result.reward == -ALPHA
     assert not result.terminated
     assert result.optimization_terms["resource_efficient_shaping"] == 0.0
+    assert result.optimization_terms["need_allocation_match"] > 0.0
+    assert result.reward == -ALPHA
 
 
 # ── Metadata tests ───────────────────────────────────────────────────
@@ -573,9 +615,10 @@ if __name__ == "__main__":
     test_consecutive_outage_needs_streak()
     test_consecutive_outage_with_history()
     test_paper_reward_mode_preserves_default()
+    test_paper_reward_mode_exposes_resource_efficiency_diagnostics()
     test_resource_efficient_penalizes_over_allocation()
-    test_resource_efficient_keeps_outage_terminal_reward()
+    test_resource_efficient_preserves_outage_terminal_reward()
     test_resource_efficient_debug_terms()
     test_sla_violation_can_penalize_without_terminating()
-    test_resource_efficient_does_not_shape_nonterminal_sla_penalty()
+    test_resource_efficient_preserves_nonterminal_sla_penalty()
     print("All reward tests passed.")

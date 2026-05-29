@@ -29,6 +29,7 @@ RLC_MODE="${RLC_MODE:-um}"
 SEEDS="${SEEDS:-1}"
 RUNS="${RUNS:-1}"
 STOP_ON_FAILURE="${STOP_ON_FAILURE:-0}"
+BUILD_NS3="${BUILD_NS3:-1}"
 
 SCENARIOS=(
     low_traffic
@@ -75,8 +76,12 @@ echo "Runs         : ${RUN_LIST[*]}"
 echo "Sim config   : simTime=${SIM_TIME}s appStart=${APP_START}s drain=${DRAIN_TIME_SEC}s period=${PERIOD_MS}ms rlcMode=${RLC_MODE}"
 echo ""
 
-echo "Building rslaq-sim..."
-./ns3 build rslaq-sim
+if [[ "$BUILD_NS3" == "1" ]]; then
+    echo "Building rslaq-sim..."
+    ./ns3 build rslaq-sim
+else
+    echo "Skipping rslaq-sim build because BUILD_NS3=$BUILD_NS3"
+fi
 
 echo "scenario,baseline_mode,seed,run,status,result_dir,log_file,message" > "$MANIFEST"
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train the RSLAQ temporal KPI forecaster from existing step logs."""
+"""Train the RSLAQ temporal KPI forecaster from existing step or baseline logs."""
 
 import sys
 import os
@@ -29,9 +29,9 @@ from environments.rslaq_predictive import (
 DEFAULT_SOURCE_ROOT = os.path.join(
     os.path.dirname(__file__),
     "..",
-    "results_controlled",
-    "paper_faithful",
-    "20260514_175546",
+    "..",
+    "ns-3-dev",
+    "results_rslaq_network_only",
 )
 DEFAULT_OUTPUT = os.path.join(
     os.path.dirname(__file__),
@@ -81,6 +81,9 @@ def main():
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument("--sequence_len", type=int, default=8)
     parser.add_argument("--forecast_horizon", type=int, default=5)
+    parser.add_argument("--source_format", default="auto",
+                        choices=["auto", "step_metrics", "baseline"],
+                        help="Input format: DRL step_metrics, ns-3 baseline, or auto-detect both")
     parser.add_argument("--hidden_dim", type=int, default=64)
     parser.add_argument("--num_layers", type=int, default=1)
     parser.add_argument("--dropout", type=float, default=0.0)
@@ -102,6 +105,7 @@ def main():
         sequence_len=args.sequence_len,
         horizon=args.forecast_horizon,
         limit_files=args.limit_files or None,
+        source_format=args.source_format,
     )
     if x.shape[0] == 0:
         raise RuntimeError(f"No forecast sequences found under {args.source_root}")
@@ -213,6 +217,7 @@ def main():
 
     metrics = {
         "source_root": os.path.abspath(args.source_root),
+        "source_format": args.source_format,
         "num_sequences": int(x.shape[0]),
         "train_sequences": int(train_idx.size),
         "val_sequences": int(val_idx.size),
