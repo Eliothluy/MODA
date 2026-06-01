@@ -13,7 +13,7 @@ set -Eeuo pipefail
 SCENARIOS_INPUT="${SCENARIOS:-}"
 BASELINE_MODES_INPUT="${BASELINE_MODES:-}"
 
-NS3_DIR="${NS3_DIR:-/home/elioth/Documentos/artigo_jussi/ns-3-dev}"
+NS3_DIR="${NS3_DIR:-/home/eliothluy/Documentos/artigo_jussi/ns-3-dev}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-$NS3_DIR}"
 RESULTS_DIR="$OUTPUT_ROOT/results_rslaq_network_only"
 LOG_DIR="$RESULTS_DIR/_logs"

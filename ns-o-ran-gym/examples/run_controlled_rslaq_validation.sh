@@ -14,7 +14,7 @@
 
 set -Eeuo pipefail
 
-REPO_ROOT="${REPO_ROOT:-/home/elioth/Documentos/artigo_jussi}"
+REPO_ROOT="${REPO_ROOT:-/home/eliothluy/Documentos/artigo_jussi}"
 NS3_DIR="${NS3_DIR:-${REPO_ROOT}/ns-3-dev}"
 GYM_DIR="${GYM_DIR:-${REPO_ROOT}/ns-o-ran-gym}"
 
@@ -33,7 +33,7 @@ EPISODES="$(python3 -c "import math; print(math.ceil(${INTERACTION_STEPS}/${EPIS
 
 APP_START="${APP_START:-0.5}"
 PERIOD_MS="${PERIOD_MS:-10}"
-SIM_TIME="${SIM_TIME:-$(python3 -c "print(${APP_START} + (${EPISODE_STEPS} * ${PERIOD_MS}) / 1000.0 + 0.5)")}"
+SIM_TIME="${SIM_TIME:-10.0}"
 CONSECUTIVE_OUTAGE_STEPS="${CONSECUTIVE_OUTAGE_STEPS:-5}"
 WARMUP_STEPS="${WARMUP_STEPS:-5}"
 SEED_CYCLE="${SEED_CYCLE:-999999}"
@@ -102,7 +102,12 @@ DRL_JOBS="${DRL_JOBS:-1}"
 ENABLE_STEP_LOGGING="${ENABLE_STEP_LOGGING:-1}"
 RUN_DRL_COMPARISON="${RUN_DRL_COMPARISON:-1}"
 RUN_FORECASTER="${RUN_FORECASTER:-1}"
+RUN_FORECASTER_GRU="${RUN_FORECASTER_GRU:-1}"
+RUN_FORECASTER_LSTM="${RUN_FORECASTER_LSTM:-1}"
+RUN_FORECASTER_COMPARISON="${RUN_FORECASTER_COMPARISON:-1}"
 RUN_PREDICTIVE_SAC="${RUN_PREDICTIVE_SAC:-1}"
+RUN_PREDICTIVE_SAC_GRU="${RUN_PREDICTIVE_SAC_GRU:-0}"
+RUN_PREDICTIVE_SAC_LSTM="${RUN_PREDICTIVE_SAC_LSTM:-0}"
 
 if ! [[ "${DRL_JOBS}" =~ ^[0-9]+$ ]] || (( DRL_JOBS < 1 )); then
     echo "DRL_JOBS must be a positive integer, got: ${DRL_JOBS}" >&2
@@ -130,7 +135,12 @@ RSLAQ controlled validation
   SAC paper:         ${RUN_PAPER_SAC}
   SAC contribution:  ${RUN_RESOURCE_EFFICIENT_SAC}
   predictive SAC:    ${RUN_PREDICTIVE_SAC}
+  predictive SAC GRU: ${RUN_PREDICTIVE_SAC_GRU}
+  predictive SAC LSTM: ${RUN_PREDICTIVE_SAC_LSTM}
   forecaster:        ${RUN_FORECASTER}
+  forecaster GRU:    ${RUN_FORECASTER_GRU}
+  forecaster LSTM:   ${RUN_FORECASTER_LSTM}
+  forecaster comparison: ${RUN_FORECASTER_COMPARISON}
   forecast source:   ${PREDICTIVE_FORECAST_SOURCE_FORMAT}
   forecast:          seq=${FORECAST_SEQUENCE_LEN}, horizon=${FORECAST_HORIZON}, epochs=${FORECASTER_EPOCHS}
   predictive reward:  ${PREDICTIVE_REWARD_MODE}, P_STA=${PREDICTIVE_P_STA_FRACTION}
@@ -292,23 +302,28 @@ run_sac() {
 }
 
 run_forecaster() {
+    local cell_type="$1"
+    local output_dir="$2"
     local source_root="${OUTPUT_ROOT}/baseline_ns3/results_rslaq_network_only"
-    local forecaster_dir="${OUTPUT_ROOT}/forecaster"
 
-    if [[ -n "${FORECASTER_CHECKPOINT}" && -f "${FORECASTER_CHECKPOINT}" ]]; then
-        echo "[forecaster] Using existing checkpoint: ${FORECASTER_CHECKPOINT}"
-        FORECASTER_CHECKPOINT_OUT="${FORECASTER_CHECKPOINT}"
-        return
+    local num_layers=1
+    local dropout=0.0
+    if [[ "${cell_type}" == "lstm" ]]; then
+        num_layers=2
+        dropout=0.2
     fi
 
-    echo "[forecaster] Training from baseline data: ${source_root}"
+    echo "[forecaster ${cell_type}] Training from baseline data: ${source_root} -> ${output_dir}"
     python3 examples/rslaq_train_forecaster.py \
+        --cell_type "${cell_type}" \
         --source_root "${source_root}" \
         --source_format "${PREDICTIVE_FORECAST_SOURCE_FORMAT}" \
-        --output "${forecaster_dir}" \
+        --output "${output_dir}" \
         --sequence_len "${FORECAST_SEQUENCE_LEN}" \
         --forecast_horizon "${FORECAST_HORIZON}" \
         --hidden_dim "${FORECASTER_HIDDEN_DIM}" \
+        --num_layers "${num_layers}" \
+        --dropout "${dropout}" \
         --epochs "${FORECASTER_EPOCHS}" \
         --batch_size "${FORECASTER_BATCH_SIZE}" \
         --lr "${FORECASTER_LR}" \
@@ -316,19 +331,19 @@ run_forecaster() {
         --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
         --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
         --limit_files "${FORECASTER_LIMIT_FILES}"
-
-    FORECASTER_CHECKPOINT_OUT="${forecaster_dir}/forecaster_best.pt"
 }
 
 run_predictive_sac() {
     local scenario="$1"
     local seed="$2"
+    local forecaster_ckpt="$3"
+    local label="$4"
     local step_logging_args=()
     if [[ "${ENABLE_STEP_LOGGING}" != "1" ]]; then
         step_logging_args+=(--no-step-logging)
     fi
 
-    echo "[Predictive SAC] scenario=${scenario} seed=${seed}"
+    echo "[Predictive SAC ${label}] scenario=${scenario} seed=${seed} forecaster=${forecaster_ckpt}"
     python3 examples/rslaq_train_predictive_sac.py \
         --scenario "${scenario}" \
         --episodes "${EPISODES}" \
@@ -364,13 +379,13 @@ run_predictive_sac() {
         --resource_waste_deadband "${RESOURCE_WASTE_DEADBAND}" \
         --risk_penalty "${RISK_PENALTY}" \
         --soft_penalty "${SOFT_PENALTY}" \
-        --forecaster_checkpoint "${FORECASTER_CHECKPOINT_OUT}" \
+        --forecaster_checkpoint "${forecaster_ckpt}" \
         --sequence_len "${FORECAST_SEQUENCE_LEN}" \
         --compute_cost_per_hour_usd "${COMPUTE_COST_PER_HOUR_USD}" \
         --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
         --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
         "${step_logging_args[@]}" \
-        --output "${OUTPUT_ROOT}/predictive_sac_${scenario}_seed${seed}"
+        --output "${OUTPUT_ROOT}/predictive_sac_${label}_${scenario}_seed${seed}"
 }
 
 DRL_FAILURES=0
@@ -425,27 +440,57 @@ done
 
 wait_for_drl_jobs
 
-PREDICTIVE_FORECASTER_CHECKPOINT_OUT=""
+FORECASTER_GRU_CHECKPOINT="${OUTPUT_ROOT}/forecaster_gru/forecaster_best.pt"
+FORECASTER_LSTM_CHECKPOINT="${OUTPUT_ROOT}/forecaster_lstm/forecaster_best.pt"
+
+if [[ "${RUN_FORECASTER}" == "1" ]]; then
+    if [[ "${RUN_FORECASTER_GRU}" == "1" ]]; then
+        run_forecaster "gru" "${OUTPUT_ROOT}/forecaster_gru"
+    fi
+    if [[ "${RUN_FORECASTER_LSTM}" == "1" ]]; then
+        run_forecaster "lstm" "${OUTPUT_ROOT}/forecaster_lstm"
+    fi
+else
+    echo "[forecaster] Skipping forecaster training because RUN_FORECASTER=${RUN_FORECASTER}"
+    if [[ -n "${FORECASTER_CHECKPOINT}" && -f "${FORECASTER_CHECKPOINT}" ]]; then
+        FORECASTER_GRU_CHECKPOINT="${FORECASTER_CHECKPOINT}"
+        FORECASTER_LSTM_CHECKPOINT="${FORECASTER_CHECKPOINT}"
+    fi
+fi
+
+if [[ "${RUN_FORECASTER_COMPARISON}" == "1" && "${RUN_FORECASTER_GRU}" == "1" && "${RUN_FORECASTER_LSTM}" == "1" ]]; then
+    echo "[forecaster comparison] Running offline GRU vs LSTM comparison"
+    python3 examples/compare_forecasters.py \
+        --gru_checkpoint "${FORECASTER_GRU_CHECKPOINT}" \
+        --lstm_checkpoint "${FORECASTER_LSTM_CHECKPOINT}" \
+        --source_root "${OUTPUT_ROOT}/baseline_ns3/results_rslaq_network_only" \
+        --source_format "${PREDICTIVE_FORECAST_SOURCE_FORMAT}" \
+        --sequence_len "${FORECAST_SEQUENCE_LEN}" \
+        --forecast_horizon "${FORECAST_HORIZON}" \
+        --output "${OUTPUT_ROOT}/forecaster_comparison"
+
+    python3 examples/plot_forecaster_comparison.py \
+        --comparison_json "${OUTPUT_ROOT}/forecaster_comparison/forecaster_comparison.json" \
+        --gru_dir "${OUTPUT_ROOT}/forecaster_gru" \
+        --lstm_dir "${OUTPUT_ROOT}/forecaster_lstm" \
+        --output "${OUTPUT_ROOT}/forecaster_article_figures"
+fi
 
 if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
-    if [[ "${RUN_FORECASTER}" == "1" ]]; then
-        run_forecaster
-    else
-        echo "[forecaster] Skipping forecaster training because RUN_FORECASTER=${RUN_FORECASTER}"
-        if [[ -n "${FORECASTER_CHECKPOINT}" && -f "${FORECASTER_CHECKPOINT}" ]]; then
-            FORECASTER_CHECKPOINT_OUT="${FORECASTER_CHECKPOINT}"
-        else
-            FORECASTER_CHECKPOINT_OUT="${OUTPUT_ROOT}/forecaster/forecaster_best.pt"
-            echo "[forecaster] Using checkpoint: ${FORECASTER_CHECKPOINT_OUT}"
-        fi
-    fi
-
     for scenario in "${SCENARIOS[@]}"; do
         for seed in "${SEEDS[@]}"; do
-            run_drl_job run_predictive_sac "${scenario}" "${seed}"
+            if [[ "${RUN_PREDICTIVE_SAC_GRU}" == "1" ]]; then
+                run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_GRU_CHECKPOINT}" "gru"
+            fi
+            if [[ "${RUN_PREDICTIVE_SAC_LSTM}" == "1" ]]; then
+                run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_LSTM_CHECKPOINT}" "lstm"
+            fi
+            if [[ "${RUN_PREDICTIVE_SAC_GRU}" != "1" && "${RUN_PREDICTIVE_SAC_LSTM}" != "1" ]]; then
+                # Default legacy behavior: single predictive_sac without gru/lstm label
+                run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_GRU_CHECKPOINT}" ""
+            fi
         done
     done
-
     wait_for_drl_jobs
 fi
 
@@ -500,6 +545,22 @@ LINE_SPECS = [
         "algo": "predictive_sac",
         "reward_mode": "resource_efficient",
         "pattern": re.compile(r"predictive_sac_(.*)_seed(\d+)$"),
+        "training_log": "sac_training_log.csv",
+        "summary_file": "sac_summary.json",
+    },
+    {
+        "line": "predictive_sac_gru",
+        "algo": "predictive_sac",
+        "reward_mode": "resource_efficient",
+        "pattern": re.compile(r"predictive_sac_gru_(.*)_seed(\d+)$"),
+        "training_log": "sac_training_log.csv",
+        "summary_file": "sac_summary.json",
+    },
+    {
+        "line": "predictive_sac_lstm",
+        "algo": "predictive_sac",
+        "reward_mode": "resource_efficient",
+        "pattern": re.compile(r"predictive_sac_lstm_(.*)_seed(\d+)$"),
         "training_log": "sac_training_log.csv",
         "summary_file": "sac_summary.json",
     },
@@ -854,7 +915,12 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "run_paper_sac": ${RUN_PAPER_SAC},
   "run_resource_efficient_sac": ${RUN_RESOURCE_EFFICIENT_SAC},
   "run_forecaster": ${RUN_FORECASTER},
+  "run_forecaster_gru": ${RUN_FORECASTER_GRU},
+  "run_forecaster_lstm": ${RUN_FORECASTER_LSTM},
+  "run_forecaster_comparison": ${RUN_FORECASTER_COMPARISON},
   "run_predictive_sac": ${RUN_PREDICTIVE_SAC},
+  "run_predictive_sac_gru": ${RUN_PREDICTIVE_SAC_GRU},
+  "run_predictive_sac_lstm": ${RUN_PREDICTIVE_SAC_LSTM},
   "predictive_sac": {
     "reward_mode": "${PREDICTIVE_REWARD_MODE}",
     "p_sta_static_fraction": ${PREDICTIVE_P_STA_FRACTION},

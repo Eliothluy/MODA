@@ -14,6 +14,8 @@ from environments.rslaq_predictive import (
     FEATURE_DIM,
     FORECAST_DIM,
     TemporalKpiForecaster,
+    TemporalKpiForecasterLSTM,
+    create_forecaster,
     build_forecast_sequences,
     forecast_from_history,
     frame_to_feature,
@@ -181,3 +183,22 @@ def test_forecast_from_short_history_left_pads():
     assert forecast.shape == (FORECAST_DIM,)
     assert np.all(forecast >= 0.0)
     assert np.all(forecast <= 1.0)
+
+
+def test_lstm_forecaster_output_range():
+    model = TemporalKpiForecasterLSTM(hidden_dim=8, num_layers=1)
+    x = torch.rand(2, 4, FEATURE_DIM)
+    y = model(x)
+    assert y.shape == (2, FORECAST_DIM)
+    assert torch.all(y >= 0.0)
+    assert torch.all(y <= 1.0)
+
+
+def test_factory_creates_both_types():
+    gru = create_forecaster("gru", hidden_dim=8)
+    lstm = create_forecaster("lstm", hidden_dim=8, num_layers=1)
+    assert isinstance(gru, TemporalKpiForecaster)
+    assert isinstance(lstm, TemporalKpiForecasterLSTM)
+    x = torch.rand(2, 4, FEATURE_DIM)
+    assert gru(x).shape == (2, FORECAST_DIM)
+    assert lstm(x).shape == (2, FORECAST_DIM)

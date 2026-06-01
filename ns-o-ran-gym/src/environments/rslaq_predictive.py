@@ -523,6 +523,54 @@ class TemporalKpiForecaster(nn.Module if nn is not None else object):
         return torch_mod.sigmoid(logits)
 
 
+class TemporalKpiForecasterLSTM(nn.Module if nn is not None else object):
+    """LSTM forecaster for near-future SLA risk and normalized KPIs."""
+
+    def __init__(
+        self,
+        input_dim: int = FEATURE_DIM,
+        hidden_dim: int = 64,
+        output_dim: int = FORECAST_DIM,
+        num_layers: int = 2,
+        dropout: float = 0.2,
+    ):
+        """Create the LSTM encoder and sigmoid prediction head."""
+        _, nn_mod = _require_torch()
+        super().__init__()
+        effective_dropout = dropout if num_layers > 1 else 0.0
+        self.lstm = nn_mod.LSTM(
+            input_dim,
+            hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=effective_dropout,
+        )
+        self.head = nn_mod.Sequential(
+            nn_mod.Linear(hidden_dim, hidden_dim),
+            nn_mod.ReLU(),
+            nn_mod.Dropout(effective_dropout),
+            nn_mod.Linear(hidden_dim, output_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Predict normalized future SLA risks and KPIs from temporal features."""
+        torch_mod, _ = _require_torch()
+        _, (hidden, _) = self.lstm(x)
+        logits = self.head(hidden[-1])
+        return torch_mod.sigmoid(logits)
+
+
+def create_forecaster(cell_type: str = "gru", **kwargs):
+    """Factory to instantiate either GRU or LSTM forecaster."""
+    cell = cell_type.strip().lower()
+    if cell == "gru":
+        return TemporalKpiForecaster(**kwargs)
+    elif cell == "lstm":
+        return TemporalKpiForecasterLSTM(**kwargs)
+    else:
+        raise ValueError(f"Unknown cell_type: {cell_type}. Use 'gru' or 'lstm'.")
+
+
 def empty_feature(scenario: str = "normal") -> np.ndarray:
     """Return a neutral feature vector used for history left-padding."""
     frame = StepFrame(
@@ -540,8 +588,26 @@ def empty_feature(scenario: str = "normal") -> np.ndarray:
     return frame_to_feature(frame)
 
 
+def load_forecaster(path: str, device: torch.device | str = "cpu"):
+    """Load a forecaster checkpoint using the factory (GRU or LSTM)."""
+    torch_mod, _ = _require_torch()
+    ckpt = torch_mod.load(path, map_location=device, weights_only=False)
+    cell_type = ckpt.get("cell_type", "gru")
+    model = create_forecaster(
+        cell_type=cell_type,
+        input_dim=ckpt.get("input_dim", FEATURE_DIM),
+        hidden_dim=ckpt.get("hidden_dim", 64),
+        output_dim=ckpt.get("output_dim", FORECAST_DIM),
+        num_layers=ckpt.get("num_layers", 1),
+        dropout=ckpt.get("dropout", 0.0),
+    ).to(device)
+    model.load_state_dict(ckpt["model_state"])
+    model.eval()
+    return model, int(ckpt.get("sequence_len", 8)), cell_type
+
+
 def forecast_from_history(
-    model: TemporalKpiForecaster,
+    model,
     history: Iterable[np.ndarray],
     sequence_len: int,
     scenario: str,

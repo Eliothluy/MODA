@@ -22,6 +22,8 @@ from environments.rslaq_predictive import (
     FORECAST_DIM,
     RISK_DIM,
     TemporalKpiForecaster,
+    TemporalKpiForecasterLSTM,
+    create_forecaster,
     build_forecast_sequences,
 )
 from nsoran.compute_accounting import ComputeAccounting
@@ -85,6 +87,7 @@ def main():
     parser.add_argument("--source_format", default="auto",
                         choices=["auto", "step_metrics", "baseline"],
                         help="Input format: DRL step_metrics, ns-3 baseline, or auto-detect both")
+    parser.add_argument("--cell_type", type=str, default="gru", choices=["gru", "lstm"])
     parser.add_argument("--hidden_dim", type=int, default=64)
     parser.add_argument("--num_layers", type=int, default=1)
     parser.add_argument("--dropout", type=float, default=0.0)
@@ -129,7 +132,8 @@ def main():
         val_ds = TensorDataset(torch.from_numpy(x[val_idx]), torch.from_numpy(y[val_idx]))
         val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
 
-    model = TemporalKpiForecaster(
+    model = create_forecaster(
+        cell_type=args.cell_type,
         input_dim=FEATURE_DIM,
         hidden_dim=args.hidden_dim,
         output_dim=FORECAST_DIM,
@@ -201,6 +205,7 @@ def main():
             torch.save(
                 {
                     "model_state": model.state_dict(),
+                    "cell_type": args.cell_type,
                     "input_dim": FEATURE_DIM,
                     "output_dim": FORECAST_DIM,
                     "hidden_dim": args.hidden_dim,
@@ -215,6 +220,7 @@ def main():
     torch.save(
         {
             "model_state": model.state_dict(),
+            "cell_type": args.cell_type,
             "input_dim": FEATURE_DIM,
             "output_dim": FORECAST_DIM,
             "hidden_dim": args.hidden_dim,

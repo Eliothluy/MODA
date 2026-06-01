@@ -29,9 +29,11 @@ from environments.rslaq_predictive import (
     FORECAST_DIM,
     RISK_DIM,
     TemporalKpiForecaster,
+    TemporalKpiForecasterLSTM,
     StepFrame,
     forecast_from_history,
     frame_to_feature,
+    load_forecaster,
 )
 from nsoran.compute_accounting import ComputeAccounting
 
@@ -73,18 +75,7 @@ def choose_scenario(episode, mode, scenarios_list):
     return scenarios_list[0]
 
 
-def load_forecaster(path: str):
-    ckpt = torch.load(path, map_location=device, weights_only=False)
-    model = TemporalKpiForecaster(
-        input_dim=ckpt.get("input_dim", FEATURE_DIM),
-        hidden_dim=ckpt.get("hidden_dim", 64),
-        output_dim=ckpt.get("output_dim", FORECAST_DIM),
-        num_layers=ckpt.get("num_layers", 1),
-        dropout=ckpt.get("dropout", 0.0),
-    ).to(device)
-    model.load_state_dict(ckpt["model_state"])
-    model.eval()
-    return model, int(ckpt.get("sequence_len", 8))
+# load_forecaster is now imported from rslaq_predictive (factory-based)
 
 
 class VectorSACActor(nn.Module):
@@ -272,7 +263,7 @@ def train(args):
     set_seed(args.seed)
     os.makedirs(args.output, exist_ok=True)
 
-    forecaster, ckpt_sequence_len = load_forecaster(args.forecaster_checkpoint)
+    forecaster, ckpt_sequence_len, _ = load_forecaster(args.forecaster_checkpoint, device=device)
     sequence_len = args.sequence_len or ckpt_sequence_len
 
     scenario_list = args.scenarios.split(",") if args.scenarios else [args.scenario]
