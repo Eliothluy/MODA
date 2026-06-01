@@ -24,6 +24,7 @@ from environments.rslaq_predictive import (
     TemporalKpiForecaster,
     build_forecast_sequences,
 )
+from nsoran.compute_accounting import ComputeAccounting
 
 
 DEFAULT_SOURCE_ROOT = os.path.join(
@@ -94,6 +95,9 @@ def main():
     parser.add_argument("--val_fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--limit_files", type=int, default=0)
+    parser.add_argument("--compute_cost_per_hour_usd", type=float, default=0.0)
+    parser.add_argument("--compute_avg_power_watts", type=float, default=0.0)
+    parser.add_argument("--compute_electricity_cost_usd_per_kwh", type=float, default=0.0)
     args = parser.parse_args()
 
     set_seed(args.seed)
@@ -111,6 +115,13 @@ def main():
         raise RuntimeError(f"No forecast sequences found under {args.source_root}")
 
     train_idx, val_idx = split_by_sim_id(meta, args.val_fraction, args.seed)
+    compute_accounting = ComputeAccounting(
+        interaction_budget=int(train_idx.size) * args.epochs,
+        period_ms=0.0,
+        cost_per_hour_usd=args.compute_cost_per_hour_usd,
+        avg_power_watts=args.compute_avg_power_watts,
+        electricity_cost_usd_per_kwh=args.compute_electricity_cost_usd_per_kwh,
+    )
     train_ds = TensorDataset(torch.from_numpy(x[train_idx]), torch.from_numpy(y[train_idx]))
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = None
@@ -225,6 +236,7 @@ def main():
         "history": history,
         "best_checkpoint": best_path,
         "final_checkpoint": final_path,
+        "compute": compute_accounting.finish(),
     }
     with open(os.path.join(args.output, "forecaster_metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)

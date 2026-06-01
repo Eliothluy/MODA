@@ -28,6 +28,7 @@ import torch.optim as optim
 from collections import deque
 
 from environments.rslaq_env import RslaqEnv
+from nsoran.compute_accounting import ComputeAccounting
 
 # Default paths (relative to repo root)
 DEFAULT_NS3_PATH = os.path.join(
@@ -333,6 +334,14 @@ def train_sac(args):
         enable_step_logging=args.enable_step_logging,
         step_log_file=args.step_log_file,
     )
+    interaction_budget = args.episodes * env.max_steps
+    compute_accounting = ComputeAccounting(
+        interaction_budget=interaction_budget,
+        period_ms=args.periodMs,
+        cost_per_hour_usd=args.compute_cost_per_hour_usd,
+        avg_power_watts=args.compute_avg_power_watts,
+        electricity_cost_usd_per_kwh=args.compute_electricity_cost_usd_per_kwh,
+    )
 
     state_shape = env.observation_space.shape
     agent = SACAgent(
@@ -394,7 +403,8 @@ def train_sac(args):
         step = 0
 
         for step in range(env.max_steps):
-            action_cont = agent.act(state)
+            with compute_accounting.decision_timer.measure():
+                action_cont = agent.act(state)
             next_obs, reward, terminated, truncated, info = env.step(action_cont)
             next_state = next_obs.copy()
             done = terminated or truncated
@@ -472,7 +482,7 @@ def train_sac(args):
         "scenario_mode": mode,
         "scenarios": scenario_list,
         "episodes": args.episodes,
-        "interaction_budget": args.episodes * env.max_steps,
+        "interaction_budget": interaction_budget,
         "apply_p_sta": args.apply_p_sta,
         "p_sta_static_fraction": args.p_sta_static_fraction,
         "p_sta_weights": p_sta_weights.tolist(),
@@ -498,6 +508,7 @@ def train_sac(args):
         },
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
+        "compute": compute_accounting.finish(),
     }
     with open(os.path.join(args.output, "sac_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -590,6 +601,12 @@ def main():
                         help="Disable per-step step_metrics.csv logging")
     parser.add_argument("--step_log_file", type=str, default="step_metrics.csv",
                         help="Per-simulation step metrics filename")
+    parser.add_argument("--compute_cost_per_hour_usd", type=float, default=0.0,
+                        help="Hourly infrastructure cost used to estimate training spend")
+    parser.add_argument("--compute_avg_power_watts", type=float, default=0.0,
+                        help="Average host power draw used to estimate training energy")
+    parser.add_argument("--compute_electricity_cost_usd_per_kwh", type=float, default=0.0,
+                        help="Electricity price used to estimate local training energy cost")
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":

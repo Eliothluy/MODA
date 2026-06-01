@@ -34,6 +34,7 @@ from collections import deque
 
 from environments.rslaq_env import RslaqEnv
 from environments.rslaq_action_spaces import build_discrete_action_table
+from nsoran.compute_accounting import ComputeAccounting
 
 # Default paths
 DEFAULT_NS3_PATH = os.path.join(
@@ -317,6 +318,14 @@ def train_ddqn(args):
         "resource_waste_deadband": args.resource_waste_deadband,
     }
     p_sta_weights = parse_weights(args.p_sta_weights)
+    interaction_budget = args.episodes * min(args.ntsr, max_steps)
+    compute_accounting = ComputeAccounting(
+        interaction_budget=interaction_budget,
+        period_ms=args.periodMs,
+        cost_per_hour_usd=args.compute_cost_per_hour_usd,
+        avg_power_watts=args.compute_avg_power_watts,
+        electricity_cost_usd_per_kwh=args.compute_electricity_cost_usd_per_kwh,
+    )
 
     env = RslaqEnv(
         ns3_path=os.path.abspath(args.ns3_path),
@@ -399,7 +408,8 @@ def train_ddqn(args):
         ep_max_steps = min(args.ntsr, env.max_steps)
 
         for step in range(ep_max_steps):
-            action_idx = agent.act(state)
+            with compute_accounting.decision_timer.measure():
+                action_idx = agent.act(state)
             next_obs, reward, terminated, truncated, info = env.step(action_idx)
             next_state = next_obs.copy()
             done = terminated or truncated
@@ -479,7 +489,7 @@ def train_ddqn(args):
         "scenarios": scenario_list,
         "episodes": args.episodes,
         "ntsr": args.ntsr,
-        "interaction_budget": args.episodes * min(args.ntsr, max_steps),
+        "interaction_budget": interaction_budget,
         "include_scheduler": args.include_scheduler,
         "apply_p_sta": args.apply_p_sta,
         "p_sta_static_fraction": args.p_sta_static_fraction,
@@ -506,6 +516,7 @@ def train_ddqn(args):
         },
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
+        "compute": compute_accounting.finish(),
     }
     with open(os.path.join(args.output, "ddqn_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -613,6 +624,12 @@ def main():
                         help="Disable per-step step_metrics.csv logging")
     parser.add_argument("--step_log_file", type=str, default="step_metrics.csv",
                         help="Per-simulation step metrics filename")
+    parser.add_argument("--compute_cost_per_hour_usd", type=float, default=0.0,
+                        help="Hourly infrastructure cost used to estimate training spend")
+    parser.add_argument("--compute_avg_power_watts", type=float, default=0.0,
+                        help="Average host power draw used to estimate training energy")
+    parser.add_argument("--compute_electricity_cost_usd_per_kwh", type=float, default=0.0,
+                        help="Electricity price used to estimate local training energy cost")
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":

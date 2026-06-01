@@ -142,6 +142,40 @@ def step_metrics_summary(run_dir: Path):
     return result
 
 
+def compute_summary(run_dir: Path, algo: str):
+    summary_file = {
+        "ddqn": "ddqn_summary.json",
+        "sac": "sac_summary.json",
+        "predictive_sac": "predictive_sac_summary.json",
+    }.get(algo)
+    if not summary_file:
+        return {}
+    path = run_dir / summary_file
+    if not path.exists():
+        return {}
+    try:
+        compute = json.loads(path.read_text()).get("compute", {})
+    except json.JSONDecodeError:
+        return {}
+    training = compute.get("training", {})
+    xapp = compute.get("xapp_runtime", {})
+    cost = compute.get("cost_estimate", {})
+    return {
+        "compute_wall_time_s": safe_float(training.get("wall_time_s")),
+        "compute_cpu_time_s": safe_float(training.get("cpu_time_s")),
+        "compute_child_cpu_time_s": safe_float(training.get("child_cpu_time_s")),
+        "compute_peak_rss_mb": safe_float(training.get("peak_rss_mb")),
+        "compute_steps_per_second": safe_float(training.get("steps_per_second")),
+        "xapp_inference_ms_mean": safe_float(xapp.get("inference_ms_mean")),
+        "xapp_inference_ms_p95": safe_float(xapp.get("inference_ms_p95")),
+        "xapp_deadline_usage_pct": safe_float(xapp.get("deadline_usage_pct")),
+        "compute_cloud_cost_usd": safe_float(cost.get("cloud_cost_usd")),
+        "compute_cost_per_1000_steps_usd": safe_float(cost.get("cost_per_1000_steps_usd")),
+        "compute_energy_kwh": safe_float(cost.get("energy_kwh")),
+        "compute_energy_cost_usd": safe_float(cost.get("energy_cost_usd")),
+    }
+
+
 def collect(root: Path, line_name: str):
     rows = []
     if not root.exists():
@@ -160,6 +194,7 @@ def collect(root: Path, line_name: str):
         }
         row.update(training_log_summary(run_dir, algo))
         row.update(step_metrics_summary(run_dir))
+        row.update(compute_summary(run_dir, algo))
         rows.append(row)
     return rows
 
@@ -180,6 +215,12 @@ def aggregate(rows):
         "resource_efficiency", "need_allocation_match", "over_allocation",
         "under_allocation", "action_smoothness_penalty",
         "resource_efficient_shaping",
+        "compute_wall_time_s", "compute_cpu_time_s", "compute_child_cpu_time_s",
+        "compute_peak_rss_mb", "compute_steps_per_second",
+        "xapp_inference_ms_mean", "xapp_inference_ms_p95",
+        "xapp_deadline_usage_pct", "compute_cloud_cost_usd",
+        "compute_cost_per_1000_steps_usd", "compute_energy_kwh",
+        "compute_energy_cost_usd",
     ]
     for key, items in sorted(groups.items()):
         row = {"line": key[0], "algo": key[1], "scenario": key[2], "runs": len(items)}

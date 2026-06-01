@@ -66,6 +66,9 @@ SAC_TAU="${SAC_TAU:-0.005}"
 SAC_ALPHA="${SAC_ALPHA:-0.1}"
 RISK_PENALTY="${RISK_PENALTY:-0.5}"
 SOFT_PENALTY="${SOFT_PENALTY:-0.2}"
+COMPUTE_COST_PER_HOUR_USD="${COMPUTE_COST_PER_HOUR_USD:-0.0}"
+COMPUTE_AVG_POWER_WATTS="${COMPUTE_AVG_POWER_WATTS:-0.0}"
+COMPUTE_ELECTRICITY_COST_USD_PER_KWH="${COMPUTE_ELECTRICITY_COST_USD_PER_KWH:-0.0}"
 BUILD_NS3="${BUILD_NS3:-1}"
 RUN_FORECASTER="${RUN_FORECASTER:-1}"
 RUN_PREDICTIVE_SAC="${RUN_PREDICTIVE_SAC:-1}"
@@ -87,6 +90,7 @@ echo "  forecast:          seq=${FORECAST_SEQUENCE_LEN}, horizon=${FORECAST_HORI
 echo "  penalties:         outage=${RISK_PENALTY}, soft=${SOFT_PENALTY}"
 echo "  reward mode:       ${REWARD_MODE}"
 echo "  contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, embb_guard=${EMBB_SOFT_GUARD_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}"
+echo "  compute cost:      hourly=${COMPUTE_COST_PER_HOUR_USD}, power=${COMPUTE_AVG_POWER_WATTS}W, electricity=${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}/kWh"
 echo "  run forecaster:    ${RUN_FORECASTER}"
 echo "  run predictive SAC:${RUN_PREDICTIVE_SAC}"
 echo "  run comparison:    ${RUN_COMPARISON}"
@@ -112,6 +116,9 @@ if [[ "${RUN_FORECASTER}" == "1" ]]; then
         --epochs "${FORECASTER_EPOCHS}" \
         --batch_size "${FORECASTER_BATCH_SIZE}" \
         --lr "${FORECASTER_LR}" \
+        --compute_cost_per_hour_usd "${COMPUTE_COST_PER_HOUR_USD}" \
+        --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
+        --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
         --limit_files "${FORECASTER_LIMIT_FILES}"
 else
     echo "[forecaster] Skipping forecaster training because RUN_FORECASTER=${RUN_FORECASTER}"
@@ -160,6 +167,9 @@ if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
                 --soft_penalty "${SOFT_PENALTY}" \
                 --forecaster_checkpoint "${FORECASTER_CHECKPOINT}" \
                 --sequence_len "${FORECAST_SEQUENCE_LEN}" \
+                --compute_cost_per_hour_usd "${COMPUTE_COST_PER_HOUR_USD}" \
+                --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
+                --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
                 --output "${OUTPUT_ROOT}/predictive_sac_${scenario}_seed${seed}"
         done
     done
@@ -209,6 +219,11 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
     "action_smoothness_weight": ${ACTION_SMOOTHNESS_WEIGHT},
     "resource_dynamic_need_weight": ${RESOURCE_DYNAMIC_NEED_WEIGHT},
     "resource_waste_deadband": ${RESOURCE_WASTE_DEADBAND}
+  },
+  "compute_cost": {
+    "cost_per_hour_usd": ${COMPUTE_COST_PER_HOUR_USD},
+    "avg_power_watts": ${COMPUTE_AVG_POWER_WATTS},
+    "electricity_cost_usd_per_kwh": ${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}
   },
   "build_ns3": ${BUILD_NS3},
   "run_forecaster": ${RUN_FORECASTER},

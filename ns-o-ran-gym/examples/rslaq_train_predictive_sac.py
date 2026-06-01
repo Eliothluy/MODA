@@ -15,6 +15,7 @@ import argparse
 import csv
 import json
 import random
+import time
 from collections import deque
 
 import numpy as np
@@ -32,6 +33,7 @@ from environments.rslaq_predictive import (
     forecast_from_history,
     frame_to_feature,
 )
+from nsoran.compute_accounting import ComputeAccounting
 
 
 DEFAULT_NS3_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "ns-3-dev")
@@ -327,6 +329,14 @@ def train(args):
         enable_step_logging=args.enable_step_logging,
         step_log_file=args.step_log_file,
     )
+    interaction_budget = args.episodes * env.max_steps
+    compute_accounting = ComputeAccounting(
+        interaction_budget=interaction_budget,
+        period_ms=args.periodMs,
+        cost_per_hour_usd=args.compute_cost_per_hour_usd,
+        avg_power_watts=args.compute_avg_power_watts,
+        electricity_cost_usd_per_kwh=args.compute_electricity_cost_usd_per_kwh,
+    )
 
     state_dim = int(np.prod(env.observation_space.shape)) + FORECAST_DIM + 3
     agent = PredictiveSACAgent(
@@ -381,7 +391,9 @@ def train(args):
         prb_pct = [0.0, 0.0, 0.0]
 
         for step in range(env.max_steps):
+            decision_start = time.perf_counter()
             action = agent.act(state)
+            policy_decision_ms = (time.perf_counter() - decision_start) * 1000.0
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
 
@@ -389,8 +401,13 @@ def train(args):
             prb_pct = action_info.get("prb_pct", [0.0, 0.0, 0.0])
             last_action = np.asarray(prb_pct, dtype=np.float32) / 100.0
             history.append(feature_from_transition(next_obs, reward, info, chosen_scenario))
+            forecast_start = time.perf_counter()
             next_forecast = forecast_from_history(
                 forecaster, history, sequence_len, chosen_scenario, device=device
+            )
+            forecast_decision_ms = (time.perf_counter() - forecast_start) * 1000.0
+            compute_accounting.decision_timer.record_ms(
+                policy_decision_ms + forecast_decision_ms
             )
 
             outage_risk = float(np.max(forecast[:3]))
@@ -470,7 +487,7 @@ def train(args):
         "scenario_mode": mode,
         "scenarios": scenario_list,
         "episodes": args.episodes,
-        "interaction_budget": args.episodes * env.max_steps,
+        "interaction_budget": interaction_budget,
         "forecaster_checkpoint": os.path.abspath(args.forecaster_checkpoint),
         "sequence_len": sequence_len,
         "forecast_dim": FORECAST_DIM,
@@ -495,6 +512,7 @@ def train(args):
         },
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
+        "compute": compute_accounting.finish(),
     }
     with open(os.path.join(args.output, "predictive_sac_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -559,6 +577,9 @@ def main():
     parser.set_defaults(enable_step_logging=True)
     parser.add_argument("--no-step-logging", action="store_false", dest="enable_step_logging")
     parser.add_argument("--step_log_file", type=str, default="step_metrics.csv")
+    parser.add_argument("--compute_cost_per_hour_usd", type=float, default=0.0)
+    parser.add_argument("--compute_avg_power_watts", type=float, default=0.0)
+    parser.add_argument("--compute_electricity_cost_usd_per_kwh", type=float, default=0.0)
     args = parser.parse_args()
 
     if args.max_steps.lower() == "auto":
