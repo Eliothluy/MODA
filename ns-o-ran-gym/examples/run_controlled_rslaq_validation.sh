@@ -37,6 +37,7 @@ DDQN_TERMINATE_ON_SLA_VIOLATION="${DDQN_TERMINATE_ON_SLA_VIOLATION:-0}"
 SAC_TERMINATE_ON_SLA_VIOLATION="${SAC_TERMINATE_ON_SLA_VIOLATION:-0}"
 
 P_STA_STATIC_FRACTION="${P_STA_STATIC_FRACTION:-0.5}"
+RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION="${RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION:-0.25}"
 P_STA_WEIGHTS="${P_STA_WEIGHTS:-0.3333,0.4000,0.2667}"
 REWARD_ALPHA="${REWARD_ALPHA:-0.3333}"
 REWARD_BETA="${REWARD_BETA:-0.4000}"
@@ -58,10 +59,12 @@ SAC_GAMMA="${SAC_GAMMA:-0.99}"
 SAC_TAU="${SAC_TAU:-0.005}"
 SAC_ALPHA="${SAC_ALPHA:-0.1}"
 
-RESOURCE_EFFICIENCY_WEIGHT="${RESOURCE_EFFICIENCY_WEIGHT:-0.20}"
-NEED_MATCH_WEIGHT="${NEED_MATCH_WEIGHT:-0.20}"
-WASTE_PENALTY_WEIGHT="${WASTE_PENALTY_WEIGHT:-0.20}"
-UNDER_ALLOCATION_PENALTY_WEIGHT="${UNDER_ALLOCATION_PENALTY_WEIGHT:-0.20}"
+RESOURCE_EFFICIENCY_WEIGHT="${RESOURCE_EFFICIENCY_WEIGHT:-0.25}"
+NEED_MATCH_WEIGHT="${NEED_MATCH_WEIGHT:-0.30}"
+WASTE_PENALTY_WEIGHT="${WASTE_PENALTY_WEIGHT:-0.35}"
+UNDER_ALLOCATION_PENALTY_WEIGHT="${UNDER_ALLOCATION_PENALTY_WEIGHT:-0.15}"
+EMBB_SOFT_GUARD_PENALTY_WEIGHT="${EMBB_SOFT_GUARD_PENALTY_WEIGHT:-0.25}"
+EMBB_SOFT_GUARD_RATIO="${EMBB_SOFT_GUARD_RATIO:-0.80}"
 ACTION_SMOOTHNESS_WEIGHT="${ACTION_SMOOTHNESS_WEIGHT:-0.05}"
 RESOURCE_DYNAMIC_NEED_WEIGHT="${RESOURCE_DYNAMIC_NEED_WEIGHT:-0.75}"
 RESOURCE_WASTE_DEADBAND="${RESOURCE_WASTE_DEADBAND:-0.03}"
@@ -92,7 +95,7 @@ RSLAQ controlled validation
   seeds:             ${SEEDS[*]}
   budget:            ${EPISODES} episodes x ${EPISODE_STEPS} steps = $((EPISODES * EPISODE_STEPS))
   simTime:           ${SIM_TIME}s
-  P_STA fraction:    ${P_STA_STATIC_FRACTION}
+  P_STA fraction:    paper=${P_STA_STATIC_FRACTION}, contribution=${RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION}
   P_STA weights:     ${P_STA_WEIGHTS}
   reward weights:    ${REWARD_ALPHA},${REWARD_BETA},${REWARD_GAMMA}
   baselines:         ${RUN_BASELINES} (${BASELINE_MODES})
@@ -106,7 +109,7 @@ RSLAQ controlled validation
   DRL jobs:          ${DRL_JOBS}
   step logging:      ${ENABLE_STEP_LOGGING}
   DRL comparison:    ${RUN_DRL_COMPARISON}
-  contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}
+  contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, embb_guard=${EMBB_SOFT_GUARD_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}
 EOF
 
 if [[ "${BUILD_NS3}" == "1" ]]; then
@@ -137,8 +140,12 @@ run_ddqn() {
     local label="$2"
     local scenario="$3"
     local seed="$4"
+    local p_sta_fraction="${P_STA_STATIC_FRACTION}"
     local terminal_args=()
     local step_logging_args=()
+    if [[ "${reward_mode}" == "resource_efficient" ]]; then
+        p_sta_fraction="${RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION}"
+    fi
     if [[ "${DDQN_TERMINATE_ON_SLA_VIOLATION}" == "1" ]]; then
         terminal_args+=(--terminate-on-sla-violation)
     fi
@@ -169,7 +176,7 @@ run_ddqn() {
         --epsilon_min "${DDQN_EPS_MIN}" \
         --epsilon_decay "${DDQN_EPS_DECAY}" \
         --target_update "${DDQN_TARGET_UPDATE}" \
-        --p_sta_static_fraction "${P_STA_STATIC_FRACTION}" \
+        --p_sta_static_fraction "${p_sta_fraction}" \
         --p_sta_weights "${P_STA_WEIGHTS}" \
         --reward_alpha "${REWARD_ALPHA}" \
         --reward_beta "${REWARD_BETA}" \
@@ -179,6 +186,8 @@ run_ddqn() {
         --need_match_weight "${NEED_MATCH_WEIGHT}" \
         --waste_penalty_weight "${WASTE_PENALTY_WEIGHT}" \
         --under_allocation_penalty_weight "${UNDER_ALLOCATION_PENALTY_WEIGHT}" \
+        --embb_soft_guard_penalty_weight "${EMBB_SOFT_GUARD_PENALTY_WEIGHT}" \
+        --embb_soft_guard_ratio "${EMBB_SOFT_GUARD_RATIO}" \
         --action_smoothness_weight "${ACTION_SMOOTHNESS_WEIGHT}" \
         --resource_dynamic_need_weight "${RESOURCE_DYNAMIC_NEED_WEIGHT}" \
         --resource_waste_deadband "${RESOURCE_WASTE_DEADBAND}" \
@@ -192,8 +201,12 @@ run_sac() {
     local label="$2"
     local scenario="$3"
     local seed="$4"
+    local p_sta_fraction="${P_STA_STATIC_FRACTION}"
     local terminal_args=()
     local step_logging_args=()
+    if [[ "${reward_mode}" == "resource_efficient" ]]; then
+        p_sta_fraction="${RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION}"
+    fi
     if [[ "${SAC_TERMINATE_ON_SLA_VIOLATION}" == "1" ]]; then
         terminal_args+=(--terminate-on-sla-violation)
     fi
@@ -221,7 +234,7 @@ run_sac() {
         --gamma "${SAC_GAMMA}" \
         --tau "${SAC_TAU}" \
         --alpha "${SAC_ALPHA}" \
-        --p_sta_static_fraction "${P_STA_STATIC_FRACTION}" \
+        --p_sta_static_fraction "${p_sta_fraction}" \
         --p_sta_weights "${P_STA_WEIGHTS}" \
         --reward_alpha "${REWARD_ALPHA}" \
         --reward_beta "${REWARD_BETA}" \
@@ -231,6 +244,8 @@ run_sac() {
         --need_match_weight "${NEED_MATCH_WEIGHT}" \
         --waste_penalty_weight "${WASTE_PENALTY_WEIGHT}" \
         --under_allocation_penalty_weight "${UNDER_ALLOCATION_PENALTY_WEIGHT}" \
+        --embb_soft_guard_penalty_weight "${EMBB_SOFT_GUARD_PENALTY_WEIGHT}" \
+        --embb_soft_guard_ratio "${EMBB_SOFT_GUARD_RATIO}" \
         --action_smoothness_weight "${ACTION_SMOOTHNESS_WEIGHT}" \
         --resource_dynamic_need_weight "${RESOURCE_DYNAMIC_NEED_WEIGHT}" \
         --resource_waste_deadband "${RESOURCE_WASTE_DEADBAND}" \
@@ -652,6 +667,7 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "enable_step_logging": ${ENABLE_STEP_LOGGING},
   "run_drl_comparison": ${RUN_DRL_COMPARISON},
   "p_sta_static_fraction": ${P_STA_STATIC_FRACTION},
+  "resource_efficient_p_sta_static_fraction": ${RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION},
   "p_sta_weights": "${P_STA_WEIGHTS}",
   "reward_weights": "${REWARD_ALPHA},${REWARD_BETA},${REWARD_GAMMA}",
   "resource_efficient_reward": {
@@ -659,6 +675,8 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
     "need_match_weight": ${NEED_MATCH_WEIGHT},
     "waste_penalty_weight": ${WASTE_PENALTY_WEIGHT},
     "under_allocation_penalty_weight": ${UNDER_ALLOCATION_PENALTY_WEIGHT},
+    "embb_soft_guard_penalty_weight": ${EMBB_SOFT_GUARD_PENALTY_WEIGHT},
+    "embb_soft_guard_ratio": ${EMBB_SOFT_GUARD_RATIO},
     "action_smoothness_weight": ${ACTION_SMOOTHNESS_WEIGHT},
     "resource_dynamic_need_weight": ${RESOURCE_DYNAMIC_NEED_WEIGHT},
     "resource_waste_deadband": ${RESOURCE_WASTE_DEADBAND}

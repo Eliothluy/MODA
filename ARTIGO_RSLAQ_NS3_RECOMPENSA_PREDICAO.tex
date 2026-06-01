@@ -1,0 +1,966 @@
+\documentclass[10pt,a4paper]{IEEEtran}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{cite}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+}
+
+% ------------------------------------------------------------
+\title{RSLAQ-NS3: Otimiza\c{c}\~{a}o SLA-Aware de Recursos em Redes
+       5G/O-RAN com Recompensa Eficiente e Predi\c{c}\~{a}o
+       Temporal de KPIs}
+
+\author{Elioth Sanabria%
+        \thanks{E-mail: elioth.sanabria@itec.ufpa.br}}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+A evolu\c{c}\~{a}o das redes 5G e 6G torna a opera\c{c}\~{a}o de
+fatias de rede um problema simultaneamente t\'{e}cnico e
+contratual: al\'{e}m de maximizar vaz\~{a}o ou reduzir atraso, o
+controlador deve manter indicadores de desempenho dentro dos
+limites definidos por acordos de n\'{i}vel de servi\c{c}o
+(SLAs). O trabalho RSLAQ prop\^{o}s um xApp baseado em
+aprendizado por refor\c{c}o profundo para operar slices eMBB,
+URLLC e MTC em uma arquitetura O-RAN, integrando SLAs
+diretamente na fun\c{c}\~{a}o de recompensa. Este artigo
+apresenta uma reprodu\c{c}\~{a}o e extens\~{a}o do RSLAQ em um
+ambiente ns-3/5G-LENA integrado ao ns-o-ran-gym. A primeira
+contribui\c{c}\~{a}o \'{e} metodol\'{o}gica: migramos a
+formula\c{c}\~{a}o do RSLAQ para uma simula\c{c}\~{a}o de
+sistema baseada em ns-3, com topologia 5G, FlowMonitor,
+escalonamento MAC slice-aware e comunica\c{c}\~{a}o online com
+agentes DRL via IPC. A segunda contribui\c{c}\~{a}o \'{e} uma
+fun\c{c}\~{a}o de recompensa orientada \`{a} efici\^{e}ncia de
+recursos, que preserva a penaliza\c{c}\~{a}o SLA-aware do RSLAQ
+e adiciona shaping somente quando n\~{a}o h\'{a}
+viola\c{c}\~{a}o de SLA. A terceira contribui\c{c}\~{a}o
+\'{e} uma extens\~{a}o preditiva, na qual um previsor temporal
+baseado em GRU estima risco futuro de outage, viola\c{c}\~{a}o
+soft e KPIs normalizados a partir de janelas hist\'{o}ricas de
+estados, a\c{c}\~{o}es e recompensas. A proposta \'{e} avaliada
+contra o RSLAQ fiel ao artigo e contra baselines nativos do
+ns-3, permitindo separar ader\^{e}ncia a SLA, efici\^{e}ncia de
+aloca\c{c}\~{a}o de PRBs e benef\'{i}cio da antecipa\c{c}\~{a}o
+temporal de risco.
+\end{abstract}
+
+\begin{IEEEkeywords}
+O-RAN, RAN slicing, SLA, 5G, ns-3, 5G-LENA, aprendizado por
+refor\c{c}o profundo, SAC, DDQN, predi\c{c}\~{a}o temporal.
+\end{IEEEkeywords}
+
+% ------------------------------------------------------------
+\section{Introdu\c{c}\~{a}o}
+\label{sec:intro}
+
+Redes m\'{o}veis modernas precisam atender servi\c{c}os
+heterog\^{e}neos em uma mesma infraestrutura f\'{i}sica.
+Aplica\c{c}\~{o}es eMBB demandam alta vaz\~{a}o, URLLC exige
+baixa lat\^{e}ncia e filas reduzidas, enquanto MTC envolve
+grande n\'{u}mero de dispositivos e padr\~{o}es de tr\'{a}fego
+intermitentes. A t\'{e}cnica de \emph{network slicing} permite
+isolar logicamente esses servi\c{c}os, mas a simples
+divis\~{a}o est\'{a}tica de recursos pode gerar desperd\'{i}cio
+quando uma fatia est\'{a} ociosa ou \emph{outage} quando a
+demanda se desloca rapidamente entre fatias.
+
+O paradigma O-RAN introduz controladores inteligentes capazes
+de transformar pol\'{i}ticas de alto n\'{i}vel em a\c{c}\~{o}es
+de controle na RAN. Nesse contexto, xApps no Near-RT RIC podem
+observar KPIs, decidir aloca\c{c}\~{a}o de PRBs e selecionar
+pol\'{i}ticas de escalonamento em intervalos compat\'{i}veis com
+a opera\c{c}\~{a}o da rede. O RSLAQ~\cite{yungaicela2026rslaq}
+avan\c{c}a essa linha ao incorporar SLAs explicitamente no
+processo de aprendizado, fazendo com que o agente n\~{a}o apenas
+otimize m\'{e}tricas m\'{e}dias, mas receba penaliza\c{c}\~{o}es
+diretas quando os requisitos contratuais deixam de ser atendidos.
+
+Este artigo parte do RSLAQ como refer\^{e}ncia cient\'{i}fica e
+pergunta: como reproduzir e estender essa ideia em um ambiente
+ns-3/5G-LENA online, com tr\'{a}fego de rede, escalonamento
+MAC, buffers, perdas e din\^{a}mica temporal observ\'{a}veis? A
+resposta envolve tr\^{e}s escolhas centrais. Primeiro, manter
+uma implementa\c{c}\~{a}o fiel da recompensa RSLAQ como
+baseline experimental. Segundo, propor uma recompensa adicional
+para efici\^{e}ncia de recursos por slice, sem diluir a
+sem\^{a}ntica de SLA da Eq.~12 do RSLAQ. Terceiro, adicionar
+predi\c{c}\~{a}o temporal de KPIs para que o agente possa
+antecipar risco de viola\c{c}\~{a}o antes que o estado corrente
+j\'{a} esteja degradado.
+
+As principais contribui\c{c}\~{o}es deste trabalho s\~{a}o:
+
+\begin{enumerate}
+\item Migra\c{c}\~{a}o da formula\c{c}\~{a}o RSLAQ para um
+  ambiente ns-3/5G-LENA com simula\c{c}\~{a}o de sistema de alta
+  fidelidade, FlowMonitor, escalonamento MAC slice-aware e
+  comunica\c{c}\~{a}o online com agentes DRL via IPC.
+
+\item Uma fun\c{c}\~{a}o de recompensa orientada \`{a}
+  efici\^{e}ncia de recursos (\emph{resource\_efficient}), que
+  preserva a estrutura SLA-aware do RSLAQ e adiciona shaping
+  condicionado ao cumprimento de SLA, incentivando alinhamento
+  entre demanda observada e aloca\c{c}\~{a}o de PRBs.
+
+\item Uma extens\~{a}o preditiva baseada em GRU, que estima
+  risco futuro de outage e viola\c{c}\~{a}o soft a partir de
+  janelas temporais de estados, a\c{c}\~{o}es e recompensas,
+  permitindo ao agente SAC antecipar degrada\c{c}\~{a}o de QoS.
+\end{enumerate}
+
+O restante deste artigo est\'{a} organizado como segue. A
+Se\c{c}\~{a}o~\ref{sec:fundamentacao} revisa os fundamentos
+do RSLAQ. A Se\c{c}\~{a}o~\ref{sec:metodologia} descreve a
+metodologia de simula\c{c}\~{a}o com ns-3/5G-LENA. As
+Se\c{c}\~{o}es~\ref{sec:reward_paper} e~\ref{sec:reward_eff}
+apresentam a recompensa fiel ao artigo e a recompensa proposta
+para efici\^{e}ncia de recursos. A
+Se\c{c}\~{a}o~\ref{sec:predictive} detalha o m\'{o}dulo
+preditivo. As Se\c{c}\~{o}es~\ref{sec:defesa} e~\ref{sec:ameacas}
+discutem a defesa metodol\'{o}gica e amea\c{c}as \`{a} validade.
+A Se\c{c}\~{a}o~\ref{sec:conclusao} conclui o artigo.
+
+% ------------------------------------------------------------
+\section{Fundamenta\c{c}\~{a}o: RSLAQ e SLA-Aware DRL}
+\label{sec:fundamentacao}
+
+O RSLAQ modela a opera\c{c}\~{a}o de QoS em O-RAN como um
+problema de aprendizado por refor\c{c}o no qual o agente observa
+estat\'{i}sticas da RAN e retorna a\c{c}\~{o}es de controle para
+as fatias. Para tr\^{e}s slices, o estado segue a estrutura
+matricial~\cite{yungaicela2026rslaq}:
+
+\begin{equation}
+s_t =
+\begin{bmatrix}
+btx_{0} & btx_{1} & btx_{2} & btx_{cell} \\
+bfs_{0} & bfs_{1} & bfs_{2} & bfs_{cell} \\
+rsh_{0} & rsh_{1} & rsh_{2} & rsh_{cell} \\
+tdp_{0} & tdp_{1} & tdp_{2} & tdp_{cell}
+\end{bmatrix},
+\label{eq:state}
+\end{equation}
+
+em que $btx$ representa bytes transmitidos ou ofertados, $bfs$
+representa ocupa\c{c}\~{a}o de buffer, $rsh$ representa
+participa\c{c}\~{a}o de recursos e $tdp$ representa perdas ou
+pacotes descartados. Na nossa implementa\c{c}\~{a}o, essa
+observa\c{c}\~{a}o \'{e} implementada como uma matriz
+$4 \times 4$ no modo \texttt{observation\_mode="paper"}.
+
+A a\c{c}\~{a}o no RSLAQ combina aloca\c{c}\~{a}o de recursos
+por slice e, quando aplic\'{a}vel, sele\c{c}\~{a}o de escalonador
+intra-slice. A formula\c{c}\~{a}o original discretiza
+propor\c{c}\~{o}es de PRBs e combina essas propor\c{c}\~{o}es
+com escalonadores como RR, PF e BCQI~\cite{yungaicela2026rslaq}:
+
+\begin{equation}
+\mathcal{A} = \big\{(\{p_1,\dots,p_J\}, sch) :
+       \sum_{j=1}^{J} p_j = 1,\;
+       sch \in \{\text{RR}, \text{PF}, \text{BCQI}\},\;
+       p_j \in \mathcal{P}\big\},
+\label{eq:action_set}
+\end{equation}
+
+onde $\mathcal{P} = \{0, 0.1, \dots, 1.0\}$. Na
+reprodu\c{c}\~{a}o com DDQN, essa estrutura discreta
+\'{e} preservada, resultando em 198 a\c{c}\~{o}es com
+sele\c{c}\~{a}o de scheduler e 66 sem tal sele\c{c}\~{a}o. Na
+extens\~{a}o com SAC, a a\c{c}\~{a}o \'{e} cont\'{i}nua e
+representa diretamente a propor\c{c}\~{a}o de PRBs por slice.
+
+O ponto central do RSLAQ \'{e} a fun\c{c}\~{a}o de recompensa.
+Ela separa m\'{e}tricas de otimiza\c{c}\~{a}o de condi\c{c}\~{o}es
+de viola\c{c}\~{a}o de SLA, de modo que estados sem
+viola\c{c}\~{a}o recebam uma recompensa positiva ponderada,
+enquanto estados com outage ou viola\c{c}\~{a}o soft recebam
+penaliza\c{c}\~{o}es especiais (Se\c{c}\~{a}o~\ref{sec:reward_paper}).
+
+% ------------------------------------------------------------
+\section{Metodologia de Simula\c{c}\~{a}o com ns-3/5G-LENA}
+\label{sec:metodologia}
+
+\subsection{Ambiente de rede}
+
+A implementa\c{c}\~{a}o foi desenvolvida em dois componentes
+acoplados. O primeiro \'{e} o simulador C++ em
+\texttt{ns-3-dev/scratch/rslaq/}, respons\'{a}vel pela rede 5G.
+O segundo \'{e} o pacote Python \texttt{ns-o-ran-gym},
+respons\'{a}vel pelo ambiente Gymnasium, agentes DRL,
+recompensa, logs e extens\~{a}o preditiva.
+
+A topologia simulada no ns-3 segue o fluxo:
+
+\begin{quote}
+  \texttt{remoteHost} $\rightarrow$ PGW/EPC $\rightarrow$
+  gNB NR $\rightarrow$ UEs NR.
+\end{quote}
+
+O enlace entre \texttt{remoteHost} e PGW/EPC usa ponto-a-ponto
+de alta capacidade (100\,Gbps). A c\'{e}lula possui um gNB fixo
+e UEs est\'{a}ticos distribu\'{i}dos uniformemente em um disco
+de 100\,m ao redor do gNB. Os UEs s\~{a}o associados a
+tr\^{e}s slices l\'{o}gicos por faixas de identificador: slice~0
+para eMBB, slice~1 para URLLC e slice~2 para MTC. Cada UE
+recebe um fluxo UDP downlink, e a porta UDP de destino \'{e}
+usada para mapear estat\'{i}sticas do FlowMonitor de volta para
+UE e slice.
+
+O perfil f\'{i}sico padr\~{a}o utiliza portadora em
+3.55\,GHz, largura de banda de 100\,MHz, numerologia $\mu=1$
+com SCS de 30\,kHz, canal 3GPP UMi, sombreamento
+configur\'{a}vel, antena de gNB do tipo painel com
+\emph{downtilt} de $6^\circ$ e antenas isotr\'{o}picas nos UEs.
+A simula\c{c}\~{a}o registra s\'{e}ries temporais por UE e
+agregados por slice, incluindo vaz\~{a}o, bytes
+transmitidos/recebidos, ocupa\c{c}\~{a}o de buffer, perdas e
+participa\c{c}\~{a}o real de recursos.
+
+\subsection{Modos de execu\c{c}\~{a}o}
+
+O simulador opera em dois modos. No modo \emph{standalone}, o
+ns-3 executa campanhas de baseline sem agente Python. Ao final,
+gera \texttt{timeseries.csv}, \texttt{slice\_alloc.csv},
+\texttt{summary.csv} e \texttt{metadata.json}. Esse modo permite
+avaliar escalonadores nativos e variantes slice-aware sem DRL
+(\texttt{pure\_rr}, \texttt{pure\_pf}, \texttt{pure\_bcqi} e
+variantes \texttt{slice\_*}).
+
+No modo \emph{online}, o simulador usa IPC com sem\'{a}foros
+POSIX e arquivos CSV. A cada per\'{i}odo de controle
+(\texttt{periodMs}, tipicamente 10\,ms), o ns-3 escreve KPIs
+agregados em \texttt{rslaq-kpms.txt}, sinaliza o ambiente
+Python, aguarda a a\c{c}\~{a}o do agente em
+\texttt{rslaq\_actions\_for\_ns3.csv} e aplica os percentuais
+de PRBs no \texttt{RslaqMacScheduler}. Esse acoplamento permite
+treinar DDQN, SAC e SAC preditivo com o simulador em
+execu\c{c}\~{a}o, em vez de apenas usar traces offline.
+
+\subsection{Diferen\c{c}as em rela\c{c}\~{a}o ao RSLAQ original}
+\label{sec:diff_rslaq}
+
+O RSLAQ original foi formulado e avaliado em simula\c{c}\~{a}o
+sist\^{e}mica pr\'{o}pria do artigo~\cite{yungaicela2026rslaq}.
+Nossa implementa\c{c}\~{a}o preserva a formula\c{c}\~{a}o de
+estado, a l\'{o}gica de a\c{c}\~{o}es e a recompensa SLA-aware,
+mas muda a infraestrutura experimental para ns-3/5G-LENA. Essa
+diferen\c{c}a \'{e} metodologicamente relevante por quatro
+motivos.
+
+\begin{enumerate}
+\item O ns-3 explicita efeitos de rede como buffers, perdas,
+  atraso de aplica\c{c}\~{a}o, attach de UEs, HARQ,
+  escalonamento MAC e varia\c{c}\~{a}o de canal.
+\item A coleta de KPIs depende de FlowMonitor e do mapeamento
+  entre fluxos UDP, UEs e slices, aproximando o pipeline de uma
+  telemetria de rede real.
+\item O agente atua online por IPC, de modo que cada a\c{c}\~{a}o
+  altera a execu\c{c}\~{a}o subsequente da simula\c{c}\~{a}o.
+\item A implementa\c{c}\~{a}o separa o baseline fiel ao artigo
+  (\texttt{reward\_mode="paper"}) da contribui\c{c}\~{a}o
+  proposta (\texttt{reward\_mode="resource\_efficient"}),
+  evitando comparar recompensas heterog\^{e}neas como se fossem
+  a mesma m\'{e}trica.
+\end{enumerate}
+
+O modo \texttt{paper} responde se a formula\c{c}\~{a}o RSLAQ foi
+reproduzida corretamente no ns-3. O modo
+\texttt{resource\_efficient} responde se a nova proposta melhora
+o uso de recursos mantendo a disciplina de SLA.
+
+\subsection{Cen\'{a}rios de tr\'{a}fego}
+
+Cinco cen\'{a}rios s\~{a}o empregados para cobrir desde baixa
+carga at\'{e} escassez de recursos, conforme a Tabela~\ref{tab:scenarios}.
+
+\begin{table}[t]
+\centering
+\caption{Cen\'{a}rios de tr\'{a}fego RSLAQ utilizados na
+         avalia\c{c}\~{a}o.}
+\label{tab:scenarios}
+\begin{tabular}{lccc}
+\toprule
+Cen\'{a}rio        & UEs eMBB & UEs URLLC & UEs MTC \\
+\midrule
+low\_traffic       & 4  & 4  & 4  \\
+normal             & 8  & 6  & 4  \\
+congestion         & 10 & 8  & 6  \\
+stressed           & 12 & 10 & 8  \\
+insufficient\_resources & 14 & 12 & 10 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+O \texttt{RslaqMacScheduler} recebe propor\c{c}\~{o}es de slice,
+particiona o or\c{c}amento de RBGs/PRBs e aplica
+escalonamento RR, PF ou BCQI dentro de cada slice. Fatias sem
+tr\'{a}fego ativo t\^{e}m seu or\c{c}amento redistribu\'{i}do
+para slices com demanda, evitando desperd\'{i}cio.
+
+% ------------------------------------------------------------
+\section{Recompensa RSLAQ Fiel ao Artigo}
+\label{sec:reward_paper}
+
+No modo \texttt{paper}, a recompensa segue a estrutura do
+RSLAQ~\cite{yungaicela2026rslaq}. Para cada passo de controle,
+calculam-se tr\^{e}s termos de otimiza\c{c}\~{a}o, um por slice.
+
+\subsection{Termos de otimiza\c{c}\~{a}o}
+
+Para eMBB, a recompensa usa a vaz\~{a}o m\'{e}dia por UE
+normalizada pela vaz\~{a}o m\'{a}xima de refer\^{e}ncia:
+
+\begin{equation}
+h_1 = \min\!\left(\frac{\bar{T}_{\textit{eMBB}}}{T_{\max}}, 1\right),\quad
+\bar{T}_{\textit{eMBB}}=\frac{T_{\textit{eMBB}}}{|\Lambda_{\textit{eMBB}}|},
+\label{eq:h1}
+\end{equation}
+
+onde $T_{\textit{eMBB}}$ \'{e} a vaz\~{a}o total do slice e
+$|\Lambda_{\textit{eMBB}}|$ \'{e} o n\'{u}mero de UEs no slice.
+O valor padr\~{a}o adotado \'{e} $T_{\max}=150$\,Mbps.
+
+Para URLLC, a recompensa privilegia baixa ocupa\c{c}\~{a}o
+m\'{a}xima de buffer:
+
+\begin{equation}
+h_2 = \exp\!\left(-\frac{B^{\max}_{\textit{URLLC}}}{B_{\textit{norm}}}\right),
+\label{eq:h2}
+\end{equation}
+
+onde $B^{\max}_{\textit{URLLC}}$ \'{e} o maior buffer observado
+entre os UEs do slice e $B_{\textit{norm}}$ \'{e} o valor de
+normaliza\c{c}\~{a}o, fixado no limiar de outage de buffer
+(10\,kB por padr\~{a}o).
+
+Para MTC, a formula\c{c}\~{a}o \'{e} an\'{a}loga ao eMBB:
+
+\begin{equation}
+h_3 = \min\!\left(\frac{\bar{T}_{\textit{MTC}}}{T_{\max}}, 1\right),\quad
+\bar{T}_{\textit{MTC}}=\frac{T_{\textit{MTC}}}{|\Lambda_{\textit{MTC}}|}.
+\label{eq:h3}
+\end{equation}
+
+\subsection{Recompensa de otimiza\c{c}\~{a}o}
+
+A recompensa base, conforme Eq.~8 do RSLAQ, \'{e}:
+
+\begin{equation}
+r_{\textit{opt}} = \alpha h_1 + \beta h_2 + \gamma h_3
+                 + \mathbb{1}_{\textit{sched}}\frac{1}{c(s)},
+\label{eq:ropt}
+\end{equation}
+
+onde $\mathbb{1}_{\textit{sched}}$ indica se a a\c{c}\~{a}o
+inclui sele\c{c}\~{a}o de escalonador e $c(s)$ \'{e} o custo
+associado. Os pesos padr\~{a}o s\~{a}o:
+
+\begin{equation}
+\alpha=0.3333,\qquad \beta=0.4000,\qquad \gamma=0.2667,
+\label{eq:weights}
+\end{equation}
+
+correspondendo a eMBB, URLLC e MTC. O custo do escalonador
+segue $c(\text{RR})=1$ e $c(\text{PF})=c(\text{BCQI})=2$, como
+no artigo.
+
+\subsection{Condi\c{c}\~{o}es de SLA}
+
+A fun\c{c}\~{a}o de recompensa completa segue a Eq.~12 do RSLAQ:
+
+\begin{equation}
+r_{\textit{RSLAQ}} =
+\begin{cases}
+-\sum_{j\in\mathcal{O}}\omega_j, & \text{se houver outage de SLA},\\[4pt]
+0, & \text{se houver viola\c{c}\~{a}o soft de SLA},\\[4pt]
+r_{\textit{opt}}, & \text{caso contr\'{a}rio},
+\end{cases}
+\label{eq:rslaq_reward}
+\end{equation}
+
+onde $\mathcal{O}$ \'{e} o conjunto de slices em outage
+confirmado e $\omega_j$ \'{e} o peso de prioridade do slice.
+As condi\c{c}\~{o}es de outage instant\^{a}neo seguem:
+
+\begin{equation}
+\varphi^{\textit{eMBB}}_t = \mathbb{1}\!\left(
+T_{\textit{eMBB}} < k^{\textit{min}}_{\textit{eMBB}}\right),
+\label{eq:outage_embb}
+\end{equation}
+
+\begin{equation}
+\varphi^{\textit{URLLC}}_t = \mathbb{1}\!\left(
+B^{\max}_{\textit{URLLC}} > k^{\textit{max}}_{\textit{URLLC}}\right),
+\label{eq:outage_urllc}
+\end{equation}
+
+onde $k^{\textit{min}}_{\textit{eMBB}}$ \'{e} a vaz\~{a}o
+m\'{i}nima por slice e $k^{\textit{max}}_{\textit{URLLC}}$ \'{e}
+o buffer m\'{a}ximo permitido (10\,kB). MTC \'{e} definido como
+fatia sem pol\'{i}tica (\emph{No-Policy}) e n\~{a}o gera outage.
+
+A condi\c{c}\~{a}o soft monitora aloca\c{c}\~{a}o excessiva:
+
+\begin{equation}
+\rho^{\textit{eMBB}}_t = \mathbb{1}\!\left(
+T_{\textit{eMBB}} > k^{\textit{soft\_max}}_{\textit{eMBB}}\right).
+\label{eq:soft}
+\end{equation}
+
+\subsection{Salvaguardas experimentais}
+
+A implementa\c{c}\~{a}o adiciona duas salvaguardas
+pr\'{a}ticas para ns-3 que n\~{a}o alteram a sem\^{a}ntica das
+equa\c{c}\~{o}es, mas filtram transientes de
+inicializa\c{c}\~{a}o do simulador:
+
+\begin{enumerate}
+\item \textbf{Janela de warm-up} ($w$ passos): as condi\c{c}\~{o}es
+  de outage e soft s\~{a}o suprimidas durante os primeiros
+  $w$ passos do epis\'{o}dio. O valor padr\~{a}o \'{e}
+  $w=5$, permitindo que attach, RRC e ramp-up de tr\'{a}fego
+  se estabilizem.
+\item \textbf{Confirma\c{c}\~{a}o consecutiva}
+  ($c$ passos): um outage s\'{o} \'{e} confirmado ap\'{o}s
+  $c$ passos consecutivos com a condi\c{c}\~{a}o atendida.
+  Com $c=5$, evita-se que uma flutua\c{c}\~{a}o isolada de
+  buffer (por HARQ ou varia\c{c}\~{a}o de canal) interrompa o
+  epis\'{o}dio.
+\end{enumerate}
+
+Al\'{e}m disso, permite-se desacoplar penaliza\c{c}\~{a}o de
+SLA e t\'{e}rmino de epis\'{o}dio com
+$\textit{terminate\_on\_sla\_violation}=\text{False}$. Nessa
+configura\c{c}\~{a}o, o agente recebe exatamente a penalidade
+de Eq.~\eqref{eq:rslaq_reward}, mas o epis\'{o}dio pode
+continuar at\'{e} o horizonte peri\'{o}dico $n_{\textit{tsr}}$.
+Essa escolha \'{e} defens\'{a}vel porque xApps em
+opera\c{c}\~{a}o real n\~{a}o s\~{a}o desligados ap\'{o}s uma
+viola\c{c}\~{a}o; eles continuam atuando para restaurar a QoS.
+Consequentemente, o \emph{replay buffer} passa a conter
+estados antes, durante e ap\'{o}s a viola\c{c}\~{a}o, permitindo
+ao agente aprender din\^{a}micas de recupera\c{c}\~{a}o.
+
+% ------------------------------------------------------------
+\section{Recompensa Proposta para Efici\^{e}ncia de Recursos}
+\label{sec:reward_eff}
+
+A extens\~{a}o proposta parte da restri\c{c}\~{a}o de que
+nenhuma melhoria de efici\^{e}ncia pode mascarar
+viola\c{c}\~{o}es de SLA. Assim, a recompensa eficiente
+\'{e} um \emph{shaping} aplicado somente quando n\~{a}o h\'{a}
+outage nem viola\c{c}\~{a}o soft:
+
+\begin{equation}
+r_{\textit{eff}} =
+\begin{cases}
+r_{\textit{RSLAQ}}, & \text{se houver outage ou viola\c{c}\~{a}o soft},\\[4pt]
+r_{\textit{RSLAQ}} + \Delta r_{\textit{eff}}, & \text{caso contr\'{a}rio}.
+\end{cases}
+\label{eq:reff}
+\end{equation}
+
+O termo adicional combina efici\^{e}ncia de entrega,
+alinhamento entre demanda e aloca\c{c}\~{a}o, penalidade por
+superaloca\c{c}\~{a}o, penalidade por subaloca\c{c}\~{a}o
+e suavidade da a\c{c}\~{a}o:
+
+\begin{equation}
+\Delta r_{\textit{eff}} =
+\lambda_E\,E + \lambda_M\,M
+- \lambda_O\,O - \lambda_U\,U - \lambda_S\,S.
+\label{eq:delta_reff}
+\end{equation}
+
+\subsection{Aloca\c{c}\~{a}o e necessidade din\^{a}mica}
+
+A aloca\c{c}\~{a}o efetiva \'{e} normalizada como:
+
+\begin{equation}
+a_j = \frac{p_j}{\sum_k p_k},
+\label{eq:alloc_share}
+\end{equation}
+
+onde $p_j$ \'{e} o percentual de PRBs alocado ao slice $j$.
+Quando a informa\c{c}\~{a}o de a\c{c}\~{a}o n\~{a}o est\'{a}
+dispon\'{i}vel, a implementa\c{c}\~{a}o usa a participa\c{c}\~{a}o
+de recursos observada como \emph{fallback}.
+
+A necessidade bruta de cada slice \'{e} estimada a partir de
+tr\'{a}fego, buffer e perdas:
+
+\begin{equation}
+n_j = TX_j + B_j + C_L\,L_j,
+\label{eq:raw_need}
+\end{equation}
+
+onde $TX_j$ s\~{a}o bytes transmitidos/ofertados, $B_j$ \'{e} o
+buffer m\'{a}ximo do slice, $L_j$ \'{e} o n\'{u}mero de pacotes
+perdidos e $C_L$ \'{e} o equivalente em bytes por pacote
+perdido (padr\~{a}o $C_L=1500$\,bytes). Em seguida, aplicam-se
+ajustes espec\'{i}ficos por slice:
+
+\begin{itemize}
+\item \textbf{eMBB}: quando a vaz\~{a}o fica abaixo do SLA
+  m\'{i}nimo, $n_0 \leftarrow n_0\,(1+\min(\frac{K_{\textit{eMBB}} - T_0}{K_{\textit{eMBB}}}, 1))$.
+\item \textbf{URLLC}: a press\~{a}o de buffer aumenta
+  $n_1 \leftarrow n_1 + \min(\frac{B_1}{K_{\textit{URLLC}}}, 2)\,K_{\textit{URLLC}}$.
+\item \textbf{MTC}: quando a vaz\~{a}o fica abaixo da meta,
+  $n_2 \leftarrow n_2\,(1+0.5\,\min(\frac{K_{\textit{MTC}} - T_2}{K_{\textit{MTC}}}, 1))$.
+\end{itemize}
+
+A participa\c{c}\~{a}o din\^{a}mica da demanda \'{e}:
+
+\begin{equation}
+d_j = \frac{n_j}{\sum_k n_k}.
+\label{eq:demand_share}
+\end{equation}
+
+Se n\~{a}o houver demanda observ\'{a}vel ($\sum_k n_k = 0$),
+o c\'{o}digo usa os pesos est\'{a}ticos $\omega_j$ do RSLAQ
+como \emph{fallback}.
+
+\subsection{Alvo de aloca\c{c}\~{a}o eficiente}
+
+O alvo de aloca\c{c}\~{a}o mistura os pesos est\'{a}ticos do
+RSLAQ com a demanda din\^{a}mica medida:
+
+\begin{equation}
+q_j = (1 - \rho)\,\omega_j + \rho\,d_j,
+\label{eq:need_share}
+\end{equation}
+
+onde $\rho \in [0,1]$ controla o peso da demanda
+din\^{a}mica. O valor padr\~{a}o \'{e} $\rho=0.75$.
+Portanto, a proposta n\~{a}o abandona a prioridade do operador;
+ela a combina com a demanda corrente.
+
+\subsection{Termos de efici\^{e}ncia}
+
+O casamento entre aloca\c{c}\~{a}o e necessidade \'{e}:
+
+\begin{equation}
+M = \max\!\left(0,\; 1 - \frac{1}{2}\sum_{j} |a_j - q_j|\right).
+\label{eq:match}
+\end{equation}
+
+A superaloca\c{c}\~{a}o e a subaloca\c{c}\~{a}o incluem uma
+banda morta $\epsilon$ para tolerar pequenos descasamentos:
+
+\begin{align}
+O &= \sum_{j} \max(a_j - q_j - \epsilon,\, 0), \label{eq:over} \\
+U &= \sum_{j} \max(q_j - a_j - \epsilon,\, 0), \label{eq:under}
+\end{align}
+
+com $\epsilon = 0.03$ por padr\~{a}o.
+
+A fra\c{c}\~{a}o servida por slice \'{e}:
+
+\begin{equation}
+s_j = \min\!\left(\frac{RX_j}{TX_j},\, 1\right),
+\label{eq:served}
+\end{equation}
+
+onde $RX_j$ s\~{a}o os bytes recebidos e $TX_j$ os bytes
+transmitidos pelo slice. A efici\^{e}ncia de recursos
+usada na recompensa \'{e}:
+
+\begin{equation}
+E = M \sum_{j} q_j\,s_j.
+\label{eq:efficiency}
+\end{equation}
+
+Finalmente, a penalidade de oscila\c{c}\~{a}o de a\c{c}\~{a}o
+mede varia\c{c}\~{o}es abruptas de PRBs entre passos:
+
+\begin{equation}
+S = \frac{1}{2}\sum_{j} |a_j(t) - a_j(t-1)|.
+\label{eq:smoothness}
+\end{equation}
+
+\subsection{Pesos dos termos de efici\^{e}ncia}
+
+Os pesos padr\~{a}o da implementa\c{c}\~{a}o s\~{a}o:
+
+\begin{equation}
+\lambda_E=0.20,\quad
+\lambda_M=0.15,\quad
+\lambda_O=0.25,\quad
+\lambda_U=0.10,\quad
+\lambda_S=0.05.
+\label{eq:eff_weights}
+\end{equation}
+
+Na vers\~{a}o preditiva (Se\c{c}\~{a}o~\ref{sec:predictive}),
+os scripts podem usar uma parametriza\c{c}\~{a}o
+sim\'{e}trica para alguns termos (e.g.,
+$\lambda_M=\lambda_O=\lambda_U=0.20$), mantendo o mesmo
+princ\'{i}pio de projeto.
+
+A defesa central da recompensa proposta \'{e} que ela desloca a
+otimiza\c{c}\~{a}o do agente de ``cumprir SLA a qualquer
+custo'' para ``cumprir SLA com menor desperd\'{i}cio e
+melhor alinhamento com a demanda real''. Como o shaping
+$\Delta r_{\textit{eff}}$ \'{e} nulo em estados de
+viola\c{c}\~{a}o, a Eq.~\eqref{eq:rslaq_reward} permanece
+dominante. Isso evita a falha metodol\'{o}gica de recompensar
+economia de PRBs quando a rede j\'{a} est\'{a} descumprindo
+o contrato de servi\c{c}o.
+
+% ------------------------------------------------------------
+\section{Predi\c{c}\~{a}o Temporal de KPIs e Risco de SLA}
+\label{sec:predictive}
+
+O m\'{o}dulo preditivo adiciona mem\'{o}ria temporal ao
+processo de decis\~{a}o. Em vez de observar apenas o estado
+corrente $s_t$, o agente SAC preditivo recebe tamb\'{e}m uma
+estimativa de risco futuro produzida por um previsor GRU
+treinado offline.
+
+\subsection{Representa\c{c}\~{a}o do frame}
+
+Cada passo temporal \'{e} convertido em um frame com as
+seguintes componentes:
+
+\begin{itemize}
+\item Observa\c{c}\~{a}o RSLAQ achatada: $\mathbf{o}_t \in \mathbb{R}^{16}$.
+\item A\c{c}\~{a}o de aloca\c{c}\~{a}o por slice: $\mathbf{a}_t \in \mathbb{R}^{3}$.
+\item Recompensa normalizada: $r'_t = \operatorname{clip}(r_t, -1, 2)/3 \in \mathbb{R}$.
+\item Flags de outage por slice: $\mathbf{\varphi}_t \in \{0,1\}^{3}$.
+\item Flags de viola\c{c}\~{a}o soft: $\mathbf{\rho}_t \in \{0,1\}^{3}$.
+\item Codifica\c{c}\~{a}o one-hot do cen\'{a}rio: $\mathbf{c}_t \in \{0,1\}^{5}$.
+\end{itemize}
+
+O vetor de entrada por passo possui dimens\~{a}o:
+
+\begin{equation}
+d_{\textit{in}} = 16 + 3 + 1 + 6 + 5 = 31.
+\label{eq:feature_dim}
+\end{equation}
+
+\subsection{Arquitetura do previsor}
+
+O \texttt{TemporalKpiForecaster} \'{e} uma rede GRU com uma
+cabe\c{c}a de predi\c{c}\~{a}o linear. Dada uma janela
+hist\'{o}rica de comprimento $L$, a rede produz:
+
+\begin{equation}
+\hat{\mathbf{y}}_{t:t+H} = f_{\textit{GRU}}(\mathbf{x}_{t-L+1}, \dots, \mathbf{x}_t),
+\label{eq:gru_forward}
+\end{equation}
+
+com $\hat{\mathbf{y}}_{t:t+H} \in [0,1]^{d_{\textit{out}}}$
+e dimens\~{a}o de sa\'{i}da:
+
+\begin{equation}
+d_{\textit{out}} = 6 + 16 = 22,
+\label{eq:output_dim}
+\end{equation}
+
+onde as primeiras seis dimens\~{o}es representam risco futuro
+de outage e viola\c{c}\~{a}o soft por slice (agrega\c{c}\~{a}o
+``max'' sobre o horizonte $H$) e as 16 restantes s\~{a}o as
+m\'{e}dias normalizadas da observa\c{c}\~{a}o futura.
+
+A fun\c{c}\~{a}o de perda combina BCE para os riscos
+bin\'{a}rios com MSE para os KPIs cont\'{i}nuos:
+
+\begin{equation}
+\mathcal{L} = \lambda_{\textit{risk}}\,\mathcal{L}_{\textit{BCE}}
+              + \mathcal{L}_{\textit{MSE}},
+\label{eq:forecaster_loss}
+\end{equation}
+
+com $\lambda_{\textit{risk}} = 2.0$ para priorizar a
+predi\c{c}\~{a}o de viola\c{c}\~{a}o de SLA.
+
+\subsection{Fontes de treinamento}
+
+O conjunto de treinamento do previsor pode vir de duas fontes,
+selecion\'{a}veis por \texttt{source\_format}:
+
+\begin{enumerate}
+\item \textbf{DRL logs}: arquivos \texttt{step\_metrics.csv}
+  gerados por agentes DDQN ou SAC, contendo estado,
+  a\c{c}\~{a}o, recompensa e flags de SLA por passo.
+\item \textbf{Baselines ns-3}: arquivos
+  \texttt{timeseries.csv} de campanhas standalone,
+  agregados por UE e slice. A implementa\c{c}\~{a}o
+  \texttt{load\_baseline\_frames} estima aloca\c{c}\~{a}o
+  por \texttt{slice\_alloc.csv} quando dispon\'{i}vel e
+  recalcula recompensa e flags de SLA com
+  \texttt{reward\_mode="resource\_efficient"}, alinhando os
+  r\'{o}tulos do previsor com a contribui\c{c}\~{a}o do artigo.
+\end{enumerate}
+
+\subsection{Integra\c{c}\~{a}o com SAC preditivo}
+
+Durante o treinamento online, o \texttt{TemporalKpiForecaster}
+permanece congelado. O estado expandido do agente \'{e}:
+
+\begin{equation}
+\tilde{\mathbf{s}}_t = \big[
+  \mathbf{o}_t, \quad \hat{\mathbf{y}}_{t:t+H}
+\big] \in \mathbb{R}^{38},
+\label{eq:augmented_state}
+\end{equation}
+
+com $\mathbf{o}_t \in \mathbb{R}^{16}$ sendo a observa\c{c}\~{a}o
+corrente achatada. A fun\c{c}\~{a}o de treinamento do SAC
+preditivo inclui penalidades expl\'{i}citas de risco por slice
+(\texttt{risk\_penalty}, \texttt{soft\_penalty}) que s\~{a}o
+aplicadas sobre os elementos da predi\c{c}\~{a}o. Assim, o
+agente n\~{a}o espera apenas a recompensa negativa da
+Eq.~\eqref{eq:rslaq_reward}; ele recebe informa\c{c}\~{a}o
+antecipada sobre estados que provavelmente levar\~{a}o a
+viola\c{c}\~{a}o.
+
+Essa extens\~{a}o \'{e} coerente com a arquitetura O-RAN, na
+qual o Non-RT RIC pode empregar rApps para predi\c{c}\~{a}o de
+eventos e gera\c{c}\~{a}o de pol\'{i}ticas, enquanto o Near-RT
+RIC executa controle em janela curta. Nosso previsor GRU
+funciona como um componente auxiliar temporal que fornece ao
+xApp uma estimativa compacta de risco futuro, permitindo
+realocar recursos antes que o KPI ultrapasse o limiar de outage.
+
+% ------------------------------------------------------------
+\section{Desenho Experimental}
+\label{sec:experimental}
+
+A avalia\c{c}\~{a}o deve ser organizada em linhas experimentais
+separadas para evitar compara\c{c}\~{a}o inadequada entre
+recompensas:
+
+\begin{enumerate}
+\item \textbf{Baselines ns-3 sem DRL}: \texttt{pure\_rr},
+  \texttt{pure\_pf}, \texttt{pure\_bcqi} e variantes
+  \texttt{slice\_*}.
+\item \textbf{RSLAQ fiel ao artigo}: DDQN ou SAC com
+  \texttt{reward\_mode="paper"}.
+\item \textbf{Proposta eficiente}: DDQN ou SAC com
+  \texttt{reward\_mode="resource\_efficient"}.
+\item \textbf{Proposta preditiva}: SAC com observa\c{c}\~{a}o
+  aumentada por GRU e \texttt{reward\_mode="resource\_efficient"}.
+\end{enumerate}
+
+O ranking principal deve usar m\'{e}tricas de rede e SLA
+porque os modos \texttt{paper} e \texttt{resource\_efficient}
+otimizam objetivos relacionados, mas n\~{a}o id\^{e}nticos.
+
+\subsection{M\'{e}tricas de avalia\c{c}\~{a}o}
+
+As m\'{e}tricas recomendadas s\~{a}o:
+
+\begin{itemize}
+\item Taxa de outage por slice ($\varphi_j$).
+\item Taxa de viola\c{c}\~{a}o soft ($\rho_j$).
+\item Throughput m\'{e}dio por slice (Mbps).
+\item Buffer m\'{a}ximo/m\'{e}dio do URLLC (bytes).
+\item Perdas por slice (taxa de perda de pacotes).
+\item PRB m\'{e}dio por slice (\%) e taxa de ocupa\c{c}\~{a}o.
+\item Efici\^{e}ncia de recursos ($E$).
+\item Casamento demanda-aloca\c{c}\~{a}o ($M$).
+\item Superaloca\c{c}\~{a}o ($O$) e subaloca\c{c}\~{a}o ($U$).
+\item Suavidade da a\c{c}\~{a}o ($S$).
+\item N\'{u}mero m\'{e}dio de passos por epis\'{o}dio.
+\item Desempenho por cen\'{a}rio e por semente.
+\end{itemize}
+
+\subsection{Execu\c{c}\~{a}o}
+
+As campanhas podem ser executadas via:
+
+\begin{itemize}
+\item \textbf{Baselines ns-3}: \texttt{cd ns-3-dev \&\& SCENARIOS="normal" BASELINE\_MODES="pure\_pf" SEEDS="1" RUNS="1" SIM\_TIME=5 ./run\_all\_scenarios.sh}.
+\item \textbf{DDQN/SAC controlado}: \texttt{cd ns-o-ran-gym \&\& bash examples/run\_controlled\_rslaq\_validation.sh}.
+\item \textbf{Preditivo}: \texttt{cd ns-o-ran-gym \&\& bash examples/run\_predictive\_rslaq\_validation.sh}.
+\end{itemize}
+
+% ------------------------------------------------------------
+\section{Defesa Metodol\'{o}gica}
+\label{sec:defesa}
+
+A principal defesa deste trabalho \'{e} que a contribui\c{c}\~{a}o
+n\~{a}o substitui o RSLAQ; ela o usa como baseline controlado. O
+modo \texttt{paper} preserva a recompensa original e permite
+verificar se a migra\c{c}\~{a}o para ns-3/5G-LENA mant\'{e}m a
+sem\^{a}ntica SLA-aware. O modo \texttt{resource\_efficient}
+adiciona termos de efici\^{e}ncia apenas quando o SLA est\'{a}
+satisfeito. Desse modo, a proposta n\~{a}o relaxa requisitos de
+QoS nem transforma economia de recursos em objetivo superior ao
+contrato.
+
+Tamb\'{e}m \'{e} defens\'{a}vel tratar viola\c{c}\~{o}es de
+SLA como estados penalizados n\~{a}o absorventes durante
+alguns treinamentos. A recompensa negativa continua
+id\^{e}ntica \`{a} formula\c{c}\~{a}o RSLAQ; o que muda \'{e} a
+mec\^{a}nica de reset do epis\'{o}dio. Em um simulador ns-3
+online, encerramentos muito precoces podem fazer o \emph{replay
+buffer} ser dominado por transientes de inicializa\c{c}\~{a}o,
+impedindo o agente de observar recupera\c{c}\~{a}o ap\'{o}s uma
+a\c{c}\~{a}o corretiva. A continuidade do epis\'{o}dio
+representa melhor um xApp em opera\c{c}\~{a}o, que deve reagir
+a falhas em vez de simplesmente reiniciar. A formula\c{c}\~{a}o
+pode ser resumida como:
+
+\begin{quote}
+\emph{To avoid premature episode truncation caused by
+simulator warm-up transients, we decouple SLA-violation
+penalization from episode termination during DRL training. The
+reward assigned to SLA outage states remains identical to the
+RSLAQ formulation, i.e., the weighted negative penalty of
+Eq.~12. However, the environment does not force an immediate
+reset after such violation; instead, the episode follows the
+periodic reset horizon $n_{\textit{tsr}}$, as described in the
+RSLAQ algorithm. This preserves the SLA-driven learning signal
+while allowing the agent to collect longer state-action
+trajectories and populate the replay buffer with recovery
+dynamics.}
+\end{quote}
+
+A migra\c{c}\~{a}o para ns-3 refor\c{c}a a validade externa
+da avalia\c{c}\~{a}o, pois introduz efeitos de rede ausentes
+em modelos mais abstratos: filas, perdas, HARQ, escalonamento
+MAC, mapeamento de fluxos por UE, varia\c{c}\~{a}o de demanda
+e atraso entre a\c{c}\~{a}o e efeito. Por outro lado, essa
+mesma fidelidade exige cuidado na interpreta\c{c}\~{a}o.
+Nem toda viola\c{c}\~{a}o inicial representa falha da
+pol\'{i}tica; algumas decorrem de warm-up, attach ou
+ramp-up de aplica\c{c}\~{a}o.
+
+A extens\~{a}o preditiva tamb\'{e}m \'{e} coerente com a
+arquitetura O-RAN. O pr\'{o}prio RSLAQ descreve o papel do
+Non-RT RIC e de rApps na predi\c{c}\~{a}o de eventos e
+gera\c{c}\~{a}o de pol\'{i}ticas, enquanto o Near-RT RIC
+executa controle em janela curta~\cite{yungaicela2026rslaq}.
+Nosso previsor GRU funciona como um componente temporal
+auxiliar: ele aprende de traces anteriores e fornece ao agente
+near-RT uma estimativa compacta de risco futuro.
+
+% ------------------------------------------------------------
+\section{Amea\c{c}as \`{a} Validade}
+\label{sec:ameacas}
+
+A primeira amea\c{c}a \`{a} validade \'{e} a diferen\c{c}a
+entre o simulador original do RSLAQ e o ns-3/5G-LENA. Embora a
+formula\c{c}\~{a}o matem\'{a}tica seja preservada, os valores
+absolutos de KPI podem diferir por causa de canal, antenas,
+RLC, HARQ e tr\'{a}fego. Por isso, a avalia\c{c}\~{a}o deve
+enfatizar compara\c{c}\~{o}es internas no mesmo ambiente ns-3.
+
+A segunda amea\c{c}a \'{e} a calibra\c{c}\~{a}o dos pesos
+$\lambda_E,\dots,\lambda_S$ da recompensa eficiente. Pesos
+excessivos para economia podem induzir subaloca\c{c}\~{a}o em
+cen\'{a}rios cr\'{i}ticos; por isso, a implementa\c{c}\~{a}o
+bloqueia shaping em estados com viola\c{c}\~{a}o de SLA e
+registra todos os termos de diagn\'{o}stico separadamente.
+
+A terceira amea\c{c}a \'{e} o treinamento offline do previsor.
+Se os traces usados para treinar o GRU n\~{a}o cobrirem
+adequadamente os cen\'{a}rios de avalia\c{c}\~{a}o, a
+predi\c{c}\~{a}o pode introduzir vi\'{e}s. A
+mitiga\c{c}\~{a}o \'{e} treinar com m\'{u}ltiplos
+cen\'{a}rios, sementes e baselines, e reportar desempenho do
+previsor separadamente do desempenho do agente.
+
+A quarta amea\c{c}a \'{e} comparar rewards entre modos
+diferentes. Como o modo eficiente adiciona shaping, reward
+acumulado n\~{a}o deve ser a m\'{e}trica principal para
+concluir superioridade. A compara\c{c}\~{a}o deve priorizar
+SLA, throughput, perdas, buffers e efici\^{e}ncia de recursos.
+
+% ------------------------------------------------------------
+\section{Conclus\~{a}o}
+\label{sec:conclusao}
+
+Este artigo apresentou uma reprodu\c{c}\~{a}o e extens\~{a}o do
+RSLAQ em ns-3/5G-LENA. A metodologia preserva o RSLAQ
+original como baseline (\texttt{reward\_mode="paper"}) e
+introduz uma recompensa proposta
+(\texttt{reward\_mode="resource\_efficient"}) que incentiva
+aloca\c{c}\~{a}o eficiente de PRBs somente quando n\~{a}o
+h\'{a} viola\c{c}\~{a}o de SLA. A extens\~{a}o preditiva
+baseada em GRU adiciona informa\c{c}\~{a}o temporal ao
+agente SAC, permitindo antecipar risco de outage e
+viola\c{c}\~{a}o soft. A contribui\c{c}\~{a}o central
+\'{e}, portanto, dupla: uma plataforma experimental mais
+pr\'{o}xima da din\^{a}mica de rede 5G/O-RAN e uma pol\'{i}tica
+de aprendizado que busca cumprir SLA com menor desperd\'{i}cio
+de recursos e maior capacidade proativa.
+
+Em termos cient\'{i}ficos, a proposta deve ser defendida
+n\~{a}o como uma altera\c{c}\~{a}o arbitr\'{a}ria do RSLAQ,
+mas como uma decomposi\c{c}\~{a}o controlada: primeiro
+reproduz-se a recompensa do artigo; depois adiciona-se
+efici\^{e}ncia como shaping condicionado ao cumprimento de
+SLA; por fim, adiciona-se predi\c{c}\~{a}o temporal para
+antecipar falhas. Essa ordem torna a avalia\c{c}\~{a}o
+audit\'{a}vel, separa baseline de contribui\c{c}\~{a}o e
+permite demonstrar claramente onde est\'{a} o ganho da nova
+implementa\c{c}\~{a}o.
+
+Trabalhos futuros podem investigar outras arquiteturas de
+predi\c{c}\~{a}o, calibra\c{c}\~{a}o autom\'{a}tica de pesos
+da recompensa eficiente e extens\~{a}o para cen\'{a}rios
+multi-c\'{e}lula com mobilidade de UEs.
+
+% ------------------------------------------------------------
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{10}
+
+\bibitem{yungaicela2026rslaq}
+N.~M.~Yungaicela-Naula, V.~Sharma, and S.~Scott-Hayward,
+``RSLAQ -- A Robust SLA-driven 6G O-RAN QoS xApp using deep
+reinforcement learning,''
+\emph{IEEE Trans. Mobile Comput.}, 2026,
+doi:~10.1109/TMC.2026.3666787.
+
+\bibitem{ns3}
+Ns-3 Consortium,
+``ns-3 Network Simulator,''
+\url{https://www.nsnam.org}, 2025.
+
+\bibitem{5g-lena}
+N.~Patriciello, S.~Lagen, B.~Bozovic, and L.~Giupponi,
+``An E2E simulator for 5G NR networks,''
+\emph{Simulation Modelling Practice and Theory},
+vol.~96, p.~101933, 2019.
+
+\bibitem{oran}
+O-RAN Alliance,
+``O-RAN Working Group 1: Use Cases Detailed Specification,''
+Technical Specification O-RAN.WG1.Use-Cases-Detailed-Specification-v09.00, 2024.
+
+\bibitem{gymnasium}
+M.~Towers \emph{et al.},
+``Gymnasium: A Standard Interface for Reinforcement Learning
+Environments,''
+\emph{arXiv preprint arXiv:2407.17032}, 2024.
+
+\bibitem{haarnoja2018sac}
+T.~Haarnoja, A.~Zhou, P.~Abbeel, and S.~Levine,
+``Soft Actor-Critic: Off-Policy Maximum Entropy Deep
+Reinforcement Learning with a Stochastic Actor,''
+in \emph{Proc. ICML}, 2018, pp.~1861--1870.
+
+\end{thebibliography}
+
+\end{document}

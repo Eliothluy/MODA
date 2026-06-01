@@ -34,16 +34,18 @@ CONSECUTIVE_OUTAGE_STEPS="${CONSECUTIVE_OUTAGE_STEPS:-5}"
 WARMUP_STEPS="${WARMUP_STEPS:-5}"
 SEED_CYCLE="${SEED_CYCLE:-999999}"
 
-P_STA_STATIC_FRACTION="${P_STA_STATIC_FRACTION:-0.5}"
+P_STA_STATIC_FRACTION="${P_STA_STATIC_FRACTION:-0.25}"
 P_STA_WEIGHTS="${P_STA_WEIGHTS:-0.3333,0.4000,0.2667}"
 REWARD_ALPHA="${REWARD_ALPHA:-0.3333}"
 REWARD_BETA="${REWARD_BETA:-0.4000}"
 REWARD_GAMMA="${REWARD_GAMMA:-0.2667}"
 REWARD_MODE="${REWARD_MODE:-resource_efficient}"
-RESOURCE_EFFICIENCY_WEIGHT="${RESOURCE_EFFICIENCY_WEIGHT:-0.20}"
-NEED_MATCH_WEIGHT="${NEED_MATCH_WEIGHT:-0.20}"
-WASTE_PENALTY_WEIGHT="${WASTE_PENALTY_WEIGHT:-0.20}"
-UNDER_ALLOCATION_PENALTY_WEIGHT="${UNDER_ALLOCATION_PENALTY_WEIGHT:-0.20}"
+RESOURCE_EFFICIENCY_WEIGHT="${RESOURCE_EFFICIENCY_WEIGHT:-0.25}"
+NEED_MATCH_WEIGHT="${NEED_MATCH_WEIGHT:-0.30}"
+WASTE_PENALTY_WEIGHT="${WASTE_PENALTY_WEIGHT:-0.35}"
+UNDER_ALLOCATION_PENALTY_WEIGHT="${UNDER_ALLOCATION_PENALTY_WEIGHT:-0.15}"
+EMBB_SOFT_GUARD_PENALTY_WEIGHT="${EMBB_SOFT_GUARD_PENALTY_WEIGHT:-0.25}"
+EMBB_SOFT_GUARD_RATIO="${EMBB_SOFT_GUARD_RATIO:-0.80}"
 ACTION_SMOOTHNESS_WEIGHT="${ACTION_SMOOTHNESS_WEIGHT:-0.05}"
 RESOURCE_DYNAMIC_NEED_WEIGHT="${RESOURCE_DYNAMIC_NEED_WEIGHT:-0.75}"
 RESOURCE_WASTE_DEADBAND="${RESOURCE_WASTE_DEADBAND:-0.03}"
@@ -84,7 +86,7 @@ echo "  simTime:           ${SIM_TIME}s"
 echo "  forecast:          seq=${FORECAST_SEQUENCE_LEN}, horizon=${FORECAST_HORIZON}"
 echo "  penalties:         outage=${RISK_PENALTY}, soft=${SOFT_PENALTY}"
 echo "  reward mode:       ${REWARD_MODE}"
-echo "  contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}"
+echo "  contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, embb_guard=${EMBB_SOFT_GUARD_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}"
 echo "  run forecaster:    ${RUN_FORECASTER}"
 echo "  run predictive SAC:${RUN_PREDICTIVE_SAC}"
 echo "  run comparison:    ${RUN_COMPARISON}"
@@ -149,6 +151,8 @@ if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
                 --need_match_weight "${NEED_MATCH_WEIGHT}" \
                 --waste_penalty_weight "${WASTE_PENALTY_WEIGHT}" \
                 --under_allocation_penalty_weight "${UNDER_ALLOCATION_PENALTY_WEIGHT}" \
+                --embb_soft_guard_penalty_weight "${EMBB_SOFT_GUARD_PENALTY_WEIGHT}" \
+                --embb_soft_guard_ratio "${EMBB_SOFT_GUARD_RATIO}" \
                 --action_smoothness_weight "${ACTION_SMOOTHNESS_WEIGHT}" \
                 --resource_dynamic_need_weight "${RESOURCE_DYNAMIC_NEED_WEIGHT}" \
                 --resource_waste_deadband "${RESOURCE_WASTE_DEADBAND}" \
@@ -200,6 +204,8 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
     "need_match_weight": ${NEED_MATCH_WEIGHT},
     "waste_penalty_weight": ${WASTE_PENALTY_WEIGHT},
     "under_allocation_penalty_weight": ${UNDER_ALLOCATION_PENALTY_WEIGHT},
+    "embb_soft_guard_penalty_weight": ${EMBB_SOFT_GUARD_PENALTY_WEIGHT},
+    "embb_soft_guard_ratio": ${EMBB_SOFT_GUARD_RATIO},
     "action_smoothness_weight": ${ACTION_SMOOTHNESS_WEIGHT},
     "resource_dynamic_need_weight": ${RESOURCE_DYNAMIC_NEED_WEIGHT},
     "resource_waste_deadband": ${RESOURCE_WASTE_DEADBAND}

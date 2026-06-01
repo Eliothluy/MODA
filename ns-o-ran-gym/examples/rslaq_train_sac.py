@@ -310,6 +310,8 @@ def train_sac(args):
         "need_match_weight": args.need_match_weight,
         "waste_penalty_weight": args.waste_penalty_weight,
         "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+        "embb_soft_guard_penalty_weight": args.embb_soft_guard_penalty_weight,
+        "embb_soft_guard_ratio": args.embb_soft_guard_ratio,
         "action_smoothness_weight": args.action_smoothness_weight,
         "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
         "resource_waste_deadband": args.resource_waste_deadband,
@@ -482,6 +484,8 @@ def train_sac(args):
             "need_match_weight": args.need_match_weight,
             "waste_penalty_weight": args.waste_penalty_weight,
             "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+            "embb_soft_guard_penalty_weight": args.embb_soft_guard_penalty_weight,
+            "embb_soft_guard_ratio": args.embb_soft_guard_ratio,
             "action_smoothness_weight": args.action_smoothness_weight,
             "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
             "resource_waste_deadband": args.resource_waste_deadband,
@@ -571,6 +575,10 @@ def main():
                         help="Penalty for over-allocating PRBs beyond dynamic slice need")
     parser.add_argument("--under_allocation_penalty_weight", type=float, default=0.10,
                         help="Penalty for under-allocating PRBs to active slice need")
+    parser.add_argument("--embb_soft_guard_penalty_weight", type=float, default=0.25,
+                        help="Penalty for resource-efficient eMBB over-serving near the soft SLA limit")
+    parser.add_argument("--embb_soft_guard_ratio", type=float, default=0.80,
+                        help="Fraction of eMBB soft SLA where resource-efficient guard penalty starts")
     parser.add_argument("--action_smoothness_weight", type=float, default=0.05,
                         help="Penalty for abrupt PRB-share changes between control steps")
     parser.add_argument("--resource_dynamic_need_weight", type=float, default=0.75,

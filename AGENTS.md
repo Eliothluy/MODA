@@ -18,17 +18,18 @@ Compact repo notes for future OpenCode sessions. Prefer executable scripts and c
 - `src/environments/rslaq_reward.py` computes the reward from per-slice KPIs using slice ids `0=eMBB`, `1=URLLC`, `2=MTC`; default paper weights are `alpha=0.3333`, `beta=0.4000`, `gamma=0.2667`.
 - In `reward_mode="paper"`, the reward follows the RSLAQ paper: `h_1` is normalized average eMBB throughput, `h_2=exp(-normalized URLLC max buffer)`, `h_3` is normalized average MTC throughput, and `opt_reward=alpha*h_1 + beta*h_2 + gamma*h_3 + 1/scheduler_cost` when scheduler selection is present.
 - Terminal SLA logic: confirmed outage gives negative reward `-sum(slice_weights)` and can terminate; soft SLA violation gives reward `0`; otherwise the reward is `opt_reward`. Warmup and consecutive-outage filtering intentionally reduce simulator jitter effects.
-- `reward_mode="resource_efficient"` adds shaping on top of the paper reward using active demand, PRB allocation match, over/under-allocation, served fraction, and action smoothness. Use it only when evaluating the user's resource-efficiency contribution.
-- Resource-efficiency diagnostics (`resource_efficiency`, `need_allocation_match`, `over_allocation`, `under_allocation`, `action_smoothness_penalty`, `resource_efficient_shaping`) are now exposed in reward terms for both `paper` and `resource_efficient`; in `paper`, shaping is `0.0` and reward remains paper-faithful.
+- `reward_mode="resource_efficient"` adds shaping on top of the paper reward using active demand, PRB allocation match, over/under-allocation, served fraction, eMBB soft-SLA guard, and action smoothness. Use it only when evaluating the user's resource-efficiency contribution.
+- Current article resource-efficient defaults are `resource_efficiency_weight=0.25`, `need_match_weight=0.30`, `waste_penalty_weight=0.35`, `under_allocation_penalty_weight=0.15`, `embb_soft_guard_penalty_weight=0.25`, `embb_soft_guard_ratio=0.80`, `action_smoothness_weight=0.05`, `resource_dynamic_need_weight=0.75`, and `resource_waste_deadband=0.03`.
+- Resource-efficiency diagnostics (`resource_efficiency`, `need_allocation_match`, `over_allocation`, `under_allocation`, `embb_soft_guard_penalty`, `action_smoothness_penalty`, `resource_efficient_shaping`) are now exposed in reward terms for both `paper` and `resource_efficient`; in `paper`, shaping is `0.0` and reward remains paper-faithful.
 - Resource-efficient shaping must not dilute Eq. 12 SLA outcomes: confirmed outage remains the negative slice-weight sum, soft SLA violation remains `0.0`, and shaping is only added when there is no SLA violation.
 - Accepted aliases for resource-efficient reward include `resource_efficient`, `efficient_resource`, `efficiente_resource`, `efficient`, and `slice_efficient`, but prefer canonical `resource_efficient` in scripts and papers.
 
 ## RSLAQ Predictive Context
 - `src/environments/rslaq_predictive.py` supports two forecast data sources: DRL `step_metrics.csv` logs and ns-3 network-only baseline `timeseries.csv` files under `ns-3-dev/results_rslaq_network_only`; `build_forecast_sequences(..., source_format="auto")` can read both, while `source_format="baseline"` forces baseline-only ingestion.
-- Baseline predictive ingestion aggregates per-UE `timeseries.csv` rows to per-slice metrics, uses `slice_alloc.csv` when available for PRB/resource-share actions, and recomputes frame rewards plus SLA flags with `compute_rslaq_reward(..., reward_mode="resource_efficient")` so forecaster labels match the user's article contribution.
+- Baseline predictive ingestion aggregates per-UE `timeseries.csv` rows to per-slice metrics, uses `slice_alloc.csv` when available for PRB/resource-share actions, and recomputes frame rewards plus SLA flags with `compute_rslaq_reward(..., reward_mode="resource_efficient")` using the current article resource-efficient weights so forecaster labels match the user's article contribution.
 - `examples/rslaq_train_forecaster.py` now defaults to `../ns-3-dev/results_rslaq_network_only` and has `--source_format {auto,step_metrics,baseline}`; use `--source_format baseline` for the current intended workflow.
-- `examples/rslaq_train_predictive_sac.py` now defaults to `--reward_mode resource_efficient` and accepts the same resource-efficient reward weights as DDQN/SAC.
-- `examples/run_predictive_rslaq_validation.sh` trains the forecaster from `ns-3-dev/results_rslaq_network_only` by default (`FORECAST_SOURCE_FORMAT=baseline`), then runs predictive SAC with resource-efficient reward. It supports `RUN_FORECASTER`, `RUN_PREDICTIVE_SAC`, `RUN_COMPARISON`, and `BUILD_NS3` toggles for smoke tests and reuse.
+- `examples/rslaq_train_predictive_sac.py` now defaults to `--reward_mode resource_efficient`, `--p_sta_static_fraction 0.25`, and accepts the same resource-efficient reward weights plus eMBB soft-guard flags as DDQN/SAC.
+- `examples/run_predictive_rslaq_validation.sh` trains the forecaster from `ns-3-dev/results_rslaq_network_only` by default (`FORECAST_SOURCE_FORMAT=baseline`), then runs predictive SAC with resource-efficient reward, `P_STA_STATIC_FRACTION=0.25`, and the current article resource-efficient weights. It supports `RUN_FORECASTER`, `RUN_PREDICTIVE_SAC`, `RUN_COMPARISON`, and `BUILD_NS3` toggles for smoke tests and reuse.
 
 ## RSLAQ 5G Scenario Context
 - The ns-3 RSLAQ topology in `ns-3-dev/scratch/rslaq/rslaq-sim.cc` is `remoteHost -> 100Gbps P2P -> PGW/EPC -> 1 NR gNB -> static NR UEs`; there is no handover or multi-cell behavior.
@@ -40,12 +41,12 @@ Compact repo notes for future OpenCode sessions. Prefer executable scripts and c
 
 ## Setup And Build
 - Python build/install from the README: `cd ns-o-ran-gym && hatch build && pip3 install dist/*.tar.gz`.
-- `ns-o-ran-gym/pyproject.toml` does not declare `torch` or `pytest`; SAC/predictive training and `tests/test_rslaq_predictive.py` import `torch`, and local verification needs `pytest` installed separately.
+- `ns-o-ran-gym/pyproject.toml` does not declare `torch`; SAC/predictive training and `tests/test_rslaq_predictive.py` import `torch`. A local `.venv` now has `pytest` installed for focused checks; use `.venv/bin/python -m pytest ...` from `ns-o-ran-gym` when the system Python lacks pytest.
 - Build the RSLAQ simulator before baseline or controlled campaigns: `cd ns-3-dev && ./ns3 build rslaq-sim`.
 - `ns-3-dev/run_all_scenarios.sh` also builds `rslaq-sim` before running its matrix.
 
 ## Focused Commands
-- Cheap RSLAQ Python unit checks: `cd ns-o-ran-gym && python3 -m pytest tests/test_rslaq_action_spaces.py tests/test_rslaq_slice_ids.py tests/test_rslaq_kpis.py tests/test_rslaq_reward.py`.
+- Cheap RSLAQ Python unit checks: `cd ns-o-ran-gym && .venv/bin/python -m pytest tests/test_rslaq_action_spaces.py tests/test_rslaq_slice_ids.py tests/test_rslaq_kpis.py tests/test_rslaq_reward.py`.
 - Avoid treating `tests/test_check_env.py` and `tests/test_time_ts.py` as cheap local tests; they hardcode `/workspace/ns3-mmwave-oran` and `/workspace/ns-o-ran-gymnasium/output`.
 - Avoid `tests/test_rslaq_predictive.py` unless `torch` is installed.
 - Single ns-3 standalone run shape: `cd ns-3-dev && ./ns3 run "scratch/rslaq/rslaq-sim --scenario=normal --baselineMode=pure_pf --simTime=5 --outputDir=/tmp/rslaq"`.
@@ -57,9 +58,9 @@ Compact repo notes for future OpenCode sessions. Prefer executable scripts and c
 
 ## RSLAQ CLI Gotchas
 - `ns-o-ran-gym/run_training.sh` is stale in this checkout: it passes unsupported flags such as `--apply_p_sta False`, `--mtc_is_no_policy`, and `--use_real_bfs`. Use the current `rslaq_train_*.py` argparse options or `examples/run_controlled_rslaq_validation.sh` instead.
-- Current training scripts disable P_STA with `--no-apply-p-sta`; there is no `--apply_p_sta False` option.
+- Current training scripts disable P_STA with `--no-apply-p-sta`; there is no `--apply_p_sta False` option. Controlled paper lines keep `P_STA_STATIC_FRACTION=0.5`, while controlled `ddqn_resource_efficient` and `sac_resource_efficient` use `RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION=0.25` by default.
 - DDQN defaults to `action_mode=discrete`, `include_scheduler=True`, and a 198-action table. With scheduler disabled, the table has 66 actions. DDQN now also accepts `--reward_mode resource_efficient` plus the resource reward weights.
-- SAC defaults to `action_mode=continuous` and `reward_mode=paper`; resource-efficient SAC is selected with `--reward_mode resource_efficient` plus the resource reward weights. Predictive SAC defaults to `reward_mode=resource_efficient`.
+- SAC defaults to `action_mode=continuous` and `reward_mode=paper`; resource-efficient SAC is selected with `--reward_mode resource_efficient` plus the resource reward weights. Predictive SAC defaults to `reward_mode=resource_efficient` and `p_sta_static_fraction=0.25`.
 - `examples/run_controlled_rslaq_validation.sh` now compares four DRL lines by default: `ddqn_paper`, `ddqn_resource_efficient`, `sac_paper`, and `sac_resource_efficient`, plus optional ns-3 baselines. Use `RUN_RESOURCE_EFFICIENT_DDQN=0` or `RUN_DRL_COMPARISON=0` to narrow smoke runs.
 - `observation_mode=paper` is the production path with observation shape `(4, 4)`; `debug` is a separate `(3, 5)` shape.
 

@@ -302,6 +302,8 @@ def train(args):
         "need_match_weight": args.need_match_weight,
         "waste_penalty_weight": args.waste_penalty_weight,
         "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+        "embb_soft_guard_penalty_weight": args.embb_soft_guard_penalty_weight,
+        "embb_soft_guard_ratio": args.embb_soft_guard_ratio,
         "action_smoothness_weight": args.action_smoothness_weight,
         "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
         "resource_waste_deadband": args.resource_waste_deadband,
@@ -485,6 +487,8 @@ def train(args):
             "need_match_weight": args.need_match_weight,
             "waste_penalty_weight": args.waste_penalty_weight,
             "under_allocation_penalty_weight": args.under_allocation_penalty_weight,
+            "embb_soft_guard_penalty_weight": args.embb_soft_guard_penalty_weight,
+            "embb_soft_guard_ratio": args.embb_soft_guard_ratio,
             "action_smoothness_weight": args.action_smoothness_weight,
             "resource_dynamic_need_weight": args.resource_dynamic_need_weight,
             "resource_waste_deadband": args.resource_waste_deadband,
@@ -532,7 +536,7 @@ def main():
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0)
     parser.add_argument("--warmup_steps", type=int, default=5)
     parser.add_argument("--consecutive_outage_steps", type=int, default=5)
-    parser.add_argument("--p_sta_static_fraction", type=float, default=0.5)
+    parser.add_argument("--p_sta_static_fraction", type=float, default=0.25)
     parser.add_argument("--p_sta_weights", type=str, default="0.3333,0.4000,0.2667")
     parser.add_argument("--reward_alpha", type=float, default=0.3333)
     parser.add_argument("--reward_beta", type=float, default=0.4000)
@@ -540,10 +544,12 @@ def main():
     parser.add_argument("--reward_mode", type=str, default="resource_efficient",
                         choices=["paper", "resource_efficient"],
                         help="Predictive SAC reward formulation")
-    parser.add_argument("--resource_efficiency_weight", type=float, default=0.20)
-    parser.add_argument("--need_match_weight", type=float, default=0.20)
-    parser.add_argument("--waste_penalty_weight", type=float, default=0.20)
-    parser.add_argument("--under_allocation_penalty_weight", type=float, default=0.20)
+    parser.add_argument("--resource_efficiency_weight", type=float, default=0.25)
+    parser.add_argument("--need_match_weight", type=float, default=0.30)
+    parser.add_argument("--waste_penalty_weight", type=float, default=0.35)
+    parser.add_argument("--under_allocation_penalty_weight", type=float, default=0.15)
+    parser.add_argument("--embb_soft_guard_penalty_weight", type=float, default=0.25)
+    parser.add_argument("--embb_soft_guard_ratio", type=float, default=0.80)
     parser.add_argument("--action_smoothness_weight", type=float, default=0.05)
     parser.add_argument("--resource_dynamic_need_weight", type=float, default=0.75)
     parser.add_argument("--resource_waste_deadband", type=float, default=0.03)

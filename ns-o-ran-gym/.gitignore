@@ -163,6 +163,7 @@ cython_debug/
 #.idea/
 
 output/*
+results_controlled/
 time.csv
 *.pdf
 *.pgf

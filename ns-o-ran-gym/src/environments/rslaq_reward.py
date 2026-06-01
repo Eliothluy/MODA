@@ -325,6 +325,20 @@ def _compute_resource_efficiency_terms(
     )
     resource_efficiency = served_score * need_allocation_match
 
+    embb_soft_guard_penalty = 0.0
+    embb_soft_max = sla.get("embb_soft_max_throughput_mbps")
+    if embb_soft_max is not None:
+        soft_max = float(embb_soft_max)
+        guard_ratio = float(config.get("embb_soft_guard_ratio", 0.80))
+        guard_ratio = min(max(guard_ratio, 0.0), 1.0)
+        guard_start = soft_max * guard_ratio
+        embb_metrics = metrics.get(0, {})
+        embb_tx = max(float(embb_metrics.get("dTxBytes_sum", 0.0)), 0.0)
+        embb_thr = max(float(embb_metrics.get("throughputMbps_sum", 0.0)), 0.0)
+        if soft_max > guard_start and embb_tx > 1.0 and embb_thr > guard_start:
+            pressure = min((embb_thr - guard_start) / (soft_max - guard_start), 1.0)
+            embb_soft_guard_penalty = pressure * allocation_share[0]
+
     action_smoothness_penalty = 0.0
     if action_info and "previous_prb_pct" in action_info:
         try:
@@ -345,6 +359,7 @@ def _compute_resource_efficiency_terms(
         "need_allocation_match": need_allocation_match,
         "over_allocation": over_allocation,
         "under_allocation": under_allocation,
+        "embb_soft_guard_penalty": embb_soft_guard_penalty,
         "action_smoothness_penalty": action_smoothness_penalty,
     }
     debug = {
@@ -535,6 +550,7 @@ def compute_rslaq_reward(
     match_weight = float(config.get("need_match_weight", 0.15))
     waste_weight = float(config.get("waste_penalty_weight", 0.25))
     under_weight = float(config.get("under_allocation_penalty_weight", 0.10))
+    embb_soft_guard_weight = float(config.get("embb_soft_guard_penalty_weight", 0.25))
     smooth_weight = float(config.get("action_smoothness_weight", 0.05))
 
     shaping = 0.0
@@ -544,6 +560,7 @@ def compute_rslaq_reward(
             + match_weight * resource_terms["need_allocation_match"]
             - waste_weight * resource_terms["over_allocation"]
             - under_weight * resource_terms["under_allocation"]
+            - embb_soft_guard_weight * resource_terms["embb_soft_guard_penalty"]
             - smooth_weight * resource_terms["action_smoothness_penalty"]
         )
         result.reward += shaping
@@ -561,6 +578,7 @@ def compute_rslaq_reward(
             "need_match_weight": match_weight,
             "waste_penalty_weight": waste_weight,
             "under_allocation_penalty_weight": under_weight,
+            "embb_soft_guard_penalty_weight": embb_soft_guard_weight,
             "action_smoothness_weight": smooth_weight,
         },
         "resource_efficient_shaping": shaping,

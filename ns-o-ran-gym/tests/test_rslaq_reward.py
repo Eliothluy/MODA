@@ -426,6 +426,52 @@ def test_resource_efficient_penalizes_over_allocation():
     assert wasteful.optimization_terms["over_allocation"] > matched.optimization_terms["over_allocation"]
 
 
+def test_resource_efficient_penalizes_embb_near_soft_limit():
+    """The contribution discourages eMBB over-serving before soft SLA zeroes reward."""
+    config = {
+        "reward_mode": "resource_efficient",
+        "resource_efficiency_weight": 0.0,
+        "need_match_weight": 0.0,
+        "waste_penalty_weight": 0.0,
+        "under_allocation_penalty_weight": 0.0,
+        "action_smoothness_weight": 0.0,
+        "embb_soft_guard_penalty_weight": 1.0,
+        "embb_soft_guard_ratio": 0.8,
+        "warmup_steps": 0,
+    }
+    safe_metrics = _good_metrics()
+    safe_metrics[0].update({
+        "throughputMbps_sum": 12.0,
+        "dTxBytes_sum": 20000.0,
+        "dRxBytes_sum": 20000.0,
+    })
+    near_soft_metrics = _good_metrics()
+    near_soft_metrics[0].update({
+        "throughputMbps_sum": 14.5,
+        "dTxBytes_sum": 20000.0,
+        "dRxBytes_sum": 20000.0,
+    })
+
+    safe = compute_rslaq_reward(
+        safe_metrics,
+        scenario="normal",
+        action_info={"prb_pct": [70.0, 20.0, 10.0]},
+        config=config,
+        step_count=POST_WARMUP,
+    )
+    near_soft = compute_rslaq_reward(
+        near_soft_metrics,
+        scenario="normal",
+        action_info={"prb_pct": [70.0, 20.0, 10.0]},
+        config=config,
+        step_count=POST_WARMUP,
+    )
+
+    assert safe.optimization_terms["embb_soft_guard_penalty"] == 0.0
+    assert near_soft.optimization_terms["embb_soft_guard_penalty"] > 0.0
+    assert near_soft.reward < safe.reward
+
+
 def test_resource_efficient_preserves_outage_terminal_reward():
     """Resource-efficient diagnostics do not override Eq. 12 outage penalties."""
     metrics = _good_metrics()
@@ -617,6 +663,7 @@ if __name__ == "__main__":
     test_paper_reward_mode_preserves_default()
     test_paper_reward_mode_exposes_resource_efficiency_diagnostics()
     test_resource_efficient_penalizes_over_allocation()
+    test_resource_efficient_penalizes_embb_near_soft_limit()
     test_resource_efficient_preserves_outage_terminal_reward()
     test_resource_efficient_debug_terms()
     test_sla_violation_can_penalize_without_terminating()

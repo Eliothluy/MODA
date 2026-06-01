@@ -1,0 +1,11 @@
+scenario,ueId,imsi,rnti,sliceId,sliceName,ip,port
+low_traffic,1,1,1,0,eMBB,7.0.0.2,12001
+low_traffic,2,2,2,0,eMBB,7.0.0.3,12002
+low_traffic,3,3,3,1,URLLC,7.0.0.4,12003
+low_traffic,4,4,4,1,URLLC,7.0.0.5,12004
+low_traffic,5,5,5,2,MTC,7.0.0.6,12005
+low_traffic,6,6,6,2,MTC,7.0.0.7,12006
+low_traffic,7,7,7,2,MTC,7.0.0.8,12007
+low_traffic,8,8,8,2,MTC,7.0.0.9,12008
+low_traffic,9,9,9,2,MTC,7.0.0.10,12009
+low_traffic,10,10,10,2,MTC,7.0.0.11,12010
