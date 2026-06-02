@@ -14,7 +14,7 @@
 
 set -Eeuo pipefail
 
-REPO_ROOT="${REPO_ROOT:-/home/eliothluy/Documentos/artigo_jussi}"
+REPO_ROOT="${REPO_ROOT:-/home/elioth/Documentos/artigo_jussi}"
 NS3_DIR="${NS3_DIR:-${REPO_ROOT}/ns-3-dev}"
 GYM_DIR="${GYM_DIR:-${REPO_ROOT}/ns-o-ran-gym}"
 
@@ -33,7 +33,7 @@ EPISODES="$(python3 -c "import math; print(math.ceil(${INTERACTION_STEPS}/${EPIS
 
 APP_START="${APP_START:-0.5}"
 PERIOD_MS="${PERIOD_MS:-10}"
-SIM_TIME="${SIM_TIME:-10.0}"
+SIM_TIME="${SIM_TIME:-5.0}"
 CONSECUTIVE_OUTAGE_STEPS="${CONSECUTIVE_OUTAGE_STEPS:-5}"
 WARMUP_STEPS="${WARMUP_STEPS:-5}"
 SEED_CYCLE="${SEED_CYCLE:-999999}"
@@ -89,6 +89,8 @@ FORECASTER_LR="${FORECASTER_LR:-0.001}"
 FORECASTER_HIDDEN_DIM="${FORECASTER_HIDDEN_DIM:-64}"
 FORECASTER_LIMIT_FILES="${FORECASTER_LIMIT_FILES:-0}"
 FORECASTER_CHECKPOINT="${FORECASTER_CHECKPOINT:-}"
+PREDICTIVE_BASELINE_ROOT="${PREDICTIVE_BASELINE_ROOT:-${OUTPUT_ROOT}/baseline_ns3}"
+PREDICTIVE_FORECAST_SOURCE_ROOT="${PREDICTIVE_FORECAST_SOURCE_ROOT:-${PREDICTIVE_BASELINE_ROOT}/results_rslaq_network_only}"
 PREDICTIVE_FORECAST_SOURCE_FORMAT="${PREDICTIVE_FORECAST_SOURCE_FORMAT:-baseline}"
 
 RUN_BASELINES="${RUN_BASELINES:-1}"
@@ -141,6 +143,8 @@ RSLAQ controlled validation
   forecaster GRU:    ${RUN_FORECASTER_GRU}
   forecaster LSTM:   ${RUN_FORECASTER_LSTM}
   forecaster comparison: ${RUN_FORECASTER_COMPARISON}
+  predictive baseline: ${PREDICTIVE_BASELINE_ROOT}
+  forecast root:     ${PREDICTIVE_FORECAST_SOURCE_ROOT}
   forecast source:   ${PREDICTIVE_FORECAST_SOURCE_FORMAT}
   forecast:          seq=${FORECAST_SEQUENCE_LEN}, horizon=${FORECAST_HORIZON}, epochs=${FORECASTER_EPOCHS}
   predictive reward:  ${PREDICTIVE_REWARD_MODE}, P_STA=${PREDICTIVE_P_STA_FRACTION}
@@ -304,7 +308,7 @@ run_sac() {
 run_forecaster() {
     local cell_type="$1"
     local output_dir="$2"
-    local source_root="${OUTPUT_ROOT}/baseline_ns3/results_rslaq_network_only"
+    local source_root="${PREDICTIVE_FORECAST_SOURCE_ROOT}"
 
     local num_layers=1
     local dropout=0.0
@@ -338,7 +342,11 @@ run_predictive_sac() {
     local seed="$2"
     local forecaster_ckpt="$3"
     local label="$4"
+    local output_dir="${OUTPUT_ROOT}/predictive_sac_${scenario}_seed${seed}"
     local step_logging_args=()
+    if [[ -n "${label}" ]]; then
+        output_dir="${OUTPUT_ROOT}/predictive_sac_${label}_${scenario}_seed${seed}"
+    fi
     if [[ "${ENABLE_STEP_LOGGING}" != "1" ]]; then
         step_logging_args+=(--no-step-logging)
     fi
@@ -385,7 +393,7 @@ run_predictive_sac() {
         --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
         --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
         "${step_logging_args[@]}" \
-        --output "${OUTPUT_ROOT}/predictive_sac_${label}_${scenario}_seed${seed}"
+        --output "${output_dir}"
 }
 
 DRL_FAILURES=0
@@ -463,7 +471,7 @@ if [[ "${RUN_FORECASTER_COMPARISON}" == "1" && "${RUN_FORECASTER_GRU}" == "1" &&
     python3 examples/compare_forecasters.py \
         --gru_checkpoint "${FORECASTER_GRU_CHECKPOINT}" \
         --lstm_checkpoint "${FORECASTER_LSTM_CHECKPOINT}" \
-        --source_root "${OUTPUT_ROOT}/baseline_ns3/results_rslaq_network_only" \
+        --source_root "${PREDICTIVE_FORECAST_SOURCE_ROOT}" \
         --source_format "${PREDICTIVE_FORECAST_SOURCE_FORMAT}" \
         --sequence_len "${FORECAST_SEQUENCE_LEN}" \
         --forecast_horizon "${FORECAST_HORIZON}" \
@@ -933,6 +941,8 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
     "forecaster_lr": ${FORECASTER_LR},
     "forecaster_hidden_dim": ${FORECASTER_HIDDEN_DIM},
     "forecaster_limit_files": ${FORECASTER_LIMIT_FILES},
+    "baseline_root": "${PREDICTIVE_BASELINE_ROOT}",
+    "forecast_source_root": "${PREDICTIVE_FORECAST_SOURCE_ROOT}",
     "forecast_source_format": "${PREDICTIVE_FORECAST_SOURCE_FORMAT}"
   },
   "build_ns3": ${BUILD_NS3},
