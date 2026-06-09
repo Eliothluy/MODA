@@ -37,8 +37,14 @@ SIM_TIME="${SIM_TIME:-5.0}"
 CONSECUTIVE_OUTAGE_STEPS="${CONSECUTIVE_OUTAGE_STEPS:-5}"
 WARMUP_STEPS="${WARMUP_STEPS:-5}"
 SEED_CYCLE="${SEED_CYCLE:-999999}"
+TRAINING_REPLICATES="${TRAINING_REPLICATES:-1}"
+TRAINING_REPLICATE_SEED_STRIDE="${TRAINING_REPLICATE_SEED_STRIDE:-1000}"
+EVAL_EPISODES="${EVAL_EPISODES:-0}"
+EVAL_SEED_OFFSET="${EVAL_SEED_OFFSET:-100000}"
+EVAL_SEED_CYCLE="${EVAL_SEED_CYCLE:-1}"
 DDQN_TERMINATE_ON_SLA_VIOLATION="${DDQN_TERMINATE_ON_SLA_VIOLATION:-0}"
 SAC_TERMINATE_ON_SLA_VIOLATION="${SAC_TERMINATE_ON_SLA_VIOLATION:-0}"
+PREDICTIVE_TERMINATE_ON_SLA_VIOLATION="${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION:-0}"
 
 P_STA_STATIC_FRACTION="${P_STA_STATIC_FRACTION:-0.5}"
 RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION="${RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION:-0.25}"
@@ -98,7 +104,7 @@ RUN_DDQN="${RUN_DDQN:-1}"
 RUN_RESOURCE_EFFICIENT_DDQN="${RUN_RESOURCE_EFFICIENT_DDQN:-1}"
 RUN_PAPER_SAC="${RUN_PAPER_SAC:-1}"
 RUN_RESOURCE_EFFICIENT_SAC="${RUN_RESOURCE_EFFICIENT_SAC:-1}"
-BASELINE_MODES="${BASELINE_MODES:-pure_rr pure_pf pure_bcqi}"
+BASELINE_MODES="${BASELINE_MODES:-pure_rr pure_pf pure_bcqi slice_weighted_pf psta_equal slice_weighted_rr slice_weighted_bcqi}"
 BUILD_NS3="${BUILD_NS3:-1}"
 DRL_JOBS="${DRL_JOBS:-1}"
 ENABLE_STEP_LOGGING="${ENABLE_STEP_LOGGING:-1}"
@@ -115,6 +121,14 @@ if ! [[ "${DRL_JOBS}" =~ ^[0-9]+$ ]] || (( DRL_JOBS < 1 )); then
     echo "DRL_JOBS must be a positive integer, got: ${DRL_JOBS}" >&2
     exit 1
 fi
+if ! [[ "${TRAINING_REPLICATES}" =~ ^[0-9]+$ ]] || (( TRAINING_REPLICATES < 1 )); then
+    echo "TRAINING_REPLICATES must be a positive integer, got: ${TRAINING_REPLICATES}" >&2
+    exit 1
+fi
+if ! [[ "${EVAL_EPISODES}" =~ ^[0-9]+$ ]]; then
+    echo "EVAL_EPISODES must be a non-negative integer, got: ${EVAL_EPISODES}" >&2
+    exit 1
+fi
 
 mkdir -p "${OUTPUT_ROOT}"
 
@@ -124,6 +138,8 @@ RSLAQ controlled validation
   output:            ${OUTPUT_ROOT}
   scenarios:         ${SCENARIOS[*]}
   seeds:             ${SEEDS[*]}
+  training replicas: ${TRAINING_REPLICATES} (stride=${TRAINING_REPLICATE_SEED_STRIDE})
+  eval episodes:     ${EVAL_EPISODES} (offset=${EVAL_SEED_OFFSET}, cycle=${EVAL_SEED_CYCLE})
   budget:            ${EPISODES} episodes x ${EPISODE_STEPS} steps = $((EPISODES * EPISODE_STEPS))
   simTime:           ${SIM_TIME}s
   P_STA fraction:    paper=${P_STA_STATIC_FRACTION}, contribution=${RESOURCE_EFFICIENT_P_STA_STATIC_FRACTION}
@@ -134,6 +150,7 @@ RSLAQ controlled validation
   DDQNd contribution:${RUN_RESOURCE_EFFICIENT_DDQN}
   DDQN SLA terminal: ${DDQN_TERMINATE_ON_SLA_VIOLATION}
   SAC SLA terminal:  ${SAC_TERMINATE_ON_SLA_VIOLATION}
+  predictive SLA terminal: ${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION}
   SAC paper:         ${RUN_PAPER_SAC}
   SAC contribution:  ${RUN_RESOURCE_EFFICIENT_SAC}
   predictive SAC:    ${RUN_PREDICTIVE_SAC}
@@ -165,7 +182,7 @@ else
 fi
 
 if [[ "${RUN_BASELINES}" == "1" ]]; then
-    echo "[baseline_ns3] Running pure ns-3 baseline matrix"
+    echo "[baseline_ns3] Running ns-3 baseline matrix"
     SCENARIOS="${SCENARIOS[*]}" \
     SEEDS="${SEEDS[*]}" \
     RUNS="1" \
@@ -180,11 +197,28 @@ fi
 
 cd "${GYM_DIR}"
 
+training_seed_for() {
+    local base_seed="$1"
+    local replicate="$2"
+    echo $((base_seed + (replicate - 1) * TRAINING_REPLICATE_SEED_STRIDE))
+}
+
+replicate_suffix_for() {
+    local replicate="$1"
+    if (( TRAINING_REPLICATES > 1 )); then
+        printf "_rep%s" "${replicate}"
+    fi
+}
+
 run_ddqn() {
     local reward_mode="$1"
     local label="$2"
     local scenario="$3"
-    local seed="$4"
+    local base_seed="$4"
+    local training_seed="$5"
+    local replicate="$6"
+    local suffix
+    suffix="$(replicate_suffix_for "${replicate}")"
     local p_sta_fraction="${P_STA_STATIC_FRACTION}"
     local terminal_args=()
     local step_logging_args=()
@@ -198,11 +232,11 @@ run_ddqn() {
         step_logging_args+=(--no-step-logging)
     fi
 
-    echo "[DDQN ${label}] scenario=${scenario} seed=${seed} reward=${reward_mode}"
+    echo "[DDQN ${label}] scenario=${scenario} seed=${base_seed} replicate=${replicate} training_seed=${training_seed} reward=${reward_mode}"
     python3 examples/rslaq_train_ddqn.py \
         --scenario "${scenario}" \
         --episodes "${EPISODES}" \
-        --seed "${seed}" \
+        --seed "${training_seed}" \
         --seed_cycle "${SEED_CYCLE}" \
         --simTime "${SIM_TIME}" \
         --appStart "${APP_START}" \
@@ -239,16 +273,23 @@ run_ddqn() {
         --compute_cost_per_hour_usd "${COMPUTE_COST_PER_HOUR_USD}" \
         --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
         --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
+        --eval_episodes "${EVAL_EPISODES}" \
+        --eval_seed_offset "${EVAL_SEED_OFFSET}" \
+        --eval_seed_cycle "${EVAL_SEED_CYCLE}" \
         "${step_logging_args[@]}" \
         "${terminal_args[@]}" \
-        --output "${OUTPUT_ROOT}/ddqn_${label}_${scenario}_seed${seed}"
+        --output "${OUTPUT_ROOT}/ddqn_${label}_${scenario}_seed${base_seed}${suffix}"
 }
 
 run_sac() {
     local reward_mode="$1"
     local label="$2"
     local scenario="$3"
-    local seed="$4"
+    local base_seed="$4"
+    local training_seed="$5"
+    local replicate="$6"
+    local suffix
+    suffix="$(replicate_suffix_for "${replicate}")"
     local p_sta_fraction="${P_STA_STATIC_FRACTION}"
     local terminal_args=()
     local step_logging_args=()
@@ -262,11 +303,11 @@ run_sac() {
         step_logging_args+=(--no-step-logging)
     fi
 
-    echo "[SAC ${label}] scenario=${scenario} seed=${seed} reward=${reward_mode}"
+    echo "[SAC ${label}] scenario=${scenario} seed=${base_seed} replicate=${replicate} training_seed=${training_seed} reward=${reward_mode}"
     python3 examples/rslaq_train_sac.py \
         --scenario "${scenario}" \
         --episodes "${EPISODES}" \
-        --seed "${seed}" \
+        --seed "${training_seed}" \
         --seed_cycle "${SEED_CYCLE}" \
         --simTime "${SIM_TIME}" \
         --appStart "${APP_START}" \
@@ -300,9 +341,12 @@ run_sac() {
         --compute_cost_per_hour_usd "${COMPUTE_COST_PER_HOUR_USD}" \
         --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
         --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
+        --eval_episodes "${EVAL_EPISODES}" \
+        --eval_seed_offset "${EVAL_SEED_OFFSET}" \
+        --eval_seed_cycle "${EVAL_SEED_CYCLE}" \
         "${step_logging_args[@]}" \
         "${terminal_args[@]}" \
-        --output "${OUTPUT_ROOT}/sac_${label}_${scenario}_seed${seed}"
+        --output "${OUTPUT_ROOT}/sac_${label}_${scenario}_seed${base_seed}${suffix}"
 }
 
 run_forecaster() {
@@ -339,23 +383,31 @@ run_forecaster() {
 
 run_predictive_sac() {
     local scenario="$1"
-    local seed="$2"
+    local base_seed="$2"
     local forecaster_ckpt="$3"
     local label="$4"
-    local output_dir="${OUTPUT_ROOT}/predictive_sac_${scenario}_seed${seed}"
+    local training_seed="$5"
+    local replicate="$6"
+    local suffix
+    suffix="$(replicate_suffix_for "${replicate}")"
+    local output_dir="${OUTPUT_ROOT}/predictive_sac_${scenario}_seed${base_seed}${suffix}"
     local step_logging_args=()
+    local predictive_terminal_args=()
     if [[ -n "${label}" ]]; then
-        output_dir="${OUTPUT_ROOT}/predictive_sac_${label}_${scenario}_seed${seed}"
+        output_dir="${OUTPUT_ROOT}/predictive_sac_${label}_${scenario}_seed${base_seed}${suffix}"
     fi
     if [[ "${ENABLE_STEP_LOGGING}" != "1" ]]; then
         step_logging_args+=(--no-step-logging)
     fi
+    if [[ "${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION}" == "1" ]]; then
+        predictive_terminal_args+=(--terminate-on-sla-violation)
+    fi
 
-    echo "[Predictive SAC ${label}] scenario=${scenario} seed=${seed} forecaster=${forecaster_ckpt}"
+    echo "[Predictive SAC ${label}] scenario=${scenario} seed=${base_seed} replicate=${replicate} training_seed=${training_seed} forecaster=${forecaster_ckpt}"
     python3 examples/rslaq_train_predictive_sac.py \
         --scenario "${scenario}" \
         --episodes "${EPISODES}" \
-        --seed "${seed}" \
+        --seed "${training_seed}" \
         --seed_cycle "${SEED_CYCLE}" \
         --simTime "${SIM_TIME}" \
         --appStart "${APP_START}" \
@@ -392,61 +444,13 @@ run_predictive_sac() {
         --compute_cost_per_hour_usd "${COMPUTE_COST_PER_HOUR_USD}" \
         --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
         --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
+        --eval_episodes "${EVAL_EPISODES}" \
+        --eval_seed_offset "${EVAL_SEED_OFFSET}" \
+        --eval_seed_cycle "${EVAL_SEED_CYCLE}" \
+        "${predictive_terminal_args[@]}" \
         "${step_logging_args[@]}" \
         --output "${output_dir}"
 }
-
-DRL_FAILURES=0
-DRL_RUNNING=0
-
-run_drl_job() {
-    if (( DRL_JOBS == 1 )); then
-        "$@"
-        return
-    fi
-
-    "$@" &
-    DRL_RUNNING=$((DRL_RUNNING + 1))
-    if (( DRL_RUNNING >= DRL_JOBS )); then
-        if ! wait -n; then
-            DRL_FAILURES=$((DRL_FAILURES + 1))
-        fi
-        DRL_RUNNING=$((DRL_RUNNING - 1))
-    fi
-}
-
-wait_for_drl_jobs() {
-    while (( DRL_RUNNING > 0 )); do
-        if ! wait -n; then
-            DRL_FAILURES=$((DRL_FAILURES + 1))
-        fi
-        DRL_RUNNING=$((DRL_RUNNING - 1))
-    done
-
-    if (( DRL_FAILURES > 0 )); then
-        echo "DRL campaign failed: ${DRL_FAILURES} job(s) returned non-zero status" >&2
-        exit 1
-    fi
-}
-
-for scenario in "${SCENARIOS[@]}"; do
-    for seed in "${SEEDS[@]}"; do
-        if [[ "${RUN_DDQN}" == "1" ]]; then
-            run_drl_job run_ddqn "paper" "paper" "${scenario}" "${seed}"
-        fi
-        if [[ "${RUN_RESOURCE_EFFICIENT_DDQN}" == "1" ]]; then
-            run_drl_job run_ddqn "resource_efficient" "resource_efficient" "${scenario}" "${seed}"
-        fi
-        if [[ "${RUN_PAPER_SAC}" == "1" ]]; then
-            run_drl_job run_sac "paper" "paper" "${scenario}" "${seed}"
-        fi
-        if [[ "${RUN_RESOURCE_EFFICIENT_SAC}" == "1" ]]; then
-            run_drl_job run_sac "resource_efficient" "resource_efficient" "${scenario}" "${seed}"
-        fi
-    done
-done
-
-wait_for_drl_jobs
 
 FORECASTER_GRU_CHECKPOINT="${OUTPUT_ROOT}/forecaster_gru/forecaster_best.pt"
 FORECASTER_LSTM_CHECKPOINT="${OUTPUT_ROOT}/forecaster_lstm/forecaster_best.pt"
@@ -484,26 +488,88 @@ if [[ "${RUN_FORECASTER_COMPARISON}" == "1" && "${RUN_FORECASTER_GRU}" == "1" &&
         --output "${OUTPUT_ROOT}/forecaster_article_figures"
 fi
 
-if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
-    for scenario in "${SCENARIOS[@]}"; do
-        for seed in "${SEEDS[@]}"; do
-            if [[ "${RUN_PREDICTIVE_SAC_GRU}" == "1" ]]; then
-                run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_GRU_CHECKPOINT}" "gru"
+DRL_FAILURES=0
+DRL_RUNNING=0
+
+run_drl_job() {
+    if (( DRL_JOBS == 1 )); then
+        "$@"
+        return
+    fi
+
+    "$@" &
+    DRL_RUNNING=$((DRL_RUNNING + 1))
+    if (( DRL_RUNNING >= DRL_JOBS )); then
+        if ! wait -n; then
+            DRL_FAILURES=$((DRL_FAILURES + 1))
+        fi
+        DRL_RUNNING=$((DRL_RUNNING - 1))
+    fi
+}
+
+wait_for_drl_jobs() {
+    while (( DRL_RUNNING > 0 )); do
+        if ! wait -n; then
+            DRL_FAILURES=$((DRL_FAILURES + 1))
+        fi
+        DRL_RUNNING=$((DRL_RUNNING - 1))
+    done
+
+    if (( DRL_FAILURES > 0 )); then
+        echo "DRL campaign failed: ${DRL_FAILURES} job(s) returned non-zero status" >&2
+        exit 1
+    fi
+}
+
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        for replicate in $(seq 1 "${TRAINING_REPLICATES}"); do
+            training_seed="$(training_seed_for "${seed}" "${replicate}")"
+            if [[ "${RUN_DDQN}" == "1" ]]; then
+                run_drl_job run_ddqn "paper" "paper" "${scenario}" "${seed}" "${training_seed}" "${replicate}"
             fi
-            if [[ "${RUN_PREDICTIVE_SAC_LSTM}" == "1" ]]; then
-                run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_LSTM_CHECKPOINT}" "lstm"
+            if [[ "${RUN_RESOURCE_EFFICIENT_DDQN}" == "1" ]]; then
+                run_drl_job run_ddqn "resource_efficient" "resource_efficient" "${scenario}" "${seed}" "${training_seed}" "${replicate}"
             fi
-            if [[ "${RUN_PREDICTIVE_SAC_GRU}" != "1" && "${RUN_PREDICTIVE_SAC_LSTM}" != "1" ]]; then
-                # Default legacy behavior: single predictive_sac without gru/lstm label
-                run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_GRU_CHECKPOINT}" ""
+            if [[ "${RUN_PAPER_SAC}" == "1" ]]; then
+                run_drl_job run_sac "paper" "paper" "${scenario}" "${seed}" "${training_seed}" "${replicate}"
+            fi
+            if [[ "${RUN_RESOURCE_EFFICIENT_SAC}" == "1" ]]; then
+                run_drl_job run_sac "resource_efficient" "resource_efficient" "${scenario}" "${seed}" "${training_seed}" "${replicate}"
+            fi
+            if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
+                if [[ "${RUN_PREDICTIVE_SAC_GRU}" == "1" ]]; then
+                    run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_GRU_CHECKPOINT}" "gru" "${training_seed}" "${replicate}"
+                fi
+                if [[ "${RUN_PREDICTIVE_SAC_LSTM}" == "1" ]]; then
+                    run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_LSTM_CHECKPOINT}" "lstm" "${training_seed}" "${replicate}"
+                fi
+                if [[ "${RUN_PREDICTIVE_SAC_GRU}" != "1" && "${RUN_PREDICTIVE_SAC_LSTM}" != "1" ]]; then
+                    # Default legacy behavior: single predictive_sac without gru/lstm label.
+                    run_drl_job run_predictive_sac "${scenario}" "${seed}" "${FORECASTER_GRU_CHECKPOINT}" "" "${training_seed}" "${replicate}"
+                fi
             fi
         done
     done
-    wait_for_drl_jobs
-fi
+done
+
+wait_for_drl_jobs
 
 write_drl_comparison() {
-    python3 - "${OUTPUT_ROOT}" <<'PY'
+    python3 - "${OUTPUT_ROOT}" \
+        "${REWARD_ALPHA}" \
+        "${REWARD_BETA}" \
+        "${REWARD_GAMMA}" \
+        "${RESOURCE_EFFICIENCY_WEIGHT}" \
+        "${NEED_MATCH_WEIGHT}" \
+        "${WASTE_PENALTY_WEIGHT}" \
+        "${UNDER_ALLOCATION_PENALTY_WEIGHT}" \
+        "${EMBB_SOFT_GUARD_PENALTY_WEIGHT}" \
+        "${EMBB_SOFT_GUARD_RATIO}" \
+        "${ACTION_SMOOTHNESS_WEIGHT}" \
+        "${RESOURCE_DYNAMIC_NEED_WEIGHT}" \
+        "${RESOURCE_WASTE_DEADBAND}" \
+        "${PERIOD_MS}" <<'PY'
 import csv
 import io
 import json
@@ -513,14 +579,35 @@ from collections import defaultdict
 from pathlib import Path
 from statistics import mean
 
+sys.path.insert(0, str(Path.cwd() / "src"))
+from environments.rslaq_reward import compute_rslaq_reward
+
 root = Path(sys.argv[1])
+
+SLICE_NAME_TO_ID = {
+    "embb": 0,
+    "eMBB": 0,
+    "urllc": 1,
+    "URLLC": 1,
+    "mtc": 2,
+    "MTC": 2,
+}
+SLICE_AWARE_BASELINE_MODES = {
+    "slice_rr",
+    "slice_pf",
+    "slice_bcqi",
+    "slice_weighted_rr",
+    "slice_weighted_pf",
+    "slice_weighted_bcqi",
+    "psta_equal",
+}
 
 LINE_SPECS = [
     {
         "line": "ddqn_paper",
         "algo": "ddqn",
         "reward_mode": "paper",
-        "pattern": re.compile(r"ddqn_paper_(.*)_seed(\d+)$"),
+        "pattern": re.compile(r"ddqn_paper_(.*)_seed(\d+)(?:_rep(\d+))?$"),
         "training_log": "ddqn_training_log.csv",
         "summary_file": "ddqn_summary.json",
     },
@@ -528,7 +615,7 @@ LINE_SPECS = [
         "line": "ddqn_resource_efficient",
         "algo": "ddqn",
         "reward_mode": "resource_efficient",
-        "pattern": re.compile(r"ddqn_resource_efficient_(.*)_seed(\d+)$"),
+        "pattern": re.compile(r"ddqn_resource_efficient_(.*)_seed(\d+)(?:_rep(\d+))?$"),
         "training_log": "ddqn_training_log.csv",
         "summary_file": "ddqn_summary.json",
     },
@@ -536,7 +623,7 @@ LINE_SPECS = [
         "line": "sac_paper",
         "algo": "sac",
         "reward_mode": "paper",
-        "pattern": re.compile(r"sac_paper_(.*)_seed(\d+)$"),
+        "pattern": re.compile(r"sac_paper_(.*)_seed(\d+)(?:_rep(\d+))?$"),
         "training_log": "sac_training_log.csv",
         "summary_file": "sac_summary.json",
     },
@@ -544,7 +631,7 @@ LINE_SPECS = [
         "line": "sac_resource_efficient",
         "algo": "sac",
         "reward_mode": "resource_efficient",
-        "pattern": re.compile(r"sac_resource_efficient_(.*)_seed(\d+)$"),
+        "pattern": re.compile(r"sac_resource_efficient_(.*)_seed(\d+)(?:_rep(\d+))?$"),
         "training_log": "sac_training_log.csv",
         "summary_file": "sac_summary.json",
     },
@@ -552,25 +639,25 @@ LINE_SPECS = [
         "line": "predictive_sac",
         "algo": "predictive_sac",
         "reward_mode": "resource_efficient",
-        "pattern": re.compile(r"predictive_sac_(.*)_seed(\d+)$"),
-        "training_log": "sac_training_log.csv",
-        "summary_file": "sac_summary.json",
+        "pattern": re.compile(r"predictive_sac_(.*)_seed(\d+)(?:_rep(\d+))?$"),
+        "training_log": "predictive_sac_training_log.csv",
+        "summary_file": "predictive_sac_summary.json",
     },
     {
         "line": "predictive_sac_gru",
         "algo": "predictive_sac",
         "reward_mode": "resource_efficient",
-        "pattern": re.compile(r"predictive_sac_gru_(.*)_seed(\d+)$"),
-        "training_log": "sac_training_log.csv",
-        "summary_file": "sac_summary.json",
+        "pattern": re.compile(r"predictive_sac_gru_(.*)_seed(\d+)(?:_rep(\d+))?$"),
+        "training_log": "predictive_sac_training_log.csv",
+        "summary_file": "predictive_sac_summary.json",
     },
     {
         "line": "predictive_sac_lstm",
         "algo": "predictive_sac",
         "reward_mode": "resource_efficient",
-        "pattern": re.compile(r"predictive_sac_lstm_(.*)_seed(\d+)$"),
-        "training_log": "sac_training_log.csv",
-        "summary_file": "sac_summary.json",
+        "pattern": re.compile(r"predictive_sac_lstm_(.*)_seed(\d+)(?:_rep(\d+))?$"),
+        "training_log": "predictive_sac_training_log.csv",
+        "summary_file": "predictive_sac_summary.json",
     },
 ]
 
@@ -610,6 +697,31 @@ def to_int(value, default=0):
         return default
 
 
+def argv_float(index: int, default: float) -> float:
+    return to_float(sys.argv[index], default) if len(sys.argv) > index else default
+
+
+BASELINE_REWARD_CONFIG = {
+    "reward_mode": "resource_efficient",
+    "warmup_steps": 0,
+    "consecutive_outage_steps": 1,
+    "terminate_on_sla_violation": False,
+    "alpha": argv_float(2, 0.3333),
+    "beta": argv_float(3, 0.4000),
+    "gamma": argv_float(4, 0.2667),
+    "resource_efficiency_weight": argv_float(5, 0.25),
+    "need_match_weight": argv_float(6, 0.30),
+    "waste_penalty_weight": argv_float(7, 0.35),
+    "under_allocation_penalty_weight": argv_float(8, 0.15),
+    "embb_soft_guard_penalty_weight": argv_float(9, 0.25),
+    "embb_soft_guard_ratio": argv_float(10, 0.80),
+    "action_smoothness_weight": argv_float(11, 0.05),
+    "resource_dynamic_need_weight": argv_float(12, 0.75),
+    "resource_waste_deadband": argv_float(13, 0.03),
+    "period_ms": argv_float(14, 10.0),
+}
+
+
 def avg(values):
     values = [value for value in values if value is not None]
     return mean(values) if values else 0.0
@@ -633,11 +745,22 @@ def tail_training_summary(run_dir: Path, training_log: str):
 
 
 def compute_summary(run_dir: Path, summary_file: str):
-    compute = read_json(run_dir / summary_file).get("compute", {})
+    summary = read_json(run_dir / summary_file)
+    compute = summary.get("compute", {})
     training = compute.get("training", {})
     xapp = compute.get("xapp_runtime", {})
     cost = compute.get("cost_estimate", {})
+    evaluation = summary.get("evaluation_metrics", {})
     return {
+        "eval_enabled": 1 if evaluation.get("enabled") else 0,
+        "eval_episodes": to_int(evaluation.get("eval_episodes")),
+        "eval_seed": to_int(evaluation.get("eval_seed")),
+        "eval_seed_cycle": to_int(evaluation.get("eval_seed_cycle")),
+        "eval_mean_reward": to_float(evaluation.get("mean_reward", evaluation.get("mean_base_reward"))),
+        "eval_mean_shaped_reward": to_float(evaluation.get("mean_shaped_reward")),
+        "eval_mean_outage_count": to_float(evaluation.get("mean_outage_count")),
+        "eval_mean_soft_count": to_float(evaluation.get("mean_soft_count")),
+        "eval_mean_steps": to_float(evaluation.get("mean_steps")),
         "compute_wall_time_s": to_float(training.get("wall_time_s")),
         "compute_cpu_time_s": to_float(training.get("cpu_time_s")),
         "compute_child_cpu_time_s": to_float(training.get("child_cpu_time_s")),
@@ -657,13 +780,17 @@ def compute_summary(run_dir: Path, summary_file: str):
     }
 
 
-def step_summary(run_dir: Path, max_episode: int):
+def step_summary(run_dir: Path, max_episode: int, eval_seed: int = 0):
     lower_episode = max(max_episode - 10, 0) if max_episode > 0 else 0
     grouped = defaultdict(list)
     for path in run_dir.glob("*/step_metrics.csv"):
         for row in read_csv(path):
             episode = to_int(row.get("episode"), -1)
-            if episode <= lower_episode:
+            seed = to_int(row.get("seed"), 0)
+            if eval_seed > 0:
+                if seed < eval_seed:
+                    continue
+            elif episode <= lower_episode:
                 continue
             key = (row.get("sim_id"), row.get("episode"), row.get("step"))
             grouped[key].append(row)
@@ -703,10 +830,14 @@ def step_summary(run_dir: Path, max_episode: int):
                 slice_totals[prefix][metric] += to_float(row.get(column))
 
     denom = max(step_count, 1)
-    result = {"step_count": step_count}
+    result = {"step_count": step_count, "step_source": "evaluation" if eval_seed > 0 else "late_training"}
     for name, total in totals.items():
         result[name] = total / denom
     result["sla_reliability"] = 1.0 - result.get("violation_rate", 0.0)
+    result["rslaq_outage_rate"] = result.get("outage_rate", 0.0)
+    result["rslaq_soft_rate"] = result.get("soft_rate", 0.0)
+    result["rslaq_violation_rate"] = result.get("violation_rate", 0.0)
+    result["rslaq_sla_reliability"] = result.get("sla_reliability", 0.0)
 
     for prefix in ["embb", "urllc", "mtc"]:
         denom_slice = max(slice_counts[prefix], 1)
@@ -716,6 +847,230 @@ def step_summary(run_dir: Path, max_episode: int):
     rsh_sq_sum = sum(value * value for value in rsh_values)
     result["resource_fairness"] = (sum(rsh_values) ** 2) / (3.0 * rsh_sq_sum) if rsh_sq_sum > 0.0 else 0.0
     return result
+
+
+def slice_id(value) -> int:
+    text = str(value or "").strip()
+    if text in SLICE_NAME_TO_ID:
+        return SLICE_NAME_TO_ID[text]
+    lowered = text.lower()
+    if lowered in SLICE_NAME_TO_ID:
+        return SLICE_NAME_TO_ID[lowered]
+    return to_int(text, -1)
+
+
+def slice_prefix(value) -> str:
+    sid = slice_id(value)
+    if sid == 0:
+        return "embb"
+    if sid == 1:
+        return "urllc"
+    if sid == 2:
+        return "mtc"
+    return "unknown"
+
+
+def path_value(path: Path, prefix: str, default: str = "") -> str:
+    for part in path.parts:
+        if part.startswith(prefix):
+            return part[len(prefix):]
+    return default
+
+
+def seed_run_from_path(path: Path) -> tuple[int, int]:
+    match = re.search(r"seed=(\d+)_run=(\d+)", str(path))
+    if not match:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
+
+
+def scheduler_id_from_mode(mode: str) -> int:
+    lowered = mode.lower()
+    if "bcqi" in lowered:
+        return 2
+    if "pf" in lowered:
+        return 1
+    return 0
+
+
+def load_slice_allocations(run_dir: Path) -> dict[int, list[float]]:
+    allocations = {}
+    for row in read_csv(run_dir / "slice_alloc.csv"):
+        timestamp = to_int(row.get("timestamp_ms"), -1)
+        sid = slice_id(row.get("slice"))
+        if timestamp < 0 or sid not in (0, 1, 2):
+            continue
+        pct = to_float(row.get("rsh_real_pct"), to_float(row.get("configured_weight")) * 100.0)
+        allocations.setdefault(timestamp, [0.0, 0.0, 0.0])[sid] = max(pct, 0.0)
+    return allocations
+
+
+def allocation_for_timestamp(timestamp: int, allocations: dict[int, list[float]], metrics: dict[int, dict]) -> list[float]:
+    if timestamp in allocations and sum(allocations[timestamp]) > 0.0:
+        return allocations[timestamp]
+    previous = [ts for ts, alloc in allocations.items() if ts <= timestamp and sum(alloc) > 0.0]
+    if previous:
+        return allocations[max(previous)]
+    observed = [
+        max(float(metrics.get(sid, {}).get("resourceSharePct_mean", 0.0)), 0.0)
+        for sid in range(3)
+    ]
+    if sum(observed) > 0.0:
+        return observed
+    return [100.0 / 3.0, 100.0 / 3.0, 100.0 / 3.0]
+
+
+def baseline_metrics_from_rows(rows: list[dict], allocation_pct: list[float]) -> dict[int, dict]:
+    metrics = {}
+    for sid in range(3):
+        slice_rows = [row for row in rows if slice_id(row.get("slice")) == sid]
+        buffers = [
+            to_float(row.get("buffer_bytes"))
+            for row in slice_rows
+            if to_float(row.get("buffer_bytes"), -1.0) >= 0.0
+        ]
+        metrics[sid] = {
+            "throughputMbps_sum": sum(to_float(row.get("thr_mbps")) for row in slice_rows),
+            "dTxBytes_sum": sum(to_float(row.get("tx_bytes_delta")) for row in slice_rows),
+            "dRxBytes_sum": sum(to_float(row.get("rx_bytes_delta")) for row in slice_rows),
+            "dLostPackets_sum": sum(to_float(row.get("dropped_packets_delta")) for row in slice_rows),
+            "bufferBytes_mean": avg(buffers),
+            "bufferBytes_max": max(buffers) if buffers else 0.0,
+            "resourceSharePct_mean": allocation_pct[sid] if sid < len(allocation_pct) else 0.0,
+            "ue_count": float(len(slice_rows)),
+        }
+    return metrics
+
+
+def native_baseline_summary(run_dir: Path) -> dict:
+    rows = read_csv(run_dir / "summary.csv")
+    result = {
+        "native_sla_satisfaction_pct": avg(to_float(row.get("sla_satisfaction_pct")) for row in rows),
+        "native_offered_load_satisfaction_pct": avg(to_float(row.get("offered_load_satisfaction_pct")) for row in rows),
+        "native_pdr_pct": avg(to_float(row.get("pdr_pct")) for row in rows),
+    }
+    for row in rows:
+        prefix = slice_prefix(row.get("slice"))
+        if prefix == "unknown":
+            continue
+        result[f"native_{prefix}_sla_satisfaction_pct"] = to_float(row.get("sla_satisfaction_pct"))
+        result[f"native_{prefix}_offered_load_satisfaction_pct"] = to_float(row.get("offered_load_satisfaction_pct"))
+        result[f"native_{prefix}_pdr_pct"] = to_float(row.get("pdr_pct"))
+    return result
+
+
+def baseline_step_summary(run_dir: Path, scenario: str, mode: str) -> dict:
+    grouped = defaultdict(list)
+    for row in read_csv(run_dir / "timeseries.csv"):
+        timestamp = to_int(row.get("timestamp_ms"), -1)
+        if timestamp >= 0:
+            grouped[timestamp].append(row)
+
+    step_count = len(grouped)
+    if step_count == 0:
+        return {"step_count": 0}
+
+    allocations = load_slice_allocations(run_dir)
+    scheduler_id = scheduler_id_from_mode(mode)
+    previous_action = None
+    totals = defaultdict(float)
+    slice_totals = defaultdict(lambda: defaultdict(float))
+    slice_counts = defaultdict(int)
+
+    for step, timestamp in enumerate(sorted(grouped), start=1):
+        rows = grouped[timestamp]
+        rough_metrics = baseline_metrics_from_rows(rows, [0.0, 0.0, 0.0])
+        allocation_pct = allocation_for_timestamp(timestamp, allocations, rough_metrics)
+        metrics = baseline_metrics_from_rows(rows, allocation_pct)
+        action_info = {"prb_pct": allocation_pct, "scheduler_id": scheduler_id}
+        if previous_action is not None:
+            action_info["previous_prb_pct"] = previous_action
+        reward = compute_rslaq_reward(
+            metrics,
+            scenario=scenario,
+            action_info=action_info,
+            config=BASELINE_REWARD_CONFIG,
+            step_count=step,
+        )
+
+        has_outage = any(bool(flag) for flag in reward.outage_flags.values())
+        has_soft = any(bool(flag) for flag in reward.soft_flags.values())
+        totals["outage_rate"] += float(has_outage)
+        totals["soft_rate"] += float(has_soft)
+        totals["violation_rate"] += float(has_outage or has_soft)
+        totals["reward"] += float(reward.reward)
+        for name in [
+            "resource_efficiency", "need_allocation_match", "over_allocation",
+            "under_allocation", "embb_soft_guard_penalty", "action_smoothness_penalty",
+            "resource_efficient_shaping",
+        ]:
+            totals[name] += to_float(reward.optimization_terms.get(name))
+        totals["action_embb"] += allocation_pct[0] if len(allocation_pct) > 0 else 0.0
+        totals["action_urllc"] += allocation_pct[1] if len(allocation_pct) > 1 else 0.0
+        totals["action_mtc"] += allocation_pct[2] if len(allocation_pct) > 2 else 0.0
+
+        for sid, prefix in enumerate(["embb", "urllc", "mtc"]):
+            values = metrics.get(sid, {})
+            tx_bytes = to_float(values.get("dTxBytes_sum"))
+            rx_bytes = to_float(values.get("dRxBytes_sum"))
+            plr_pct = max(0.0, min(100.0, 100.0 - (100.0 * rx_bytes / tx_bytes))) if tx_bytes > 0.0 else 0.0
+            slice_counts[prefix] += 1
+            slice_totals[prefix]["thr"] += to_float(values.get("throughputMbps_sum"))
+            slice_totals[prefix]["plr"] += plr_pct
+            slice_totals[prefix]["buffer"] += to_float(values.get("bufferBytes_mean"))
+            slice_totals[prefix]["lost"] += to_float(values.get("dLostPackets_sum"))
+            slice_totals[prefix]["rsh"] += to_float(values.get("resourceSharePct_mean"))
+
+        previous_action = allocation_pct
+
+    result = {"step_count": step_count}
+    denom = max(step_count, 1)
+    for name, total in totals.items():
+        result[name] = total / denom
+    result["sla_reliability"] = 1.0 - result.get("violation_rate", 0.0)
+    result["rslaq_outage_rate"] = result.get("outage_rate", 0.0)
+    result["rslaq_soft_rate"] = result.get("soft_rate", 0.0)
+    result["rslaq_violation_rate"] = result.get("violation_rate", 0.0)
+    result["rslaq_sla_reliability"] = result.get("sla_reliability", 0.0)
+    result["resource_allocation_observed"] = 1.0 if allocations else 0.0
+
+    for prefix in ["embb", "urllc", "mtc"]:
+        denom_slice = max(slice_counts[prefix], 1)
+        for metric, total in slice_totals[prefix].items():
+            result[f"{prefix}_{metric}"] = total / denom_slice
+    rsh_values = [result.get("embb_rsh", 0.0), result.get("urllc_rsh", 0.0), result.get("mtc_rsh", 0.0)]
+    rsh_sq_sum = sum(value * value for value in rsh_values)
+    result["resource_fairness"] = (sum(rsh_values) ** 2) / (3.0 * rsh_sq_sum) if rsh_sq_sum > 0.0 else 0.0
+    return result
+
+
+def collect_baseline_runs():
+    rows = []
+    baseline_root = root / "baseline_ns3" / "results_rslaq_network_only"
+    if not baseline_root.exists():
+        return rows
+    for timeseries_path in sorted(baseline_root.glob("**/timeseries.csv")):
+        run_dir = timeseries_path.parent
+        scenario = path_value(run_dir, "scenario=", "normal")
+        mode = path_value(run_dir, "mode=", "unknown")
+        seed, run = seed_run_from_path(run_dir)
+        baseline_class = "slice_aware" if mode in SLICE_AWARE_BASELINE_MODES else "native"
+        row = {
+            "line": f"baseline_{mode}",
+            "algo": "ns3_baseline",
+            "reward_mode": "resource_efficient_eval",
+            "baseline_class": baseline_class,
+            "scenario": scenario,
+            "seed": seed,
+            "run": run,
+            "run_dir": str(run_dir),
+            "episodes": 1,
+            "max_episode": 1,
+        }
+        row.update(baseline_step_summary(run_dir, scenario, mode))
+        row.update(native_baseline_summary(run_dir))
+        rows.append(row)
+    return rows
 
 
 def collect_runs():
@@ -728,15 +1083,20 @@ def collect_runs():
             if not match:
                 continue
             scenario, seed = match.group(1), int(match.group(2))
+            replicate = int(match.group(3) or 1)
             training = tail_training_summary(run_dir, spec["training_log"])
-            step = step_summary(run_dir, training.get("max_episode", 0))
             compute = compute_summary(run_dir, spec["summary_file"])
+            eval_seed = to_int(compute.get("eval_seed")) if to_int(compute.get("eval_enabled")) else 0
+            step = step_summary(run_dir, training.get("max_episode", 0), eval_seed)
             row = {
                 "line": spec["line"],
                 "algo": spec["algo"],
                 "reward_mode": spec["reward_mode"],
+                "baseline_class": "drl",
                 "scenario": scenario,
                 "seed": seed,
+                "run": replicate,
+                "replicate": replicate,
                 "run_dir": str(run_dir),
             }
             row.update(training)
@@ -750,12 +1110,12 @@ def collect_runs():
 def aggregate(rows):
     groups = defaultdict(list)
     for row in rows:
-        groups[(row["line"], row["algo"], row["reward_mode"], row["scenario"])].append(row)
+        groups[(row["line"], row["algo"], row["reward_mode"], row.get("baseline_class", ""), row["scenario"])].append(row)
 
     numeric_keys = sorted(
         key
         for key in {key for row in rows for key in row.keys()}
-        if key not in {"line", "algo", "reward_mode", "scenario", "seed", "run_dir"}
+        if key not in {"line", "algo", "reward_mode", "baseline_class", "scenario", "seed", "run", "replicate", "run_dir", "step_source"}
     )
     summary_rows = []
     for key, items in sorted(groups.items()):
@@ -763,7 +1123,8 @@ def aggregate(rows):
             "line": key[0],
             "algo": key[1],
             "reward_mode": key[2],
-            "scenario": key[3],
+            "baseline_class": key[3],
+            "scenario": key[4],
             "runs": len(items),
         }
         for metric in numeric_keys:
@@ -793,9 +1154,9 @@ def build_rankings(summary_rows):
 
     for scenario, rows in sorted(by_scenario.items()):
         maps = {
-            "sla_reliability": norm_map(rows, "sla_reliability", True),
-            "outage_rate": norm_map(rows, "outage_rate", False),
-            "soft_rate": norm_map(rows, "soft_rate", False),
+            "sla_reliability": norm_map(rows, "rslaq_sla_reliability", True),
+            "outage_rate": norm_map(rows, "rslaq_outage_rate", False),
+            "soft_rate": norm_map(rows, "rslaq_soft_rate", False),
             "embb_thr": norm_map(rows, "embb_thr", True),
             "urllc_plr": norm_map(rows, "urllc_plr", False),
             "mtc_lost": norm_map(rows, "mtc_lost", False),
@@ -859,6 +1220,7 @@ def build_rankings(summary_rows):
             "line": line,
             "algo": rows[0]["algo"],
             "reward_mode": rows[0]["reward_mode"],
+            "baseline_class": rows[0].get("baseline_class", ""),
             "scenarios": len(rows),
             "mean_score": avg(row["score"] for row in rows),
             "mean_rank": avg(row["rank"] for row in rows),
@@ -879,22 +1241,33 @@ def write_csv(path: Path, rows):
         writer.writeheader()
         writer.writerows(rows)
 
-run_rows = collect_runs()
+run_rows = collect_runs() + collect_baseline_runs()
 summary = aggregate(run_rows)
 ranking, overall = build_rankings(summary)
+scientific_summary = [row for row in summary if row.get("baseline_class") != "native"]
+scientific_ranking, scientific_overall = build_rankings(scientific_summary)
 
 write_csv(root / "drl_comparison_by_run.csv", run_rows)
 write_csv(root / "drl_comparison_summary.csv", summary)
 write_csv(root / "drl_ranking.csv", ranking)
 write_csv(root / "drl_overall_ranking.csv", overall)
+write_csv(root / "rslaq_scientific_ranking.csv", scientific_ranking)
+write_csv(root / "rslaq_scientific_overall_ranking.csv", scientific_overall)
 with (root / "drl_comparison.json").open("w") as f:
-    json.dump({"runs": run_rows, "summary": summary, "ranking": ranking, "overall": overall}, f, indent=2)
+    json.dump({
+        "runs": run_rows,
+        "summary": summary,
+        "ranking": ranking,
+        "overall": overall,
+        "scientific_ranking": scientific_ranking,
+        "scientific_overall": scientific_overall,
+    }, f, indent=2)
 
-print(f"[compare] Unified DRL comparison: {len(run_rows)} run(s), {len(summary)} scenario line(s)")
+print(f"[compare] Unified RSLAQ comparison: {len(run_rows)} run(s), {len(summary)} scenario line(s)")
 if ranking:
     print(f"[compare] Wrote {root / 'drl_ranking.csv'}")
 else:
-    print("[compare] No DRL run directories found")
+    print("[compare] No DRL or baseline run directories found")
 PY
 }
 
@@ -908,6 +1281,11 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "run_tag": "${RUN_TAG}",
   "scenarios": "${SCENARIOS[*]}",
   "seeds": "${SEEDS[*]}",
+  "training_replicates": ${TRAINING_REPLICATES},
+  "training_replicate_seed_stride": ${TRAINING_REPLICATE_SEED_STRIDE},
+  "eval_episodes": ${EVAL_EPISODES},
+  "eval_seed_offset": ${EVAL_SEED_OFFSET},
+  "eval_seed_cycle": ${EVAL_SEED_CYCLE},
   "episodes": ${EPISODES},
   "episode_steps": ${EPISODE_STEPS},
   "interaction_budget": $((EPISODES * EPISODE_STEPS)),
@@ -920,6 +1298,7 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "run_resource_efficient_ddqn": ${RUN_RESOURCE_EFFICIENT_DDQN},
   "ddqn_terminate_on_sla_violation": ${DDQN_TERMINATE_ON_SLA_VIOLATION},
   "sac_terminate_on_sla_violation": ${SAC_TERMINATE_ON_SLA_VIOLATION},
+  "predictive_terminate_on_sla_violation": ${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION},
   "run_paper_sac": ${RUN_PAPER_SAC},
   "run_resource_efficient_sac": ${RUN_RESOURCE_EFFICIENT_SAC},
   "run_forecaster": ${RUN_FORECASTER},
@@ -931,6 +1310,7 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "run_predictive_sac_lstm": ${RUN_PREDICTIVE_SAC_LSTM},
   "predictive_sac": {
     "reward_mode": "${PREDICTIVE_REWARD_MODE}",
+    "terminate_on_sla_violation": ${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION},
     "p_sta_static_fraction": ${PREDICTIVE_P_STA_FRACTION},
     "risk_penalty": ${RISK_PENALTY},
     "soft_penalty": ${SOFT_PENALTY},

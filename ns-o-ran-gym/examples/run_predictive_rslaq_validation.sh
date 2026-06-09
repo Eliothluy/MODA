@@ -33,13 +33,26 @@ SIM_TIME="${SIM_TIME:-$(python3 -c "print(${APP_START} + (${EPISODE_STEPS} * ${P
 CONSECUTIVE_OUTAGE_STEPS="${CONSECUTIVE_OUTAGE_STEPS:-5}"
 WARMUP_STEPS="${WARMUP_STEPS:-5}"
 SEED_CYCLE="${SEED_CYCLE:-999999}"
+PREDICTIVE_TERMINATE_ON_SLA_VIOLATION="${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION:-0}"
 
-P_STA_STATIC_FRACTION="${P_STA_STATIC_FRACTION:-0.25}"
+PREDICTIVE_P_STA_FRACTION="${PREDICTIVE_P_STA_FRACTION:-${P_STA_STATIC_FRACTION:-0.25}}"
 P_STA_WEIGHTS="${P_STA_WEIGHTS:-0.3333,0.4000,0.2667}"
 REWARD_ALPHA="${REWARD_ALPHA:-0.3333}"
 REWARD_BETA="${REWARD_BETA:-0.4000}"
 REWARD_GAMMA="${REWARD_GAMMA:-0.2667}"
-REWARD_MODE="${REWARD_MODE:-resource_efficient}"
+PREDICTIVE_REWARD_MODE="${PREDICTIVE_REWARD_MODE:-${REWARD_MODE:-resource_efficient}}"
+if [[ -z "${PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE:-}" ]]; then
+    if [[ "${PREDICTIVE_REWARD_MODE}" == "paper" ]]; then
+        PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE="0"
+    else
+        PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE="1"
+    fi
+fi
+if [[ "${PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE}" == "1" ]]; then
+    PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE_JSON="true"
+else
+    PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE_JSON="false"
+fi
 RESOURCE_EFFICIENCY_WEIGHT="${RESOURCE_EFFICIENCY_WEIGHT:-0.25}"
 NEED_MATCH_WEIGHT="${NEED_MATCH_WEIGHT:-0.30}"
 WASTE_PENALTY_WEIGHT="${WASTE_PENALTY_WEIGHT:-0.35}"
@@ -88,7 +101,9 @@ echo "  budget:            ${EPISODES} episodes x ${EPISODE_STEPS} steps = $((EP
 echo "  simTime:           ${SIM_TIME}s"
 echo "  forecast:          seq=${FORECAST_SEQUENCE_LEN}, horizon=${FORECAST_HORIZON}"
 echo "  penalties:         outage=${RISK_PENALTY}, soft=${SOFT_PENALTY}"
-echo "  reward mode:       ${REWARD_MODE}"
+echo "  predictive reward: ${PREDICTIVE_REWARD_MODE}, P_STA=${PREDICTIVE_P_STA_FRACTION}"
+echo "  demand-aware eMBB outage: ${PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE}"
+echo "  predictive SLA terminal: ${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION}"
 echo "  contribution w:    eff=${RESOURCE_EFFICIENCY_WEIGHT}, match=${NEED_MATCH_WEIGHT}, waste=${WASTE_PENALTY_WEIGHT}, under=${UNDER_ALLOCATION_PENALTY_WEIGHT}, embb_guard=${EMBB_SOFT_GUARD_PENALTY_WEIGHT}, smooth=${ACTION_SMOOTHNESS_WEIGHT}"
 echo "  compute cost:      hourly=${COMPUTE_COST_PER_HOUR_USD}, power=${COMPUTE_AVG_POWER_WATTS}W, electricity=${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}/kWh"
 echo "  run forecaster:    ${RUN_FORECASTER}"
@@ -125,6 +140,14 @@ else
 fi
 
 FORECASTER_CHECKPOINT="${FORECASTER_DIR}/forecaster_best.pt"
+predictive_terminal_args=()
+predictive_outage_args=()
+if [[ "${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION}" == "1" ]]; then
+    predictive_terminal_args+=(--terminate-on-sla-violation)
+fi
+if [[ "${PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE}" != "1" ]]; then
+    predictive_outage_args+=(--paper-faithful-outage)
+fi
 
 if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
     for scenario in "${SCENARIOS[@]}"; do
@@ -148,12 +171,12 @@ if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
                 --gamma "${SAC_GAMMA}" \
                 --tau "${SAC_TAU}" \
                 --alpha "${SAC_ALPHA}" \
-                --p_sta_static_fraction "${P_STA_STATIC_FRACTION}" \
+                --p_sta_static_fraction "${PREDICTIVE_P_STA_FRACTION}" \
                 --p_sta_weights "${P_STA_WEIGHTS}" \
                 --reward_alpha "${REWARD_ALPHA}" \
                 --reward_beta "${REWARD_BETA}" \
                 --reward_gamma "${REWARD_GAMMA}" \
-                --reward_mode "${REWARD_MODE}" \
+                --reward_mode "${PREDICTIVE_REWARD_MODE}" \
                 --resource_efficiency_weight "${RESOURCE_EFFICIENCY_WEIGHT}" \
                 --need_match_weight "${NEED_MATCH_WEIGHT}" \
                 --waste_penalty_weight "${WASTE_PENALTY_WEIGHT}" \
@@ -170,6 +193,8 @@ if [[ "${RUN_PREDICTIVE_SAC}" == "1" ]]; then
                 --compute_cost_per_hour_usd "${COMPUTE_COST_PER_HOUR_USD}" \
                 --compute_avg_power_watts "${COMPUTE_AVG_POWER_WATTS}" \
                 --compute_electricity_cost_usd_per_kwh "${COMPUTE_ELECTRICITY_COST_USD_PER_KWH}" \
+                "${predictive_terminal_args[@]}" \
+                "${predictive_outage_args[@]}" \
                 --output "${OUTPUT_ROOT}/predictive_sac_${scenario}_seed${seed}"
         done
     done
@@ -205,9 +230,10 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "forecast_horizon": ${FORECAST_HORIZON},
   "risk_penalty": ${RISK_PENALTY},
   "soft_penalty": ${SOFT_PENALTY},
-  "p_sta_static_fraction": ${P_STA_STATIC_FRACTION},
+  "p_sta_static_fraction": ${PREDICTIVE_P_STA_FRACTION},
   "p_sta_weights": "${P_STA_WEIGHTS}",
-  "reward_mode": "${REWARD_MODE}",
+  "reward_mode": "${PREDICTIVE_REWARD_MODE}",
+  "predictive_terminate_on_sla_violation": ${PREDICTIVE_TERMINATE_ON_SLA_VIOLATION},
   "reward_weights": "${REWARD_ALPHA},${REWARD_BETA},${REWARD_GAMMA}",
   "resource_efficient_reward": {
     "resource_efficiency_weight": ${RESOURCE_EFFICIENCY_WEIGHT},
@@ -229,7 +255,7 @@ cat > "${OUTPUT_ROOT}/campaign_config.json" <<EOF
   "run_forecaster": ${RUN_FORECASTER},
   "run_predictive_sac": ${RUN_PREDICTIVE_SAC},
   "run_comparison": ${RUN_COMPARISON},
-  "demand_aware_embb_outage": true
+  "demand_aware_embb_outage": ${PREDICTIVE_DEMAND_AWARE_EMBB_OUTAGE_JSON}
 }
 EOF
 

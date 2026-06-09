@@ -105,6 +105,10 @@ class VectorSACActor(nn.Module):
         log_prob = normal.log_prob(z) - torch.log(1 - action.pow(2) + 1e-6)
         return action, log_prob.sum(dim=-1, keepdim=True)
 
+    def deterministic(self, x):
+        mean, _ = self.forward(x)
+        return torch.tanh(mean)
+
 
 class VectorSACCritic(nn.Module):
     def __init__(self, state_dim: int, action_dim: int = 3, hidden_dim: int = 128):
@@ -152,10 +156,13 @@ class PredictiveSACAgent:
         self.critic1_opt = optim.Adam(self.critic1.parameters(), lr=lr)
         self.critic2_opt = optim.Adam(self.critic2.parameters(), lr=lr)
 
-    def act(self, state):
+    def act(self, state, deterministic=False):
         s = torch.as_tensor(state, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
-            a, _ = self.actor.sample(s)
+            if deterministic:
+                a = self.actor.deterministic(s)
+            else:
+                a, _ = self.actor.sample(s)
         return a.cpu().numpy().reshape(-1)
 
     def remember(self, state, action, reward, next_state, done):
@@ -259,6 +266,149 @@ def augmented_state(obs, forecast, last_action):
     ).astype(np.float32)
 
 
+def evaluate_predictive_policy(
+    env,
+    agent,
+    args,
+    scenario_list,
+    forecaster,
+    sequence_len,
+    compute_accounting,
+):
+    eval_episodes = int(args.eval_episodes)
+    if eval_episodes <= 0:
+        return {"enabled": False, "eval_episodes": 0}
+
+    eval_seed = int(args.seed) + int(args.eval_seed_offset)
+    env._base_seed = eval_seed
+    env._seed_cycle = int(args.eval_seed_cycle)
+    env._episode_count = 0
+
+    log_path = os.path.join(args.output, "evaluation_log.csv")
+    rows = []
+    base_rewards = []
+    shaped_rewards = []
+    outage_counts = []
+    soft_counts = []
+    steps_completed = []
+
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "episode", "scenario", "seed", "reward_mode", "base_reward",
+                "shaped_reward", "outage_count", "soft_count", "steps",
+                "forecast_outage_risk", "forecast_soft_risk", "action_embb",
+                "action_urllc", "action_mtc",
+            ]
+        )
+
+    for ep in range(eval_episodes):
+        chosen_scenario = scenario_list[ep % len(scenario_list)]
+        env.scenario_configuration["scenario"] = [chosen_scenario]
+        env.scenario_name = chosen_scenario
+        obs, info = env.reset()
+
+        history = deque(maxlen=sequence_len)
+        last_action = np.array([1 / 3, 1 / 3, 1 / 3], dtype=np.float32)
+        forecast = forecast_from_history(
+            forecaster, history, sequence_len, chosen_scenario, device=device
+        )
+        state = augmented_state(obs, forecast, last_action)
+
+        ep_base_reward = 0.0
+        ep_shaped_reward = 0.0
+        ep_outages = 0
+        ep_soft = 0
+        ep_forecast_outage = []
+        ep_forecast_soft = []
+        step = 0
+        prb_pct = [0.0, 0.0, 0.0]
+
+        for step in range(env.max_steps):
+            decision_start = time.perf_counter()
+            action = agent.act(state, deterministic=True)
+            policy_decision_ms = (time.perf_counter() - decision_start) * 1000.0
+            next_obs, reward, terminated, truncated, info = env.step(action)
+
+            action_info = info.get("action_info", {})
+            prb_pct = action_info.get("prb_pct", prb_pct)
+            last_action = np.asarray(prb_pct, dtype=np.float32) / 100.0
+            history.append(feature_from_transition(next_obs, reward, info, chosen_scenario))
+            forecast_start = time.perf_counter()
+            next_forecast = forecast_from_history(
+                forecaster, history, sequence_len, chosen_scenario, device=device
+            )
+            forecast_decision_ms = (time.perf_counter() - forecast_start) * 1000.0
+            compute_accounting.decision_timer.record_ms(
+                policy_decision_ms + forecast_decision_ms
+            )
+
+            outage_risk = float(np.max(forecast[:3]))
+            soft_risk = float(np.max(forecast[3:RISK_DIM]))
+            shaped_reward = (
+                float(reward)
+                - args.risk_penalty * outage_risk
+                - args.soft_penalty * soft_risk
+            )
+
+            ep_base_reward += float(reward)
+            ep_shaped_reward += shaped_reward
+            ep_forecast_outage.append(outage_risk)
+            ep_forecast_soft.append(soft_risk)
+            if info.get("outage_flags") and any(info["outage_flags"].values()):
+                ep_outages += 1
+            if info.get("soft_flags") and any(info["soft_flags"].values()):
+                ep_soft += 1
+
+            state = augmented_state(next_obs, next_forecast, last_action)
+            forecast = next_forecast
+            if terminated or truncated:
+                break
+
+        current_seed = int(env.scenario_configuration.get("seed", [eval_seed])[0])
+        rows.append(
+            [
+                ep + 1,
+                chosen_scenario,
+                current_seed,
+                args.reward_mode,
+                f"{ep_base_reward:.4f}",
+                f"{ep_shaped_reward:.4f}",
+                ep_outages,
+                ep_soft,
+                step + 1,
+                f"{np.mean(ep_forecast_outage):.6f}" if ep_forecast_outage else "",
+                f"{np.mean(ep_forecast_soft):.6f}" if ep_forecast_soft else "",
+                f"{prb_pct[0]:.2f}",
+                f"{prb_pct[1]:.2f}",
+                f"{prb_pct[2]:.2f}",
+            ]
+        )
+        base_rewards.append(ep_base_reward)
+        shaped_rewards.append(ep_shaped_reward)
+        outage_counts.append(ep_outages)
+        soft_counts.append(ep_soft)
+        steps_completed.append(step + 1)
+
+    with open(log_path, "a", newline="") as f:
+        csv.writer(f).writerows(rows)
+
+    return {
+        "enabled": True,
+        "eval_episodes": eval_episodes,
+        "eval_seed": eval_seed,
+        "eval_seed_cycle": int(args.eval_seed_cycle),
+        "policy": "deterministic_tanh_mean",
+        "mean_base_reward": float(np.mean(base_rewards)) if base_rewards else 0.0,
+        "mean_shaped_reward": float(np.mean(shaped_rewards)) if shaped_rewards else 0.0,
+        "mean_outage_count": float(np.mean(outage_counts)) if outage_counts else 0.0,
+        "mean_soft_count": float(np.mean(soft_counts)) if soft_counts else 0.0,
+        "mean_steps": float(np.mean(steps_completed)) if steps_completed else 0.0,
+        "log_path": log_path,
+    }
+
+
 def train(args):
     set_seed(args.seed)
     os.makedirs(args.output, exist_ok=True)
@@ -287,6 +437,7 @@ def train(args):
         "max_buffer_bytes": args.max_buffer_bytes,
         "warmup_steps": args.warmup_steps,
         "consecutive_outage_steps": args.consecutive_outage_steps,
+        "terminate_on_sla_violation": args.terminate_on_sla_violation,
         "alpha": args.reward_alpha,
         "beta": args.reward_beta,
         "gamma": args.reward_gamma,
@@ -473,6 +624,9 @@ def train(args):
             agent.save(os.path.join(args.output, "predictive_sac_best.pt"))
 
     agent.save(os.path.join(args.output, "predictive_sac_final.pt"))
+    evaluation_metrics = evaluate_predictive_policy(
+        env, agent, args, scenario_list, forecaster, sequence_len, compute_accounting
+    )
     summary = {
         "method": "predictive_sac",
         "scenario_mode": mode,
@@ -484,6 +638,7 @@ def train(args):
         "forecast_dim": FORECAST_DIM,
         "risk_penalty": args.risk_penalty,
         "soft_penalty": args.soft_penalty,
+        "terminate_on_sla_violation": args.terminate_on_sla_violation,
         "demand_aware_embb_outage": args.demand_aware_embb_outage,
         "apply_p_sta": args.apply_p_sta,
         "p_sta_static_fraction": args.p_sta_static_fraction,
@@ -503,6 +658,7 @@ def train(args):
         },
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
+        "evaluation_metrics": evaluation_metrics,
         "compute": compute_accounting.finish(),
     }
     with open(os.path.join(args.output, "predictive_sac_summary.json"), "w") as f:
@@ -545,6 +701,9 @@ def main():
     parser.add_argument("--max_buffer_bytes", type=float, default=100000.0)
     parser.add_argument("--warmup_steps", type=int, default=5)
     parser.add_argument("--consecutive_outage_steps", type=int, default=5)
+    parser.set_defaults(terminate_on_sla_violation=False)
+    parser.add_argument("--terminate-on-sla-violation", action="store_true",
+                        dest="terminate_on_sla_violation")
     parser.add_argument("--p_sta_static_fraction", type=float, default=0.25)
     parser.add_argument("--p_sta_weights", type=str, default="0.3333,0.4000,0.2667")
     parser.add_argument("--reward_alpha", type=float, default=0.3333)
@@ -568,6 +727,12 @@ def main():
     parser.set_defaults(enable_step_logging=True)
     parser.add_argument("--no-step-logging", action="store_false", dest="enable_step_logging")
     parser.add_argument("--step_log_file", type=str, default="step_metrics.csv")
+    parser.add_argument("--eval_episodes", type=int, default=0,
+                        help="Run this many deterministic evaluation episodes after training")
+    parser.add_argument("--eval_seed_offset", type=int, default=100000,
+                        help="Offset added to --seed for deterministic evaluation ns-3 seeds")
+    parser.add_argument("--eval_seed_cycle", type=int, default=1,
+                        help="Change evaluation ns-3 seed every N evaluation episodes")
     parser.add_argument("--compute_cost_per_hour_usd", type=float, default=0.0)
     parser.add_argument("--compute_avg_power_watts", type=float, default=0.0)
     parser.add_argument("--compute_electricity_cost_usd_per_kwh", type=float, default=0.0)

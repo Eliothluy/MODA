@@ -174,8 +174,9 @@ class DDQNAgent:
         self.target_update = target_update
         self.step_count = 0
 
-    def act(self, state):
-        if random.random() < self.epsilon:
+    def act(self, state, epsilon=None):
+        policy_epsilon = self.epsilon if epsilon is None else epsilon
+        if random.random() < policy_epsilon:
             return random.randrange(self.action_size)
         self.online_net.eval()
         with torch.no_grad():
@@ -252,6 +253,102 @@ def parse_weights(weights: str) -> np.ndarray:
     if values.sum() <= 0:
         raise ValueError("--p_sta_weights must sum to a positive value")
     return values / values.sum()
+
+
+def evaluate_ddqn_policy(env, agent, args, scenario_list, max_steps, compute_accounting):
+    eval_episodes = int(args.eval_episodes)
+    if eval_episodes <= 0:
+        return {"enabled": False, "eval_episodes": 0}
+
+    eval_seed = int(args.seed) + int(args.eval_seed_offset)
+    env._base_seed = eval_seed
+    env._seed_cycle = int(args.eval_seed_cycle)
+    env._episode_count = 0
+
+    log_path = os.path.join(args.output, "evaluation_log.csv")
+    rows = []
+    rewards = []
+    outage_counts = []
+    soft_counts = []
+    steps_completed = []
+
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "episode", "scenario", "seed", "reward_mode", "total_reward",
+                "outage_count", "soft_count", "steps", "action_embb",
+                "action_urllc", "action_mtc",
+            ]
+        )
+
+    for ep in range(eval_episodes):
+        chosen_scenario = scenario_list[ep % len(scenario_list)]
+        env.scenario_configuration["scenario"] = [chosen_scenario]
+        current_ue_profile = apply_ue_profile(env.scenario_configuration, chosen_scenario, args)
+        env.num_ues = sum(current_ue_profile)
+        env.scenario_name = chosen_scenario
+
+        obs, info = env.reset()
+        state = obs.copy()
+        ep_reward = 0.0
+        ep_outages = 0
+        ep_soft = 0
+        step = 0
+        prb_pct = [0.0, 0.0, 0.0]
+        ep_max_steps = min(args.ntsr, max_steps)
+
+        for step in range(ep_max_steps):
+            with compute_accounting.decision_timer.measure():
+                action_idx = agent.act(state, epsilon=0)
+            next_obs, reward, terminated, truncated, info = env.step(action_idx)
+            ep_reward += reward
+            if info.get("outage_flags") and any(info["outage_flags"].values()):
+                ep_outages += 1
+            if info.get("soft_flags") and any(info["soft_flags"].values()):
+                ep_soft += 1
+            action_info = info.get("action_info", {})
+            prb_pct = action_info.get("prb_pct", prb_pct)
+            state = next_obs.copy()
+            if terminated or truncated:
+                break
+
+        current_seed = int(env.scenario_configuration.get("seed", [eval_seed])[0])
+        row = [
+            ep + 1,
+            chosen_scenario,
+            current_seed,
+            args.reward_mode,
+            f"{ep_reward:.4f}",
+            ep_outages,
+            ep_soft,
+            step + 1,
+            f"{prb_pct[0]:.2f}",
+            f"{prb_pct[1]:.2f}",
+            f"{prb_pct[2]:.2f}",
+        ]
+        rows.append(row)
+        rewards.append(ep_reward)
+        outage_counts.append(ep_outages)
+        soft_counts.append(ep_soft)
+        steps_completed.append(step + 1)
+
+    with open(log_path, "a", newline="") as f:
+        csv.writer(f).writerows(rows)
+
+    return {
+        "enabled": True,
+        "eval_episodes": eval_episodes,
+        "eval_seed": eval_seed,
+        "eval_seed_cycle": int(args.eval_seed_cycle),
+        "policy": "deterministic",
+        "epsilon": 0.0,
+        "mean_reward": float(np.mean(rewards)) if rewards else 0.0,
+        "mean_outage_count": float(np.mean(outage_counts)) if outage_counts else 0.0,
+        "mean_soft_count": float(np.mean(soft_counts)) if soft_counts else 0.0,
+        "mean_steps": float(np.mean(steps_completed)) if steps_completed else 0.0,
+        "log_path": log_path,
+    }
 
 
 def train_ddqn(args):
@@ -482,6 +579,9 @@ def train_ddqn(args):
             agent.save(os.path.join(args.output, "ddqn_best.pt"))
 
     agent.save(os.path.join(args.output, "ddqn_final.pt"))
+    evaluation_metrics = evaluate_ddqn_policy(
+        env, agent, args, scenario_list, max_steps, compute_accounting
+    )
 
     summary = {
         "method": "ddqn",
@@ -516,6 +616,7 @@ def train_ddqn(args):
         },
         "final_avg_100": float(avg100),
         "best_avg": float(best_avg),
+        "evaluation_metrics": evaluation_metrics,
         "compute": compute_accounting.finish(),
     }
     with open(os.path.join(args.output, "ddqn_summary.json"), "w") as f:
@@ -624,6 +725,12 @@ def main():
                         help="Disable per-step step_metrics.csv logging")
     parser.add_argument("--step_log_file", type=str, default="step_metrics.csv",
                         help="Per-simulation step metrics filename")
+    parser.add_argument("--eval_episodes", type=int, default=0,
+                        help="Run this many deterministic evaluation episodes after training")
+    parser.add_argument("--eval_seed_offset", type=int, default=100000,
+                        help="Offset added to --seed for deterministic evaluation ns-3 seeds")
+    parser.add_argument("--eval_seed_cycle", type=int, default=1,
+                        help="Change evaluation ns-3 seed every N evaluation episodes")
     parser.add_argument("--compute_cost_per_hour_usd", type=float, default=0.0,
                         help="Hourly infrastructure cost used to estimate training spend")
     parser.add_argument("--compute_avg_power_watts", type=float, default=0.0,

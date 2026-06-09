@@ -1,0 +1,27 @@
+{
+  "campaign": "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results_controlled/rslaq_sla_resource_efficiency/20260603_125013",
+  "output": "/home/elioth/Documentos/artigo_jussi/analysis_rslaq_validation/rslaq_20260603_125013",
+  "tables": [
+    "baseline_network_by_run_slice.csv",
+    "common_network_by_run_slice_scored.csv",
+    "drl_episode_convergence.csv",
+    "drl_late_network_by_run_slice.csv",
+    "drl_slice_allocation_late.csv",
+    "drl_training_summaries.csv",
+    "drl_vs_baseline_by_scenario.csv",
+    "method_ranking_overall.csv",
+    "network_scores_by_run.csv"
+  ],
+  "figures": [
+    "01_drl_convergence_rewards.png",
+    "02_final_reward_distribution.png",
+    "03_qos_throughput_by_slice.png",
+    "04_qos_pdr_by_slice.png",
+    "05_qos_plr_by_slice.png",
+    "06_resource_efficiency_diagnostics.png",
+    "07_slice_allocation_heatmap.png",
+    "08_baseline_latency_3gpp_proxy.png",
+    "09_network_composite_score.png"
+  ],
+  "report": "/home/elioth/Documentos/artigo_jussi/analysis_rslaq_validation/rslaq_20260603_125013/RELATORIO_ANALISE_RSLAQ_20260603_125013.md"
+}
