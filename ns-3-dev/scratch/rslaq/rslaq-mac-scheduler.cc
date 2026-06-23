@@ -30,6 +30,85 @@ namespace ns3
 NS_LOG_COMPONENT_DEFINE("RslaqMacScheduler");
 NS_OBJECT_ENSURE_REGISTERED(RslaqMacScheduler);
 
+namespace
+{
+
+std::vector<double>
+NormalizeWeights(const std::vector<double>& raw,
+                 const std::vector<bool>& active,
+                 double minActiveShare)
+{
+    std::vector<double> clean(raw.size(), 0.0);
+    uint32_t activeCount = 0;
+    for (size_t i = 0; i < raw.size(); ++i)
+    {
+        bool isActive = active.empty() || active[i];
+        if (isActive)
+        {
+            clean[i] = std::max(raw[i], 0.0);
+            activeCount++;
+        }
+    }
+
+    if (activeCount == 0)
+    {
+        return std::vector<double>(raw.size(), raw.empty() ? 0.0 : 1.0 / raw.size());
+    }
+
+    double sum = std::accumulate(clean.begin(), clean.end(), 0.0);
+    if (sum <= 0.0)
+    {
+        for (size_t i = 0; i < clean.size(); ++i)
+        {
+            clean[i] = (!active.empty() && !active[i]) ? 0.0 : 1.0 / activeCount;
+        }
+        return clean;
+    }
+
+    for (double& value : clean)
+    {
+        value /= sum;
+    }
+
+    if (minActiveShare > 0.0)
+    {
+        double floorShare = std::min(minActiveShare, 0.95 / static_cast<double>(activeCount));
+        double remaining = 1.0 - floorShare * static_cast<double>(activeCount);
+        for (size_t i = 0; i < clean.size(); ++i)
+        {
+            if (!active.empty() && !active[i])
+            {
+                clean[i] = 0.0;
+            }
+            else
+            {
+                clean[i] = floorShare + remaining * clean[i];
+            }
+        }
+    }
+
+    double normalizedSum = std::accumulate(clean.begin(), clean.end(), 0.0);
+    if (normalizedSum > 0.0)
+    {
+        for (double& value : clean)
+        {
+            value /= normalizedSum;
+        }
+    }
+    return clean;
+}
+
+uint64_t
+Mix64(uint64_t value)
+{
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+} // namespace
+
 TypeId
 RslaqMacScheduler::GetTypeId()
 {
@@ -143,10 +222,15 @@ RslaqMacScheduler::SetSliceConfiguration(const std::vector<double>& prbWeights,
     NS_ASSERT_MSG(prbWeights.size() == m_numSlices, "Must match configured number of slices");
 
     double sum = std::accumulate(prbWeights.begin(), prbWeights.end(), 0.0);
+    for (double weight : prbWeights)
+    {
+        NS_ASSERT_MSG(weight >= 0.0, "PRB weights must be non-negative, got " << weight);
+    }
     NS_ASSERT_MSG(std::abs(sum - 1.0) < 1e-6,
                   "PRB weights must sum to 1.0, got " << sum);
 
     m_prbWeights = prbWeights;
+    m_lastDecisionWeights = prbWeights;
     m_intraAlgorithms = algorithms;
 
     std::ostringstream oss;
@@ -185,6 +269,7 @@ RslaqMacScheduler::SetSliceUeMapping(uint32_t numSlices,
     NS_ASSERT_MSG(m_numSlices == 3, "RSLAQ experiments require exactly 3 slices");
 
     m_prbWeights.resize(m_numSlices, 1.0 / m_numSlices);
+    m_lastDecisionWeights = m_prbWeights;
     m_intraAlgorithms.resize(m_numSlices, IntraSliceAlgorithm::RR);
     m_sliceAllocationStats.assign(m_numSlices, SliceAllocationStats());
 
@@ -210,6 +295,10 @@ double
 RslaqMacScheduler::GetPrbWeight(uint32_t sliceIdx) const
 {
     NS_ASSERT(sliceIdx < m_numSlices);
+    if (m_lastDecisionWeights.size() == m_numSlices)
+    {
+        return m_lastDecisionWeights[sliceIdx];
+    }
     return m_prbWeights[sliceIdx];
 }
 
@@ -218,6 +307,18 @@ RslaqMacScheduler::GetIntraAlgorithm(uint32_t sliceIdx) const
 {
     NS_ASSERT(sliceIdx < m_numSlices);
     return m_intraAlgorithms[sliceIdx];
+}
+
+void
+RslaqMacScheduler::SetSliceWeightPolicy(SliceWeightPolicy policy)
+{
+    m_sliceWeightPolicy = policy;
+}
+
+RslaqMacScheduler::SliceWeightPolicy
+RslaqMacScheduler::GetSliceWeightPolicy() const
+{
+    return m_sliceWeightPolicy;
 }
 
 int32_t
@@ -365,6 +466,108 @@ RslaqMacScheduler::SortUeVectorByAlgorithm(std::vector<UePtrAndBufferReq>& ueVec
                          NrMacSchedulerUeInfoMR::CompareUeWeightsDl);
         break;
     }
+}
+
+std::vector<double>
+RslaqMacScheduler::ComputeDecisionWeights(
+    const std::vector<std::vector<UePtrAndBufferReq>>& sliceUeVec,
+    const std::vector<bool>& sliceHasDemand,
+    uint64_t timeMs) const
+{
+    if (m_sliceWeightPolicy == SliceWeightPolicy::STATIC || m_numSlices == 0)
+    {
+        return m_prbWeights;
+    }
+
+    std::vector<double> bufferSum(m_numSlices, 0.0);
+    std::vector<double> maxBuffer(m_numSlices, 0.0);
+    std::vector<uint32_t> activeUes(m_numSlices, 0);
+
+    for (uint32_t s = 0; s < m_numSlices; ++s)
+    {
+        if (!sliceHasDemand[s])
+        {
+            continue;
+        }
+        for (const auto& ue : sliceUeVec[s])
+        {
+            double buf = static_cast<double>(ue.second);
+            double tb = static_cast<double>(ue.first->m_dlTbSize);
+            if (buf > 0.0 || tb > 0.0)
+            {
+                activeUes[s] += 1;
+            }
+            bufferSum[s] += std::max(buf, 0.0) + std::max(tb, 0.0);
+            maxBuffer[s] = std::max(maxBuffer[s], std::max(buf, 0.0));
+        }
+    }
+
+    std::vector<double> raw(m_numSlices, 0.0);
+    switch (m_sliceWeightPolicy)
+    {
+    case SliceWeightPolicy::DEMAND_GREEDY:
+        for (uint32_t s = 0; s < m_numSlices; ++s)
+        {
+            if (sliceHasDemand[s])
+            {
+                raw[s] = bufferSum[s] + 1500.0 * static_cast<double>(activeUes[s]) + 1.0;
+            }
+        }
+        return NormalizeWeights(raw, sliceHasDemand, 0.02);
+
+    case SliceWeightPolicy::SLA_GREEDY:
+        for (uint32_t s = 0; s < m_numSlices; ++s)
+        {
+            if (!sliceHasDemand[s])
+            {
+                continue;
+            }
+
+            double base = bufferSum[s] + 1500.0 * static_cast<double>(activeUes[s]) + 1.0;
+            double urgency = 1.0;
+            if (s == 0)
+            {
+                urgency += std::min(bufferSum[s] / 1000000.0, 4.0);
+            }
+            else if (s == 1)
+            {
+                urgency += 1.0 + 2.0 * std::min(maxBuffer[s] / 10000.0, 8.0);
+            }
+            else if (s == 2)
+            {
+                urgency += std::min(bufferSum[s] / 250000.0, 4.0);
+            }
+            raw[s] = base * urgency;
+        }
+        return NormalizeWeights(raw, sliceHasDemand, 0.03);
+
+    case SliceWeightPolicy::LEAST_WASTE:
+        for (uint32_t s = 0; s < m_numSlices; ++s)
+        {
+            if (sliceHasDemand[s])
+            {
+                raw[s] = bufferSum[s] + 256.0 * static_cast<double>(activeUes[s]) + 1.0;
+            }
+        }
+        return NormalizeWeights(raw, sliceHasDemand, 0.005);
+
+    case SliceWeightPolicy::RANDOM_VINE:
+        for (uint32_t s = 0; s < m_numSlices; ++s)
+        {
+            if (sliceHasDemand[s])
+            {
+                uint64_t mixed = Mix64((timeMs + 1ULL) ^ (static_cast<uint64_t>(s + 1) << 32) ^
+                                       (static_cast<uint64_t>(m_currentSlot + 17) << 8));
+                raw[s] = 1.0 + static_cast<double>(mixed % 1000ULL);
+            }
+        }
+        return NormalizeWeights(raw, sliceHasDemand, 0.01);
+
+    case SliceWeightPolicy::STATIC:
+        break;
+    }
+
+    return m_prbWeights;
 }
 
 std::set<uint16_t>
@@ -560,7 +763,6 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
         }
 
         std::vector<bool> sliceHasDemand(m_numSlices, false);
-        double activeWeightSum = 0.0;
         for (uint32_t s = 0; s < m_numSlices; s++)
         {
             if (sliceUeVec[s].empty())
@@ -582,7 +784,18 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
             if (demand)
             {
                 sliceHasDemand[s] = true;
-                activeWeightSum += m_prbWeights[s];
+            }
+        }
+
+        std::vector<double> decisionWeights = ComputeDecisionWeights(sliceUeVec, sliceHasDemand, timeMs);
+        m_lastDecisionWeights = decisionWeights;
+
+        double activeWeightSum = 0.0;
+        for (uint32_t s = 0; s < m_numSlices; s++)
+        {
+            if (sliceHasDemand[s])
+            {
+                activeWeightSum += decisionWeights[s];
             }
         }
 
@@ -603,7 +816,7 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
                 {
                     continue;
                 }
-                effectiveWeight[s] = m_prbWeights[s] / activeWeightSum;
+                effectiveWeight[s] = decisionWeights[s] / activeWeightSum;
                 double rawBudget = static_cast<double>(totalRbgs) * effectiveWeight[s];
                 double floored = std::floor(rawBudget);
                 sliceRbgBudget[s] = static_cast<uint32_t>(floored);
@@ -869,12 +1082,12 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
             if (logThisSlot && m_sliceAllocCsv.is_open())
             {
                 uint32_t redistributedIdleRbg =
-                    (!sliceHasDemand[s] && sliceRbgBudget[s] == 0 && m_prbWeights[s] > 0.0)
-                        ? static_cast<uint32_t>(std::round(totalRbgs * m_prbWeights[s]))
+                    (!sliceHasDemand[s] && sliceRbgBudget[s] == 0 && decisionWeights[s] > 0.0)
+                        ? static_cast<uint32_t>(std::round(totalRbgs * decisionWeights[s]))
                         : 0;
 
                 m_sliceAllocCsv << timeMs << "," << s << ","
-                                << std::fixed << std::setprecision(4) << m_prbWeights[s] << ","
+                                << std::fixed << std::setprecision(4) << decisionWeights[s] << ","
                                 << sliceRbgBudget[s] << ","
                                 << sliceAllocatedVec[s] << ","
                                 << totalAllocatedRbg << ","

@@ -2,7 +2,7 @@
 # Run every RSLAQ network-only baseline over every traffic scenario.
 #
 # Defaults run one seed/run for a fast metric validation matrix:
-#   5 scenarios x 10 baseline modes = 50 simulations.
+#   5 scenarios x 15 baseline/heuristic modes = 75 simulations.
 #
 # Override examples:
 #   SIM_TIME=20 SEEDS="1 2 3" RUNS="1 2 3" ./run_all_scenarios.sh
@@ -50,6 +50,11 @@ BASELINE_MODES=(
     slice_weighted_rr
     slice_weighted_bcqi
     psta_equal
+    slice_demand_greedy
+    slice_sla_greedy
+    slice_least_waste
+    slice_qos_mixed
+    slice_random_vine
 )
 
 if [[ -n "$SCENARIOS_INPUT" ]]; then

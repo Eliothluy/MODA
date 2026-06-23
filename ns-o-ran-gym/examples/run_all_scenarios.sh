@@ -1,160 +1,142 @@
-#!/bin/bash
-# RSLAQ Training Script — All Scenarios, Single Seed
-# Paper-faithful DDQN (IEEE TMC 2026, Hyp-set3) + SAC baseline.
+#!/usr/bin/env bash
+# RSLAQ network-only campaign: online heuristics plus offline meta-heuristics.
 #
-# DDQN follows: Algorithm 1, Table VI (Hyp-set3), ntsr=100.
-# SAC kept as continuous baseline with original hyperparameters.
+# This runner intentionally does not execute DRL training lines. DDQN, SAC, and
+# predictive SAC are disabled here so this script can be used for baseline
+# heuristic/meta-heuristic data generation.
 #
 # Usage:
-#   cd /home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym
+#   cd /home/elioth/Documentos/artigo_jussi/ns-o-ran-gym
 #   bash examples/run_all_scenarios.sh
+#
+# Useful overrides:
+#   SCENARIOS="normal congestion" SEEDS="1 2 3" SIM_TIME=10 bash examples/run_all_scenarios.sh
+#   RUN_HEURISTICS=0 RUN_METAHEURISTICS=1 META_ITERATIONS=8 META_POPULATION=10 bash examples/run_all_scenarios.sh
 
-set -euo pipefail
+set -Eeuo pipefail
 
-REPO_ROOT="/home/elioth/Documentos/artigo_jussi"
-NS3_DIR="${REPO_ROOT}/ns-3-dev"
-GYM_DIR="${REPO_ROOT}/ns-o-ran-gym"
-RESULTS_DIR="${GYM_DIR}/results"
+REPO_ROOT="${REPO_ROOT:-/home/elioth/Documentos/artigo_jussi}"
+NS3_DIR="${NS3_DIR:-${REPO_ROOT}/ns-3-dev}"
+GYM_DIR="${GYM_DIR:-${REPO_ROOT}/ns-o-ran-gym}"
 
-# ── Seed ──────────────────────────────────────────────────
-FIXED_SEED=1
-SEED_CYCLE=99999
+RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${GYM_DIR}/results_controlled/heuristics_metaheuristics/${RUN_TAG}}"
+HEURISTIC_OUTPUT_ROOT="${HEURISTIC_OUTPUT_ROOT:-${OUTPUT_ROOT}/heuristics_ns3}"
+META_OUTPUT_ROOT="${META_OUTPUT_ROOT:-${OUTPUT_ROOT}/metaheuristics}"
 
-# ── Training ──────────────────────────────────────────────
-# DDQN: ns-3 episodes avg ~7 steps (outage), need more episodes to fill buffer
-DDQN_EPISODES=50
-# SAC uses continuous space — keep longer training
-SAC_EPISODES=300
-# simTime for DDQN: ntsr=100 with periodMs=10 needs >=1.5s
-DDQN_SIM_TIME=2.0
-SAC_SIM_TIME=10.0
-APP_START=0.5
-PERIOD_MS=10
-CONSECUTIVE_OUTAGE_STEPS=5
+RUN_HEURISTICS="${RUN_HEURISTICS:-1}"
+RUN_METAHEURISTICS="${RUN_METAHEURISTICS:-1}"
+BUILD_NS3="${BUILD_NS3:-1}"
 
-# ── Paper: ntsr=100 periodic reset (Algorithm 1, Line 17-19) ──
-NTSR=100
+SCENARIOS="${SCENARIOS:-low_traffic normal congestion stressed insufficient_resources}"
+SEEDS="${SEEDS:-1 2 3}"
+RUNS="${RUNS:-1}"
 
-# ── SAC hyperparameters ───────────────────────────────────
-SAC_BUFFER_SIZE=50000
-SAC_BATCH_SIZE=256
-SAC_LR=0.001
-SAC_GAMMA=0.99
-SAC_TAU=0.005
-SAC_ALPHA=0.1
-SAC_MAX_STEPS=$(python3 -c "print(int((${SAC_SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
+SIM_TIME="${SIM_TIME:-10}"
+APP_START="${APP_START:-0.4}"
+DRAIN_TIME_SEC="${DRAIN_TIME_SEC:-0.2}"
+PERIOD_MS="${PERIOD_MS:-10}"
+TX_POWER="${TX_POWER:-43}"
+TDD_PATTERN="${TDD_PATTERN:-D|D|8D|4GB|4U|U|U}"
+RLC_MODE="${RLC_MODE:-um}"
 
-# ── DDQN hyperparameters (paper Hyp-set3, Table VI, calibrated for ns-3) ──
-DDQN_BUFFER_SIZE=128
-DDQN_BATCH_SIZE=32
-DDQN_LR=0.001
-DDQN_GAMMA=0.80
-DDQN_EPS_START=1.0
-DDQN_EPS_MIN=0.05
-DDQN_EPS_DECAY=0.998
-DDQN_TARGET_UPDATE=200
-DDQN_MAX_STEPS=$(python3 -c "print(int((${DDQN_SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
+HEURISTIC_MODES="${HEURISTIC_MODES:-slice_demand_greedy slice_sla_greedy slice_least_waste slice_qos_mixed slice_random_vine}"
 
-# ── Scenarios ─────────────────────────────────────────────
-SCENARIOS=(
-    "low_traffic"
-    "normal"
-    "congestion"
-    "stressed"
-    "insufficient_resources"
-)
+META_METHOD="${META_METHOD:-all}"
+META_ITERATIONS="${META_ITERATIONS:-4}"
+META_POPULATION="${META_POPULATION:-6}"
+META_MUTATION_STRENGTH="${META_MUTATION_STRENGTH:-0.12}"
+META_INTRA_ALGO="${META_INTRA_ALGO:-PF}"
+META_RANDOM_SEED="${META_RANDOM_SEED:-2026}"
+META_SEED="${META_SEED:-1}"
+META_RUN="${META_RUN:-1}"
+
+mkdir -p "${OUTPUT_ROOT}"
 
 echo "============================================"
-echo "RSLAQ — All Scenarios | Single Seed (${FIXED_SEED})"
+echo "RSLAQ heuristics + meta-heuristics campaign"
 echo "============================================"
-echo "Seed:        ${FIXED_SEED} (fixed)"
-echo "DDQN:        ${DDQN_EPISODES} eps × ${NTSR} steps = $((DDQN_EPISODES * NTSR)) total (paper Hyp-set3)"
-echo "SAC:         ${SAC_EPISODES} eps × ${SAC_MAX_STEPS} steps"
-echo "Results:     ${RESULTS_DIR}/"
+echo "Output root      : ${OUTPUT_ROOT}"
+echo "Scenarios        : ${SCENARIOS}"
+echo "Seeds            : ${SEEDS}"
+echo "Runs             : ${RUNS}"
+echo "Run heuristics   : ${RUN_HEURISTICS}"
+echo "Run metaheur     : ${RUN_METAHEURISTICS}"
+echo "Heuristic modes  : ${HEURISTIC_MODES}"
+echo "Meta method      : ${META_METHOD}"
+echo "Meta iterations  : ${META_ITERATIONS}"
+echo "Meta population  : ${META_POPULATION}"
+echo "DRL              : disabled"
 echo ""
 
-# 1. Check ns-3 binary
-NS3_BIN="${NS3_DIR}/build/scratch/rslaq/rslaq-sim"
-if [[ ! -x "${NS3_BIN}" ]]; then
-    echo "[BUILD] ns-3 binary not found. Building rslaq-sim ..."
+if [[ "${BUILD_NS3}" == "1" ]]; then
+    echo "[BUILD] Building rslaq-sim..."
     cd "${NS3_DIR}"
-    ./ns3 configure --enable-examples --enable-tests
     ./ns3 build rslaq-sim
-    echo "[BUILD] Done."
 else
-    echo "[BUILD] ns-3 binary found at ${NS3_BIN}"
+    echo "[BUILD] Skipping ns-3 build because BUILD_NS3=${BUILD_NS3}"
 fi
 
-# 2. Create results directory
-mkdir -p "${RESULTS_DIR}"
-
-cd "${GYM_DIR}"
-
-# ──────────────────────────────────────────────────────────
-# 3. SAC & DDQN — Per Scenario (parallel)
-# ──────────────────────────────────────────────────────────
-for scenario in "${SCENARIOS[@]}"; do
+if [[ "${RUN_HEURISTICS}" == "1" ]]; then
     echo ""
     echo "============================================"
-    echo "Scenario: ${scenario} | SAC + DDQN (parallel)"
+    echo "Running online heuristic baselines"
     echo "============================================"
+    cd "${NS3_DIR}"
+    OUTPUT_ROOT="${HEURISTIC_OUTPUT_ROOT}" \
+    BUILD_NS3=0 \
+    SCENARIOS="${SCENARIOS}" \
+    BASELINE_MODES="${HEURISTIC_MODES}" \
+    SEEDS="${SEEDS}" \
+    RUNS="${RUNS}" \
+    SIM_TIME="${SIM_TIME}" \
+    APP_START="${APP_START}" \
+    DRAIN_TIME_SEC="${DRAIN_TIME_SEC}" \
+    PERIOD_MS="${PERIOD_MS}" \
+    TX_POWER="${TX_POWER}" \
+    TDD_PATTERN="${TDD_PATTERN}" \
+    RLC_MODE="${RLC_MODE}" \
+    ./run_all_scenarios.sh
+else
+    echo "[SKIP] Online heuristics disabled by RUN_HEURISTICS=${RUN_HEURISTICS}"
+fi
 
-    echo "  [SAC]  Starting... (output: sac_${scenario}_seed${FIXED_SEED})"
-    python3 examples/rslaq_train_sac.py \
-        --scenario "${scenario}" \
-        --episodes "${SAC_EPISODES}" \
-        --seed "${FIXED_SEED}" \
-        --seed_cycle "${SEED_CYCLE}" \
-        --simTime "${SAC_SIM_TIME}" \
-        --appStart "${APP_START}" \
-        --periodMs "${PERIOD_MS}" \
-        --max_steps "${SAC_MAX_STEPS}" \
-        --observation_mode paper \
-        --action_mode continuous \
-        --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
-        --buffer_size "${SAC_BUFFER_SIZE}" \
-        --batch_size "${SAC_BATCH_SIZE}" \
-        --lr "${SAC_LR}" \
-        --gamma "${SAC_GAMMA}" \
-        --tau "${SAC_TAU}" \
-        --alpha "${SAC_ALPHA}" \
-        --output "${RESULTS_DIR}/sac_${scenario}_seed${FIXED_SEED}" &
-
-    echo "  [DDQN] Starting... (output: ddqn_${scenario}_seed${FIXED_SEED})"
-    python3 examples/rslaq_train_ddqn.py \
-        --scenario "${scenario}" \
-        --episodes "${DDQN_EPISODES}" \
-        --seed "${FIXED_SEED}" \
-        --seed_cycle "${SEED_CYCLE}" \
-        --simTime "${DDQN_SIM_TIME}" \
-        --appStart "${APP_START}" \
-        --periodMs "${PERIOD_MS}" \
-        --max_steps "${DDQN_MAX_STEPS}" \
-        --ntsr "${NTSR}" \
-        --observation_mode paper \
-        --action_mode discrete \
-        --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
-        --buffer_size "${DDQN_BUFFER_SIZE}" \
-        --batch_size "${DDQN_BATCH_SIZE}" \
-        --lr "${DDQN_LR}" \
-        --gamma "${DDQN_GAMMA}" \
-        --epsilon_start "${DDQN_EPS_START}" \
-        --epsilon_min "${DDQN_EPS_MIN}" \
-        --epsilon_decay "${DDQN_EPS_DECAY}" \
-        --target_update "${DDQN_TARGET_UPDATE}" \
-        --output "${RESULTS_DIR}/ddqn_${scenario}_seed${FIXED_SEED}" &
-
-    echo "  Waiting for both to finish..."
-    wait
-    echo "  [${scenario}] Done."
-done
+if [[ "${RUN_METAHEURISTICS}" == "1" ]]; then
+    echo ""
+    echo "============================================"
+    echo "Running offline meta-heuristic searches"
+    echo "============================================"
+    cd "${GYM_DIR}"
+    read -r -a SCENARIO_LIST <<< "${SCENARIOS}"
+    for scenario in "${SCENARIO_LIST[@]}"; do
+        echo "[META] scenario=${scenario} method=${META_METHOD}"
+        python3 examples/run_rslaq_metaheuristics.py \
+            --method "${META_METHOD}" \
+            --scenario "${scenario}" \
+            --seed "${META_SEED}" \
+            --run "${META_RUN}" \
+            --random_seed "${META_RANDOM_SEED}" \
+            --iterations "${META_ITERATIONS}" \
+            --population "${META_POPULATION}" \
+            --mutation_strength "${META_MUTATION_STRENGTH}" \
+            --intra_algo "${META_INTRA_ALGO}" \
+            --sim_time "${SIM_TIME}" \
+            --app_start "${APP_START}" \
+            --drain_time "${DRAIN_TIME_SEC}" \
+            --period_ms "${PERIOD_MS}" \
+            --tx_power "${TX_POWER}" \
+            --tdd_pattern "${TDD_PATTERN}" \
+            --rlc_mode "${RLC_MODE}" \
+            --ns3_dir "${NS3_DIR}" \
+            --output_root "${META_OUTPUT_ROOT}/scenario=${scenario}"
+    done
+else
+    echo "[SKIP] Meta-heuristics disabled by RUN_METAHEURISTICS=${RUN_METAHEURISTICS}"
+fi
 
 echo ""
 echo "============================================"
-echo "Training Complete!"
+echo "Campaign complete"
 echo "============================================"
-echo "Results:"
-for scenario in "${SCENARIOS[@]}"; do
-    echo "  ${RESULTS_DIR}/sac_${scenario}_seed${FIXED_SEED}"
-    echo "  ${RESULTS_DIR}/ddqn_${scenario}_seed${FIXED_SEED}"
-done
+echo "Heuristics output     : ${HEURISTIC_OUTPUT_ROOT}/results_rslaq_network_only"
+echo "Meta-heuristics output: ${META_OUTPUT_ROOT}"
