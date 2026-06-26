@@ -11,17 +11,27 @@ slice_custom mode.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
+import os
 import random
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-SLICE_NAMES = ("eMBB", "URLLC", "MTC")
+from nsoran.scoring import (
+    SLICE_NAMES,
+    clamp,
+    format_weights,
+    normalize_weights,
+    read_summary,
+    safe_float,
+    score_summary_rows,
+)
 
 
 @dataclass
@@ -43,41 +53,6 @@ class Particle:
     velocity: list[float]
     personal_best: list[float]
     personal_score: float = -math.inf
-
-
-def safe_float(value: object, default: float = 0.0) -> float:
-    try:
-        if value in (None, "", "NA"):
-            return default
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return default
-
-
-def clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return min(max(value, lo), hi)
-
-
-def normalize_weights(values: Sequence[float]) -> list[float]:
-    clean = [max(float(v), 0.0) for v in values[:3]]
-    if len(clean) < 3:
-        clean.extend([0.0] * (3 - len(clean)))
-    total = sum(clean)
-    if total <= 0.0:
-        return [1.0 / 3.0] * 3
-    return [v / total for v in clean]
-
-
-def format_weights(weights: Sequence[float]) -> str:
-    normalized = normalize_weights(weights)
-    first = round(normalized[0], 6)
-    second = round(normalized[1], 6)
-    third = round(1.0 - first - second, 6)
-    if third < 0.0:
-        rounded = normalize_weights([first, second, max(third, 0.0)])
-    else:
-        rounded = [first, second, third]
-    return ",".join(f"{weight:.6f}" for weight in rounded)
 
 
 def build_sim_command(
@@ -113,62 +88,6 @@ def build_sim_command(
         f"--rlcMode={rlc_mode} "
         f"--outputDir={output_root}"
     )
-
-
-def read_summary(path: Path) -> list[dict[str, str]]:
-    with path.open("r", newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def score_summary_rows(rows: Iterable[dict[str, str]]) -> float:
-    by_slice = {row.get("slice", ""): row for row in rows}
-    if not all(name in by_slice for name in SLICE_NAMES):
-        return -1e9
-
-    sla = []
-    offered = []
-    pdr = []
-    util = []
-    for name in SLICE_NAMES:
-        row = by_slice[name]
-        sla.append(clamp(safe_float(row.get("sla_satisfaction_pct")) / 100.0))
-        offered.append(clamp(safe_float(row.get("offered_load_satisfaction_pct")) / 100.0))
-        pdr.append(clamp(safe_float(row.get("pdr_pct")) / 100.0))
-        util_value = safe_float(row.get("budget_utilization_pct_mean"), 50.0)
-        util.append(clamp(util_value / 100.0))
-
-    mean_sla = sum(sla) / len(sla)
-    min_sla = min(sla)
-    mean_offered = sum(offered) / len(offered)
-    mean_pdr = sum(pdr) / len(pdr)
-    mean_util = sum(util) / len(util)
-
-    urllc = by_slice["URLLC"]
-    mtc = by_slice["MTC"]
-    embb = by_slice["eMBB"]
-
-    urllc_delay_ms = safe_float(urllc.get("delay_ms_mean"))
-    urllc_delay_penalty = clamp((urllc_delay_ms - 10.0) / 200.0)
-
-    mtc_thr = safe_float(mtc.get("throughput_mbps_mean"))
-    mtc_starvation_penalty = max(0.0, 1.0 - sla[2])
-    if mtc_thr <= 1e-9:
-        mtc_starvation_penalty += 0.5
-
-    embb_buffer = safe_float(embb.get("buffer_bytes_mean"))
-    embb_buffer_penalty = 0.05 * clamp(embb_buffer / 5_000_000.0)
-
-    score = 100.0 * (
-        0.35 * mean_sla
-        + 0.20 * min_sla
-        + 0.20 * mean_offered
-        + 0.15 * mean_pdr
-        + 0.10 * mean_util
-    )
-    score -= 25.0 * urllc_delay_penalty
-    score -= 40.0 * mtc_starvation_penalty
-    score -= 100.0 * embb_buffer_penalty
-    return score
 
 
 def random_weights(rng: random.Random) -> list[float]:
@@ -580,12 +499,18 @@ def write_best(path: Path, evaluations: Sequence[Evaluation]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def best_candidate_filename(scenario: str, seed: int) -> str:
+    return f"best_candidate_{scenario}_seed{seed}.json"
+
+
 def parse_args() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description="Run metaheuristic optimization over RSLAQ slice_custom weights")
     parser.add_argument("--method", choices=["ga", "pso", "sa", "hybrid", "all"], default="ga")
-    parser.add_argument("--scenario", default="normal")
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--scenario", default="normal", help="Single scenario (backward compatible)")
+    parser.add_argument("--scenarios", default=None, help="Space-separated list of scenarios (overrides --scenario)")
+    parser.add_argument("--seed", type=int, default=1, help="Single seed (backward compatible)")
+    parser.add_argument("--seeds", default=None, help="Space-separated list of seeds (overrides --seed)")
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--random_seed", type=int, default=2026)
     parser.add_argument("--iterations", type=int, default=4)
@@ -602,61 +527,81 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ns3_dir", type=Path, default=repo_root / "ns-3-dev")
     parser.add_argument("--output_root", type=Path, default=repo_root / "ns-3-dev" / "results_rslaq_metaheuristics")
     parser.add_argument("--build_ns3", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.scenarios is not None:
+        args.scenarios = args.scenarios.split()
+    else:
+        args.scenarios = [args.scenario]
+
+    if args.seeds is not None:
+        args.seeds = [int(s) for s in args.seeds.split()]
+    else:
+        args.seeds = [args.seed]
+
+    return args
 
 
 def main() -> None:
     args = parse_args()
-    rng = random.Random(args.random_seed)
-    search_root = args.output_root / "metaheuristic_search"
-    eval_root = search_root / "evals"
-    eval_root.mkdir(parents=True, exist_ok=True)
 
     if args.build_ns3:
         subprocess.run(["./ns3", "build", "rslaq-sim"], cwd=args.ns3_dir, check=True)
 
-    def evaluate(method: str, evaluation_id: int, weights: Sequence[float]) -> Evaluation:
-        return run_candidate(
-            ns3_dir=args.ns3_dir,
-            eval_root=eval_root,
-            method=method,
-            evaluation_id=evaluation_id,
-            scenario=args.scenario,
-            weights=weights,
-            intra_algo=args.intra_algo,
-            sim_time=args.sim_time,
-            app_start=args.app_start,
-            drain_time=args.drain_time,
-            period_ms=args.period_ms,
-            seed=args.seed,
-            run=args.run,
-            tx_power=args.tx_power,
-            tdd_pattern=args.tdd_pattern,
-            rlc_mode=args.rlc_mode,
-        )
-
     methods = ["ga", "pso", "sa", "hybrid"] if args.method == "all" else [args.method]
-    all_evaluations: list[Evaluation] = []
-    for method in methods:
-        if method == "ga":
-            all_evaluations.extend(
-                optimize_ga(rng, evaluate, args.iterations, args.population, args.mutation_strength)
-            )
-        elif method == "pso":
-            all_evaluations.extend(optimize_pso(rng, evaluate, args.iterations, args.population))
-        elif method == "sa":
-            all_evaluations.extend(optimize_sa(rng, evaluate, args.iterations, args.mutation_strength))
-        elif method == "hybrid":
-            all_evaluations.extend(
-                optimize_hybrid(rng, evaluate, args.iterations, args.population, args.mutation_strength)
-            )
 
-    write_results(search_root / "metaheuristic_results.csv", all_evaluations)
-    write_best(search_root / "best_candidate.json", all_evaluations)
-    if all_evaluations:
-        best = max(all_evaluations, key=lambda item: item.score)
-        print(f"Best {best.method} score={best.score:.4f} weights={format_weights(best.weights)}")
-        print(f"Results: {search_root}")
+    for scenario in args.scenarios:
+        for seed in args.seeds:
+            rng = random.Random(args.random_seed)
+            search_root = args.output_root / f"scenario={scenario}" / f"seed={seed}" / "metaheuristic_search"
+            eval_root = search_root / "evals"
+            eval_root.mkdir(parents=True, exist_ok=True)
+
+            print(f"[META] scenario={scenario} seed={seed} methods={methods}")
+
+            def evaluate(method: str, evaluation_id: int, weights: Sequence[float]) -> Evaluation:
+                return run_candidate(
+                    ns3_dir=args.ns3_dir,
+                    eval_root=eval_root,
+                    method=method,
+                    evaluation_id=evaluation_id,
+                    scenario=scenario,
+                    weights=weights,
+                    intra_algo=args.intra_algo,
+                    sim_time=args.sim_time,
+                    app_start=args.app_start,
+                    drain_time=args.drain_time,
+                    period_ms=args.period_ms,
+                    seed=seed,
+                    run=args.run,
+                    tx_power=args.tx_power,
+                    tdd_pattern=args.tdd_pattern,
+                    rlc_mode=args.rlc_mode,
+                )
+
+            all_evaluations: list[Evaluation] = []
+            for method in methods:
+                if method == "ga":
+                    all_evaluations.extend(
+                        optimize_ga(rng, evaluate, args.iterations, args.population, args.mutation_strength)
+                    )
+                elif method == "pso":
+                    all_evaluations.extend(optimize_pso(rng, evaluate, args.iterations, args.population))
+                elif method == "sa":
+                    all_evaluations.extend(optimize_sa(rng, evaluate, args.iterations, args.mutation_strength))
+                elif method == "hybrid":
+                    all_evaluations.extend(
+                        optimize_hybrid(rng, evaluate, args.iterations, args.population, args.mutation_strength)
+                    )
+
+            results_filename = f"metaheuristic_results_{scenario}_seed{seed}.csv"
+            write_results(search_root / results_filename, all_evaluations)
+            write_best(search_root / best_candidate_filename(scenario, seed), all_evaluations)
+
+            if all_evaluations:
+                best = max(all_evaluations, key=lambda item: item.score)
+                print(f"  Best {best.method} score={best.score:.4f} weights={format_weights(best.weights)}")
+                print(f"  Results: {search_root}")
 
 
 if __name__ == "__main__":

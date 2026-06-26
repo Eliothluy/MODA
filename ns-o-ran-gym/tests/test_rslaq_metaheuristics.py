@@ -115,6 +115,34 @@ class RslaqMetaheuristicsTest(unittest.TestCase):
             self.assertAlmostEqual(sum(evaluation.weights), 1.0)
             self.assertTrue(all(weight >= 0.0 for weight in evaluation.weights))
 
+    def test_parse_args_accepts_multi_seed_and_multi_scenario(self):
+        module = load_module()
+        import sys as _sys
+
+        original = _sys.argv
+        _sys.argv = [
+            "run_rslaq_metaheuristics.py",
+            "--method", "all",
+            "--scenarios", "normal congestion",
+            "--seeds", "1 2 3",
+            "--iterations", "2",
+        ]
+        try:
+            args = module.parse_args()
+        finally:
+            _sys.argv = original
+
+        self.assertEqual(args.scenarios, ["normal", "congestion"])
+        self.assertEqual(args.seeds, [1, 2, 3])
+
+    def test_best_candidate_filename_includes_scenario_and_seed(self):
+        module = load_module()
+
+        name = module.best_candidate_filename("congestion", 2)
+        self.assertIn("congestion", name)
+        self.assertIn("seed2", name)
+        self.assertTrue(name.endswith(".json"))
+
 
 if __name__ == "__main__":
     unittest.main()
