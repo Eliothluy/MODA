@@ -56,7 +56,9 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      * STATIC preserves the configured weights. The remaining policies compute
      * the slice weights from active MAC demand at scheduling time. META_RISK_ELASTIC
      * uses configured weights as an offline/metaheuristic prior and corrects them
-     * online when buffer pressure indicates slice SLA risk.
+     * online when buffer pressure indicates slice SLA risk. AQPS computes integer
+     * RBG budgets with the QoS-aware three-phase allocation from the adaptive
+     * priority scheduling literature.
      */
     enum class SliceWeightPolicy : uint8_t
     {
@@ -65,7 +67,8 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
         SLA_GREEDY = 2,
         LEAST_WASTE = 3,
         RANDOM_VINE = 4,
-        META_RISK_ELASTIC = 5
+        META_RISK_ELASTIC = 5,
+        AQPS = 6
     };
 
     static TypeId GetTypeId();
@@ -186,6 +189,15 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
         const std::vector<std::vector<UePtrAndBufferReq>>& sliceUeVec,
         const std::vector<bool>& sliceHasDemand,
         uint64_t timeMs) const;
+
+    /**
+     * @brief Compute AQPS integer RBG budgets using minimum guarantee,
+     * weighted urgency distribution, and priority round-robin leftovers.
+     */
+    std::vector<uint32_t> ComputeAqpsSliceBudgets(
+        const std::vector<std::vector<UePtrAndBufferReq>>& sliceUeVec,
+        const std::vector<bool>& sliceHasDemand,
+        uint32_t totalRbgs) const;
 
     void OpenCsvFiles() const;
 

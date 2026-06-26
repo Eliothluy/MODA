@@ -113,6 +113,41 @@ Clamp01(double value)
     return std::max(0.0, std::min(1.0, value));
 }
 
+double
+AqpsAlpha(uint32_t slice)
+{
+    if (slice == 1) // URLLC
+    {
+        return 0.8;
+    }
+    if (slice == 0) // eMBB
+    {
+        return 0.5;
+    }
+    return 0.2; // MTC as BE/mMTC class
+}
+
+double
+AqpsPriority(uint32_t slice)
+{
+    if (slice == 1) // URLLC
+    {
+        return 0.545;
+    }
+    if (slice == 0) // eMBB
+    {
+        return 0.273;
+    }
+    return 0.182; // MTC as BE/mMTC class
+}
+
+uint32_t
+AqpsPriorityOrder(uint32_t index)
+{
+    static const uint32_t order[3] = {1, 0, 2}; // URLLC -> eMBB -> MTC/BE
+    return order[index % 3];
+}
+
 } // namespace
 
 TypeId
@@ -625,11 +660,163 @@ RslaqMacScheduler::ComputeDecisionWeights(
         return NormalizeWeights(blended, sliceHasDemand, 0.02);
     }
 
+    case SliceWeightPolicy::AQPS:
+        return NormalizeWeights(m_prbWeights, sliceHasDemand, 0.0);
+
     case SliceWeightPolicy::STATIC:
         break;
     }
 
     return m_prbWeights;
+}
+
+std::vector<uint32_t>
+RslaqMacScheduler::ComputeAqpsSliceBudgets(
+    const std::vector<std::vector<UePtrAndBufferReq>>& sliceUeVec,
+    const std::vector<bool>& sliceHasDemand,
+    uint32_t totalRbgs) const
+{
+    std::vector<uint32_t> budgets(m_numSlices, 0);
+    if (m_numSlices == 0 || totalRbgs == 0)
+    {
+        return budgets;
+    }
+
+    std::vector<uint32_t> activeUes(m_numSlices, 0);
+    std::vector<uint32_t> requiredRbgs(m_numSlices, 0);
+    std::vector<double> urgency(m_numSlices, 0.0);
+
+    for (uint32_t s = 0; s < m_numSlices; ++s)
+    {
+        if (!sliceHasDemand[s])
+        {
+            continue;
+        }
+
+        for (const auto& ue : sliceUeVec[s])
+        {
+            double bufferBytes = std::max(0.0, static_cast<double>(ue.second));
+            double tbBytes = std::max(0.0, static_cast<double>(ue.first->m_dlTbSize));
+            if (bufferBytes <= 0.0 && tbBytes <= 0.0)
+            {
+                continue;
+            }
+
+            activeUes[s] += 1;
+            double mcs = static_cast<double>(ue.first->GetDlMcs());
+            double spectralFactor = 1.0 + std::min(mcs / 28.0, 1.0);
+            double packetBytes = (s == 1) ? 50.0 : ((s == 2) ? 100.0 : 1500.0);
+            double bytesPerRbg = std::max(packetBytes, packetBytes * GetNumRbPerRbg() * spectralFactor);
+            double demandBytes = std::max(packetBytes, bufferBytes + tbBytes);
+
+            uint32_t ueRequired = static_cast<uint32_t>(
+                std::ceil(demandBytes / std::max(bytesPerRbg, 1.0)));
+            ueRequired = std::max<uint32_t>(1, ueRequired);
+            requiredRbgs[s] += ueRequired;
+
+            double qosTerm = 0.0;
+            if (s == 1)
+            {
+                qosTerm = 50000.0 * Clamp01(bufferBytes / 10000.0) +
+                          5000.0 * static_cast<double>(ueRequired);
+            }
+            else if (s == 0)
+            {
+                qosTerm = 20000.0 * Clamp01(bufferBytes / 1000000.0) +
+                          5000.0 / spectralFactor;
+            }
+            else
+            {
+                qosTerm = 10000.0 * Clamp01(bufferBytes / 250000.0) +
+                          1000.0 * static_cast<double>(ueRequired);
+            }
+            urgency[s] += std::max(0.0, (demandBytes + qosTerm) * spectralFactor * AqpsPriority(s));
+        }
+    }
+
+    uint32_t totalActive = std::accumulate(activeUes.begin(), activeUes.end(), 0u);
+    if (totalActive == 0)
+    {
+        return budgets;
+    }
+
+    auto allocateMin = [&](uint32_t slice, uint32_t requested) {
+        uint32_t allocated = std::min(requested, totalRbgs - std::accumulate(budgets.begin(), budgets.end(), 0u));
+        budgets[slice] += allocated;
+    };
+
+    uint32_t urllcMin = std::max(activeUes[1], requiredRbgs[1]);
+    allocateMin(1, urllcMin);
+    allocateMin(0, activeUes[0]);
+    allocateMin(2, activeUes[2]);
+
+    uint32_t allocatedAfterMin = std::accumulate(budgets.begin(), budgets.end(), 0u);
+    uint32_t remaining = (allocatedAfterMin < totalRbgs) ? totalRbgs - allocatedAfterMin : 0;
+
+    double weightedUrgencySum = 0.0;
+    for (uint32_t s = 0; s < m_numSlices; ++s)
+    {
+        if (activeUes[s] > 0)
+        {
+            weightedUrgencySum += urgency[s];
+        }
+    }
+
+    uint32_t weightedAllocated = 0;
+    if (remaining > 0 && weightedUrgencySum > 0.0)
+    {
+        std::vector<double> combinedRaw(m_numSlices, 0.0);
+        double combinedSum = 0.0;
+        for (uint32_t s = 0; s < m_numSlices; ++s)
+        {
+            if (activeUes[s] == 0)
+            {
+                continue;
+            }
+            double urgencyShare = urgency[s] / weightedUrgencySum;
+            double activeShare = static_cast<double>(activeUes[s]) / static_cast<double>(totalActive);
+            combinedRaw[s] = AqpsAlpha(s) * urgencyShare + (1.0 - AqpsAlpha(s)) * activeShare;
+            combinedSum += combinedRaw[s];
+        }
+        if (combinedSum > 0.0)
+        {
+            for (uint32_t s = 0; s < m_numSlices; ++s)
+            {
+                if (activeUes[s] == 0)
+                {
+                    continue;
+                }
+                double combinedShare = combinedRaw[s] / combinedSum;
+                uint32_t add = static_cast<uint32_t>(std::floor(static_cast<double>(remaining) * combinedShare));
+                budgets[s] += add;
+                weightedAllocated += add;
+            }
+        }
+    }
+
+    uint32_t left = (weightedAllocated < remaining) ? remaining - weightedAllocated : 0;
+    while (left > 0)
+    {
+        bool assignedInRound = false;
+        for (uint32_t i = 0; i < m_numSlices && left > 0; ++i)
+        {
+            uint32_t s = AqpsPriorityOrder(i);
+            if (s < m_numSlices && activeUes[s] > 0)
+            {
+                budgets[s] += 1;
+                left -= 1;
+                assignedInRound = true;
+            }
+        }
+        if (!assignedInRound)
+        {
+            break;
+        }
+    }
+
+    uint32_t budgetSum = std::accumulate(budgets.begin(), budgets.end(), 0u);
+    NS_ASSERT_MSG(budgetSum <= totalRbgs, "AQPS budget exceeded total RBGs");
+    return budgets;
 }
 
 std::set<uint16_t>
@@ -849,63 +1036,82 @@ RslaqMacScheduler::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeDl) c
             }
         }
 
-        std::vector<double> decisionWeights = ComputeDecisionWeights(sliceUeVec, sliceHasDemand, timeMs);
-        m_lastDecisionWeights = decisionWeights;
-
-        double activeWeightSum = 0.0;
-        for (uint32_t s = 0; s < m_numSlices; s++)
-        {
-            if (sliceHasDemand[s])
-            {
-                activeWeightSum += decisionWeights[s];
-            }
-        }
-
+        std::vector<double> decisionWeights(m_numSlices, 0.0);
         std::vector<double> effectiveWeight(m_numSlices, 0.0);
         std::vector<uint32_t> sliceRbgBudget(m_numSlices, 0);
-        if (activeWeightSum > 0.0)
+        double activeWeightSum = 0.0;
+
+        if (m_sliceWeightPolicy == SliceWeightPolicy::AQPS)
         {
-            struct BudgetCandidate
+            sliceRbgBudget = ComputeAqpsSliceBudgets(sliceUeVec, sliceHasDemand, totalRbgs);
+            uint32_t budgetSum = std::accumulate(sliceRbgBudget.begin(), sliceRbgBudget.end(), 0u);
+            if (budgetSum > 0)
             {
-                uint32_t slice = 0;
-                double remainder = 0.0;
-            };
-            std::vector<BudgetCandidate> candidates;
-            uint32_t budgetSum = 0;
-            for (uint32_t s = 0; s < m_numSlices; s++)
-            {
-                if (!sliceHasDemand[s])
+                activeWeightSum = 1.0;
+                for (uint32_t s = 0; s < m_numSlices; ++s)
                 {
-                    continue;
+                    decisionWeights[s] = static_cast<double>(sliceRbgBudget[s]) /
+                                         static_cast<double>(budgetSum);
+                    effectiveWeight[s] = decisionWeights[s];
                 }
-                effectiveWeight[s] = decisionWeights[s] / activeWeightSum;
-                double rawBudget = static_cast<double>(totalRbgs) * effectiveWeight[s];
-                double floored = std::floor(rawBudget);
-                sliceRbgBudget[s] = static_cast<uint32_t>(floored);
-                budgetSum += sliceRbgBudget[s];
-                candidates.push_back({s, rawBudget - floored});
-            }
-
-            NS_ASSERT_MSG(budgetSum <= totalRbgs, "Floor budgets exceeded total RBGs");
-            uint32_t remaining = totalRbgs - budgetSum;
-            uint32_t rotation = (static_cast<uint32_t>(timeMs) + m_currentSlot) % m_numSlices;
-            std::stable_sort(candidates.begin(),
-                             candidates.end(),
-                             [rotation, this](const BudgetCandidate& a, const BudgetCandidate& b) {
-                                 if (std::abs(a.remainder - b.remainder) > 1e-12)
-                                 {
-                                     return a.remainder > b.remainder;
-                                 }
-                                 uint32_t ar = (a.slice + m_numSlices - rotation) % m_numSlices;
-                                 uint32_t br = (b.slice + m_numSlices - rotation) % m_numSlices;
-                                 return ar < br;
-                             });
-
-            for (uint32_t i = 0; i < remaining && i < candidates.size(); ++i)
-            {
-                sliceRbgBudget[candidates[i].slice] += 1;
             }
         }
+        else
+        {
+            decisionWeights = ComputeDecisionWeights(sliceUeVec, sliceHasDemand, timeMs);
+            for (uint32_t s = 0; s < m_numSlices; s++)
+            {
+                if (sliceHasDemand[s])
+                {
+                    activeWeightSum += decisionWeights[s];
+                }
+            }
+
+            if (activeWeightSum > 0.0)
+            {
+                struct BudgetCandidate
+                {
+                    uint32_t slice = 0;
+                    double remainder = 0.0;
+                };
+                std::vector<BudgetCandidate> candidates;
+                uint32_t budgetSum = 0;
+                for (uint32_t s = 0; s < m_numSlices; s++)
+                {
+                    if (!sliceHasDemand[s])
+                    {
+                        continue;
+                    }
+                    effectiveWeight[s] = decisionWeights[s] / activeWeightSum;
+                    double rawBudget = static_cast<double>(totalRbgs) * effectiveWeight[s];
+                    double floored = std::floor(rawBudget);
+                    sliceRbgBudget[s] = static_cast<uint32_t>(floored);
+                    budgetSum += sliceRbgBudget[s];
+                    candidates.push_back({s, rawBudget - floored});
+                }
+
+                NS_ASSERT_MSG(budgetSum <= totalRbgs, "Floor budgets exceeded total RBGs");
+                uint32_t remaining = totalRbgs - budgetSum;
+                uint32_t rotation = (static_cast<uint32_t>(timeMs) + m_currentSlot) % m_numSlices;
+                std::stable_sort(candidates.begin(),
+                                 candidates.end(),
+                                 [rotation, this](const BudgetCandidate& a, const BudgetCandidate& b) {
+                                     if (std::abs(a.remainder - b.remainder) > 1e-12)
+                                     {
+                                         return a.remainder > b.remainder;
+                                     }
+                                     uint32_t ar = (a.slice + m_numSlices - rotation) % m_numSlices;
+                                     uint32_t br = (b.slice + m_numSlices - rotation) % m_numSlices;
+                                     return ar < br;
+                                 });
+
+                for (uint32_t i = 0; i < remaining && i < candidates.size(); ++i)
+                {
+                    sliceRbgBudget[candidates[i].slice] += 1;
+                }
+            }
+        }
+        m_lastDecisionWeights = decisionWeights;
 
         uint32_t budgetTotal = std::accumulate(sliceRbgBudget.begin(), sliceRbgBudget.end(), 0u);
         NS_ASSERT_MSG(activeWeightSum <= 0.0 || budgetTotal == totalRbgs,

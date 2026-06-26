@@ -328,6 +328,8 @@ SliceWeightPolicyName(RslaqMacScheduler::SliceWeightPolicy policy)
         return "random_vine";
     case RslaqMacScheduler::SliceWeightPolicy::META_RISK_ELASTIC:
         return "meta_risk_elastic";
+    case RslaqMacScheduler::SliceWeightPolicy::AQPS:
+        return "aqps";
     }
     return "unknown";
 }
@@ -499,6 +501,15 @@ ConfigureBaselineMode(const std::string& baselineMode,
                   RslaqMacScheduler::IntraSliceAlgorithm::RR};
         useCustomAlgos = true;
     }
+    else if (baselineMode == "slice_aqps")
+    {
+        *weights = equal;
+        *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::AQPS;
+        *algos = {RslaqMacScheduler::IntraSliceAlgorithm::RR,
+                  RslaqMacScheduler::IntraSliceAlgorithm::RR,
+                  RslaqMacScheduler::IntraSliceAlgorithm::RR};
+        useCustomAlgos = true;
+    }
     else
     {
         NS_FATAL_ERROR("Invalid baselineMode: "
@@ -506,7 +517,7 @@ ConfigureBaselineMode(const std::string& baselineMode,
                        << " (valid: pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|"
                            "slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|"
                            "slice_custom|slice_demand_greedy|slice_sla_greedy|slice_least_waste|"
-                           "slice_qos_mixed|slice_random_vine|slice_meta_risk_elastic)");
+                           "slice_qos_mixed|slice_random_vine|slice_meta_risk_elastic|slice_aqps)");
     }
 
     if (!useCustomAlgos)
@@ -1308,7 +1319,7 @@ main(int argc, char* argv[])
     cmd.AddValue("mtcUes", "Number of MTC UEs (0 uses the scenario profile)", g_numUeMtc);
     cmd.AddValue("weights", "Slice weights as comma-separated list (eMBB,URLLC,MTC)", weightsStr);
     cmd.AddValue("baselineMode",
-                 "pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|slice_custom|slice_demand_greedy|slice_sla_greedy|slice_least_waste|slice_qos_mixed|slice_random_vine|slice_meta_risk_elastic",
+                 "pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|slice_custom|slice_demand_greedy|slice_sla_greedy|slice_least_waste|slice_qos_mixed|slice_random_vine|slice_meta_risk_elastic|slice_aqps",
                  baselineMode);
     cmd.AddValue("intraAlgo", "RR|PF|BCQI", intraAlgo);
     cmd.AddValue("simId", "Simulation UUID for IPC semaphores", simId);

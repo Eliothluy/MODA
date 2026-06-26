@@ -40,7 +40,7 @@ TX_POWER="${TX_POWER:-43}"
 TDD_PATTERN="${TDD_PATTERN:-D|D|8D|4GB|4U|U|U}"
 RLC_MODE="${RLC_MODE:-um}"
 
-HEURISTIC_MODES="${HEURISTIC_MODES:-slice_demand_greedy slice_sla_greedy slice_least_waste slice_qos_mixed slice_random_vine slice_meta_risk_elastic}"
+HEURISTIC_MODES="${HEURISTIC_MODES:-slice_demand_greedy slice_sla_greedy slice_least_waste slice_qos_mixed slice_random_vine slice_meta_risk_elastic slice_aqps}"
 
 META_METHOD="${META_METHOD:-all}"
 META_ITERATIONS="${META_ITERATIONS:-4}"
