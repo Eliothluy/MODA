@@ -54,8 +54,9 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      * @brief Slice PRB/RBG weight policy.
      *
      * STATIC preserves the configured weights. The remaining policies compute
-     * the slice weights from active MAC demand at scheduling time, removing the
-     * need for fixed a-priori PRB shares in heuristic baselines.
+     * the slice weights from active MAC demand at scheduling time. META_RISK_ELASTIC
+     * uses configured weights as an offline/metaheuristic prior and corrects them
+     * online when buffer pressure indicates slice SLA risk.
      */
     enum class SliceWeightPolicy : uint8_t
     {
@@ -63,7 +64,8 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
         DEMAND_GREEDY = 1,
         SLA_GREEDY = 2,
         LEAST_WASTE = 3,
-        RANDOM_VINE = 4
+        RANDOM_VINE = 4,
+        META_RISK_ELASTIC = 5
     };
 
     static TypeId GetTypeId();

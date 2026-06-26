@@ -107,6 +107,12 @@ Mix64(uint64_t value)
     return value ^ (value >> 31);
 }
 
+double
+Clamp01(double value)
+{
+    return std::max(0.0, std::min(1.0, value));
+}
+
 } // namespace
 
 TypeId
@@ -562,6 +568,62 @@ RslaqMacScheduler::ComputeDecisionWeights(
             }
         }
         return NormalizeWeights(raw, sliceHasDemand, 0.01);
+
+    case SliceWeightPolicy::META_RISK_ELASTIC:
+    {
+        std::vector<double> riskRaw(m_numSlices, 0.0);
+        std::vector<double> priorRaw(m_numSlices, 0.0);
+
+        double maxPressure = 0.0;
+        for (uint32_t s = 0; s < m_numSlices; ++s)
+        {
+            if (!sliceHasDemand[s])
+            {
+                continue;
+            }
+
+            double base = bufferSum[s] + 1500.0 * static_cast<double>(activeUes[s]) + 1.0;
+            double urgency = 1.0;
+            double pressure = 0.0;
+            if (s == 0)
+            {
+                urgency += std::min(bufferSum[s] / 1000000.0, 4.0);
+                pressure = Clamp01(bufferSum[s] / 2000000.0);
+            }
+            else if (s == 1)
+            {
+                urgency += 1.5 + 2.0 * std::min(maxBuffer[s] / 10000.0, 8.0) +
+                           std::min(bufferSum[s] / 100000.0, 3.0);
+                pressure = Clamp01(std::max(maxBuffer[s] / 10000.0, bufferSum[s] / 100000.0));
+            }
+            else if (s == 2)
+            {
+                urgency += std::min(bufferSum[s] / 250000.0, 4.0) +
+                           0.5 * std::min(static_cast<double>(activeUes[s]) / 20.0, 2.0);
+                pressure = Clamp01(bufferSum[s] / 250000.0);
+            }
+
+            riskRaw[s] = base * urgency;
+            priorRaw[s] = (s < m_prbWeights.size() ? m_prbWeights[s] : 1.0 / m_numSlices);
+            maxPressure = std::max(maxPressure, pressure);
+        }
+
+        std::vector<double> riskWeights = NormalizeWeights(riskRaw, sliceHasDemand, 0.02);
+        std::vector<double> priorWeights = NormalizeWeights(priorRaw, sliceHasDemand, 0.02);
+        std::vector<double> blended(m_numSlices, 0.0);
+
+        // Stable queues keep the offline prior; pressure shifts weight to online risk control.
+        double priorShare = 0.75 - 0.55 * maxPressure;
+        priorShare = std::max(0.20, std::min(0.75, priorShare));
+        for (uint32_t s = 0; s < m_numSlices; ++s)
+        {
+            if (sliceHasDemand[s])
+            {
+                blended[s] = priorShare * priorWeights[s] + (1.0 - priorShare) * riskWeights[s];
+            }
+        }
+        return NormalizeWeights(blended, sliceHasDemand, 0.02);
+    }
 
     case SliceWeightPolicy::STATIC:
         break;
