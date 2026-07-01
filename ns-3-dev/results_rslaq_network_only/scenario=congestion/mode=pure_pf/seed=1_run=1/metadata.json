@@ -11,6 +11,7 @@
   "num_ues_per_slice": {"eMBB": 15, "URLLC": 10, "MTC": 35},
   "slices": ["eMBB", "URLLC", "MTC"],
   "slice_weights_configured": [],
+  "slice_weight_policy": "NA",
   "traffic_mbps_per_slice": {"eMBB": 180, "URLLC": 5, "MTC": 60},
   "traffic_mbps_per_ue": {"eMBB": 12, "URLLC": 0.5, "MTC": 1.71429},
   "packet_size_bytes_per_slice": {"eMBB": 1500, "URLLC": 100, "MTC": 500},
