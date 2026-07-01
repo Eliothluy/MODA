@@ -52,6 +52,7 @@
 #include <numeric>
 #include <semaphore.h>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -240,7 +241,20 @@ ParseWeights(const std::string& str)
     std::string token;
     while (std::getline(ss, token, ','))
     {
-        w.push_back(std::stod(token));
+        try
+        {
+            size_t parsed = 0;
+            double value = std::stod(token, &parsed);
+            if (parsed != token.size())
+            {
+                NS_FATAL_ERROR("Invalid --weights token: '" << token << "'");
+            }
+            w.push_back(value);
+        }
+        catch (const std::exception&)
+        {
+            NS_FATAL_ERROR("Invalid --weights token: '" << token << "'");
+        }
     }
     return w;
 }
@@ -295,6 +309,29 @@ IntraAlgoName(RslaqMacScheduler::IntraSliceAlgorithm algo)
         return "BCQI";
     }
     return "UNKNOWN";
+}
+
+static std::string
+SliceWeightPolicyName(RslaqMacScheduler::SliceWeightPolicy policy)
+{
+    switch (policy)
+    {
+    case RslaqMacScheduler::SliceWeightPolicy::STATIC:
+        return "static";
+    case RslaqMacScheduler::SliceWeightPolicy::DEMAND_GREEDY:
+        return "demand_greedy";
+    case RslaqMacScheduler::SliceWeightPolicy::SLA_GREEDY:
+        return "sla_greedy";
+    case RslaqMacScheduler::SliceWeightPolicy::LEAST_WASTE:
+        return "least_waste";
+    case RslaqMacScheduler::SliceWeightPolicy::RANDOM_VINE:
+        return "random_vine";
+    case RslaqMacScheduler::SliceWeightPolicy::META_RISK_ELASTIC:
+        return "meta_risk_elastic";
+    case RslaqMacScheduler::SliceWeightPolicy::AQPS:
+        return "aqps";
+    }
+    return "unknown";
 }
 
 static RslaqMacScheduler::IntraSliceAlgorithm
@@ -358,10 +395,12 @@ ConfigureBaselineMode(const std::string& baselineMode,
                       const std::vector<double>& weightsArg,
                       RslaqMacScheduler::IntraSliceAlgorithm cliAlgo,
                       std::vector<double>* weights,
-                      std::vector<RslaqMacScheduler::IntraSliceAlgorithm>* algos)
+                      std::vector<RslaqMacScheduler::IntraSliceAlgorithm>* algos,
+                      RslaqMacScheduler::SliceWeightPolicy* weightPolicy)
 {
     const std::vector<double> equal = {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0};
     const std::vector<double> weighted = {0.3333, 0.4000, 0.2667};
+    *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::STATIC;
 
     if (IsPureMode(baselineMode))
     {
@@ -372,6 +411,7 @@ ConfigureBaselineMode(const std::string& baselineMode,
 
     *weights = weightsArg;
     RslaqMacScheduler::IntraSliceAlgorithm algo = cliAlgo;
+    bool useCustomAlgos = false;
 
     if (baselineMode == "slice_rr")
     {
@@ -416,15 +456,74 @@ ConfigureBaselineMode(const std::string& baselineMode,
         }
         algo = RslaqMacScheduler::IntraSliceAlgorithm::PF;
     }
+    else if (baselineMode == "slice_demand_greedy")
+    {
+        *weights = equal;
+        *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::DEMAND_GREEDY;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    }
+    else if (baselineMode == "slice_sla_greedy")
+    {
+        *weights = equal;
+        *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::SLA_GREEDY;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    }
+    else if (baselineMode == "slice_least_waste")
+    {
+        *weights = equal;
+        *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::LEAST_WASTE;
+        *algos = {RslaqMacScheduler::IntraSliceAlgorithm::PF,
+                  RslaqMacScheduler::IntraSliceAlgorithm::BCQI,
+                  RslaqMacScheduler::IntraSliceAlgorithm::PF};
+        useCustomAlgos = true;
+    }
+    else if (baselineMode == "slice_qos_mixed")
+    {
+        *weights = equal;
+        *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::SLA_GREEDY;
+        *algos = {RslaqMacScheduler::IntraSliceAlgorithm::PF,
+                  RslaqMacScheduler::IntraSliceAlgorithm::BCQI,
+                  RslaqMacScheduler::IntraSliceAlgorithm::RR};
+        useCustomAlgos = true;
+    }
+    else if (baselineMode == "slice_random_vine")
+    {
+        *weights = equal;
+        *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::RANDOM_VINE;
+        algo = RslaqMacScheduler::IntraSliceAlgorithm::PF;
+    }
+    else if (baselineMode == "slice_meta_risk_elastic")
+    {
+        *weights = weightsArg;
+        *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::META_RISK_ELASTIC;
+        *algos = {RslaqMacScheduler::IntraSliceAlgorithm::PF,
+                  RslaqMacScheduler::IntraSliceAlgorithm::BCQI,
+                  RslaqMacScheduler::IntraSliceAlgorithm::RR};
+        useCustomAlgos = true;
+    }
+    else if (baselineMode == "slice_aqps")
+    {
+        *weights = equal;
+        *weightPolicy = RslaqMacScheduler::SliceWeightPolicy::AQPS;
+        *algos = {RslaqMacScheduler::IntraSliceAlgorithm::RR,
+                  RslaqMacScheduler::IntraSliceAlgorithm::RR,
+                  RslaqMacScheduler::IntraSliceAlgorithm::RR};
+        useCustomAlgos = true;
+    }
     else
     {
         NS_FATAL_ERROR("Invalid baselineMode: "
                        << baselineMode
                        << " (valid: pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|"
-                          "slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|slice_custom)");
+                           "slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|"
+                           "slice_custom|slice_demand_greedy|slice_sla_greedy|slice_least_waste|"
+                           "slice_qos_mixed|slice_random_vine|slice_meta_risk_elastic|slice_aqps)");
     }
 
-    algos->assign(NUM_SLICES, algo);
+    if (!useCustomAlgos)
+    {
+        algos->assign(NUM_SLICES, algo);
+    }
     return true;
 }
 
@@ -526,6 +625,7 @@ struct SliceAggStats
     uint32_t lostPackets = 0;
     double delaySumSec = 0.0;
     double jitterSumSec = 0.0;
+    std::vector<double> throughputSamplesMbps;
 };
 
 struct SimState
@@ -597,6 +697,11 @@ StatsCallback()
     FlowMonitor::FlowStatsContainer stats = g_monitorPtr->GetFlowStats();
     uint64_t nowMs = static_cast<uint64_t>(Simulator::Now().GetMilliSeconds());
     g_baseline.stepCount++;
+    std::map<SliceType, double> sliceThroughputThisStep = {
+        {SliceType::EMBB, 0.0},
+        {SliceType::URLLC, 0.0},
+        {SliceType::MTC, 0.0},
+    };
 
     if (!g_baseline.statsFile.is_open())
     {
@@ -634,6 +739,7 @@ StatsCallback()
         double periodSec = static_cast<double>(g_baseline.indicationPeriodMs) / 1000.0;
         double thrMbps = (periodSec > 0) ? (static_cast<double>(dRxBytes) * 8.0 / periodSec / 1e6) : 0.0;
         double lossPctInterval = (dTxPackets > 0) ? (static_cast<double>(dLostPackets) / static_cast<double>(dTxPackets) * 100.0) : 0.0;
+        sliceThroughputThisStep[slice] += thrMbps;
 
         int32_t sliceIdx = static_cast<int32_t>(slice);
         double rshConfiguredPct = 0.0;
@@ -687,6 +793,11 @@ StatsCallback()
         ue.jitterSumSec = st.jitterSum.GetSeconds();
     }
 
+    for (auto& kv : sliceThroughputThisStep)
+    {
+        g_baseline.sliceStats[kv.first].throughputSamplesMbps.push_back(kv.second);
+    }
+
     g_baseline.statsFile.flush();
     Simulator::Schedule(MilliSeconds(g_baseline.indicationPeriodMs), &StatsCallback);
 }
@@ -714,7 +825,6 @@ WriteSummaryCsv(const std::string& outputDir,
     for (SliceType slice : {SliceType::EMBB, SliceType::URLLC, SliceType::MTC})
     {
         const SliceAggStats& agg = g_baseline.sliceStats[slice];
-        std::vector<double> thrSamples;
         std::vector<double> delaySamples;
         std::vector<double> jitterSamples;
         std::vector<double> bufferSamples;
@@ -726,7 +836,6 @@ WriteSummaryCsv(const std::string& outputDir,
             {
                 continue;
             }
-            thrSamples.insert(thrSamples.end(), ue.throughputSamplesMbps.begin(), ue.throughputSamplesMbps.end());
             delaySamples.insert(delaySamples.end(), ue.delaySamplesMs.begin(), ue.delaySamplesMs.end());
             jitterSamples.insert(jitterSamples.end(), ue.jitterSamplesMs.begin(), ue.jitterSamplesMs.end());
             bufferSamples.insert(bufferSamples.end(), ue.bufferSamplesBytes.begin(), ue.bufferSamplesBytes.end());
@@ -777,8 +886,8 @@ WriteSummaryCsv(const std::string& outputDir,
 
         out << scenarioName << "," << baselineMode << "," << SliceName(slice) << ","
             << CsvValue(throughputMean) << ","
-            << CsvValue(Percentile(thrSamples, 50.0)) << ","
-            << CsvValue(Percentile(thrSamples, 95.0)) << ","
+            << CsvValue(Percentile(agg.throughputSamplesMbps, 50.0)) << ","
+            << CsvValue(Percentile(agg.throughputSamplesMbps, 95.0)) << ","
             << CsvValue(delayMean, 3) << ","
             << CsvValue(Percentile(delaySamples, 95.0), 3) << ","
             << CsvValue(Percentile(delaySamples, 99.0), 3) << ","
@@ -805,11 +914,13 @@ WriteMetadataJson(const std::string& outputDir,
                   const ScenarioConfig& scenario,
                   const std::string& baselineMode,
                   const std::string& intraAlgoName,
+                  const std::vector<RslaqMacScheduler::IntraSliceAlgorithm>& sliceAlgos,
                   uint32_t seed,
                   uint32_t run,
                   double simTimeSec,
                   double drainTimeSec,
                   const std::vector<double>& weights,
+                  const std::string& sliceWeightPolicy,
                   const std::string& duplexMode,
                   const std::string& tddPatternRequested,
                   const std::string& tddPatternApplied,
@@ -826,6 +937,12 @@ WriteMetadataJson(const std::string& outputDir,
         << "  \"scenario\": \"" << scenario.name << "\",\n"
         << "  \"baseline_mode\": \"" << baselineMode << "\",\n"
         << "  \"intra_algo\": \"" << intraAlgoName << "\",\n"
+        << "  \"intra_algos_per_slice\": {\"eMBB\": \""
+        << (sliceAlgos.size() > 0 ? IntraAlgoName(sliceAlgos[0]) : "NA")
+        << "\", \"URLLC\": \""
+        << (sliceAlgos.size() > 1 ? IntraAlgoName(sliceAlgos[1]) : "NA")
+        << "\", \"MTC\": \""
+        << (sliceAlgos.size() > 2 ? IntraAlgoName(sliceAlgos[2]) : "NA") << "\"},\n"
         << "  \"seed\": " << seed << ",\n"
         << "  \"run\": " << run << ",\n"
         << "  \"sim_time_sec\": " << simTimeSec << ",\n"
@@ -846,6 +963,7 @@ WriteMetadataJson(const std::string& outputDir,
         out << std::fixed << std::setprecision(4) << weights[i];
     }
     out << "],\n"
+        << "  \"slice_weight_policy\": \"" << sliceWeightPolicy << "\",\n"
         << "  \"traffic_mbps_per_slice\": {\"eMBB\": " << mbps(scenario.embbRateBps)
         << ", \"URLLC\": " << mbps(scenario.urllcRateBps)
         << ", \"MTC\": " << mbps(scenario.mtcRateBps) << "},\n"
@@ -1201,7 +1319,7 @@ main(int argc, char* argv[])
     cmd.AddValue("mtcUes", "Number of MTC UEs (0 uses the scenario profile)", g_numUeMtc);
     cmd.AddValue("weights", "Slice weights as comma-separated list (eMBB,URLLC,MTC)", weightsStr);
     cmd.AddValue("baselineMode",
-                 "pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|slice_custom",
+                 "pure_rr|pure_pf|pure_bcqi|slice_rr|slice_pf|slice_bcqi|slice_weighted_pf|slice_weighted_rr|slice_weighted_bcqi|psta_equal|slice_custom|slice_demand_greedy|slice_sla_greedy|slice_least_waste|slice_qos_mixed|slice_random_vine|slice_meta_risk_elastic|slice_aqps",
                  baselineMode);
     cmd.AddValue("intraAlgo", "RR|PF|BCQI", intraAlgo);
     cmd.AddValue("simId", "Simulation UUID for IPC semaphores", simId);
@@ -1286,7 +1404,13 @@ main(int argc, char* argv[])
     }
     double wsum = 0.0;
     for (double w : sliceWeights)
+    {
+        if (w < 0.0)
+        {
+            NS_FATAL_ERROR("Weights must be non-negative (got " << w << ")");
+        }
         wsum += w;
+    }
     if (std::abs(wsum - 1.0) > 1e-3)
     {
         NS_FATAL_ERROR("Weights must sum to 1.0 (got " << wsum << ")");
@@ -1295,7 +1419,13 @@ main(int argc, char* argv[])
     RslaqMacScheduler::IntraSliceAlgorithm parsedIntraAlgo = ParseIntraAlgo(intraAlgo);
     std::vector<RslaqMacScheduler::IntraSliceAlgorithm> sliceAlgos;
     std::vector<double> p_j;
-    g_useSliceScheduler = ConfigureBaselineMode(baselineMode, sliceWeights, parsedIntraAlgo, &p_j, &sliceAlgos);
+    RslaqMacScheduler::SliceWeightPolicy sliceWeightPolicy;
+    g_useSliceScheduler = ConfigureBaselineMode(baselineMode,
+                                                sliceWeights,
+                                                parsedIntraAlgo,
+                                                &p_j,
+                                                &sliceAlgos,
+                                                &sliceWeightPolicy);
 
     if (g_useSliceScheduler)
     {
@@ -1368,6 +1498,7 @@ main(int argc, char* argv[])
               << "Stats period : " << indicationPeriodMs << " ms\n"
               << "BaselineMode : " << baselineMode << "\n"
               << "IntraAlgo    : " << (g_useSliceScheduler ? IntraAlgoName(sliceAlgos[0]) : "NA") << "\n"
+              << "WeightPolicy : " << (g_useSliceScheduler ? SliceWeightPolicyName(sliceWeightPolicy) : "NA") << "\n"
               << "Seed/Run     : " << seed << "/" << run << "\n"
               << "IPC enabled  : " << (simId.empty() ? "NO (standalone)" : "YES") << "\n"
               << "OutputDir    : " << outputDir << "\n";
@@ -1582,7 +1713,7 @@ main(int argc, char* argv[])
     if (mappingTime < 0.0)
         mappingTime = 0.05;
 
-    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &p_j, &sliceAlgos, &scenarioName, &outputDir, &ueIpIfaces]() {
+    Simulator::Schedule(Seconds(mappingTime), [scheduler, ueNetDev, &p_j, &sliceAlgos, &sliceWeightPolicy, &scenarioName, &outputDir, &ueIpIfaces]() {
         std::vector<std::vector<uint32_t>> sliceRntis(NUM_SLICES);
         std::cout << "\n=== UE Mapping (RNTI real após attach) ===\n"
                   << std::setw(4) << "Idx" << " | "
@@ -1649,6 +1780,7 @@ main(int argc, char* argv[])
         if (scheduler)
         {
             scheduler->SetSliceUeMapping(NUM_SLICES, sliceRntis);
+            scheduler->SetSliceWeightPolicy(sliceWeightPolicy);
             scheduler->SetSliceConfiguration(p_j, sliceAlgos);
         }
     });
@@ -1747,10 +1879,20 @@ main(int argc, char* argv[])
     monitor->CheckForLostPackets();
     FlowMonitor::FlowStatsContainer finalStats = monitor->GetFlowStats();
 
-    // Zerar slice stats para acumular corretamente
+    std::map<SliceType, std::vector<double>> throughputSamplesBySlice;
+    for (const auto& kv : g_baseline.sliceStats)
+    {
+        throughputSamplesBySlice[kv.first] = kv.second.throughputSamplesMbps;
+    }
+
+    // Zerar contadores finais sem perder as amostras temporais do summary.csv.
     g_baseline.sliceStats[SliceType::EMBB] = SliceAggStats();
     g_baseline.sliceStats[SliceType::URLLC] = SliceAggStats();
     g_baseline.sliceStats[SliceType::MTC] = SliceAggStats();
+    for (const auto& kv : throughputSamplesBySlice)
+    {
+        g_baseline.sliceStats[kv.first].throughputSamplesMbps = kv.second;
+    }
 
     for (const auto& kv : finalStats)
     {
@@ -1813,11 +1955,13 @@ main(int argc, char* argv[])
                       scenario,
                       baselineMode,
                       g_useSliceScheduler ? IntraAlgoName(sliceAlgos[0]) : "NA",
+                      sliceAlgos,
                       seed,
                       run,
                       simTimeSec,
                       drainTimeSec,
                       p_j,
+                      g_useSliceScheduler ? SliceWeightPolicyName(sliceWeightPolicy) : "NA",
                       duplexMode,
                       tddPattern,
                       appliedTddPattern,

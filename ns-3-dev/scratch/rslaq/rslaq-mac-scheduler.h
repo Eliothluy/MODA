@@ -50,6 +50,27 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
         BCQI = 2  //!< Best CQI (Maximum Rate)
     };
 
+    /**
+     * @brief Slice PRB/RBG weight policy.
+     *
+     * STATIC preserves the configured weights. The remaining policies compute
+     * the slice weights from active MAC demand at scheduling time. META_RISK_ELASTIC
+     * uses configured weights as an offline/metaheuristic prior and corrects them
+     * online when buffer pressure indicates slice SLA risk. AQPS computes integer
+     * RBG budgets with the QoS-aware three-phase allocation from the adaptive
+     * priority scheduling literature.
+     */
+    enum class SliceWeightPolicy : uint8_t
+    {
+        STATIC = 0,
+        DEMAND_GREEDY = 1,
+        SLA_GREEDY = 2,
+        LEAST_WASTE = 3,
+        RANDOM_VINE = 4,
+        META_RISK_ELASTIC = 5,
+        AQPS = 6
+    };
+
     static TypeId GetTypeId();
 
     RslaqMacScheduler();
@@ -78,6 +99,8 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
     uint32_t GetNumSlices() const;
     double GetPrbWeight(uint32_t sliceIdx) const;
     IntraSliceAlgorithm GetIntraAlgorithm(uint32_t sliceIdx) const;
+    void SetSliceWeightPolicy(SliceWeightPolicy policy);
+    SliceWeightPolicy GetSliceWeightPolicy() const;
 
     /**
      * @brief Get the slice index for a given RNTI
@@ -157,7 +180,24 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
      * @brief Sort UEs within a slice by the selected intra-slice algorithm
      */
     void SortUeVectorByAlgorithm(std::vector<UePtrAndBufferReq>& ueVector,
-                                  IntraSliceAlgorithm algo) const;
+                                   IntraSliceAlgorithm algo) const;
+
+    /**
+     * @brief Compute per-slice PRB weights for the selected heuristic policy.
+     */
+    std::vector<double> ComputeDecisionWeights(
+        const std::vector<std::vector<UePtrAndBufferReq>>& sliceUeVec,
+        const std::vector<bool>& sliceHasDemand,
+        uint64_t timeMs) const;
+
+    /**
+     * @brief Compute AQPS integer RBG budgets using minimum guarantee,
+     * weighted urgency distribution, and priority round-robin leftovers.
+     */
+    std::vector<uint32_t> ComputeAqpsSliceBudgets(
+        const std::vector<std::vector<UePtrAndBufferReq>>& sliceUeVec,
+        const std::vector<bool>& sliceHasDemand,
+        uint32_t totalRbgs) const;
 
     void OpenCsvFiles() const;
 
@@ -188,8 +228,10 @@ class RslaqMacScheduler : public NrMacSchedulerOfdmaRR
 
     uint32_t m_numSlices{0};
     std::vector<double> m_prbWeights;                     // per-slice PRB proportion
+    mutable std::vector<double> m_lastDecisionWeights;     // last static/heuristic decision
     std::vector<IntraSliceAlgorithm> m_intraAlgorithms;    // per-slice algorithm
     std::vector<std::vector<uint32_t>> m_sliceUeRnti;      // RNTIs per slice; filled after attach
+    SliceWeightPolicy m_sliceWeightPolicy{SliceWeightPolicy::STATIC};
 
     double m_timeWindow{99.0}; //!< PF averaging time window
     double m_alpha{0.0};       //!< PF fairness index (0 = full fairness)

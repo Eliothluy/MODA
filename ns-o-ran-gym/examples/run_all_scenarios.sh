@@ -1,160 +1,352 @@
-#!/bin/bash
-# RSLAQ Training Script — All Scenarios, Single Seed
-# Paper-faithful DDQN (IEEE TMC 2026, Hyp-set3) + SAC baseline.
+#!/usr/bin/env bash
+# Paper network-only campaign: schedulers, RSLAQ, AQPS, heuristics, and meta-heuristics.
 #
-# DDQN follows: Algorithm 1, Table VI (Hyp-set3), ntsr=100.
-# SAC kept as continuous baseline with original hyperparameters.
+# Parallel version: runs N simulations concurrently across all three phases.
+#
+# Phase 1 — Baselines: all (scenario, mode, seed, run) combos run in parallel
+#   via the ns-3-dev/run_all_scenarios.sh job pool.
+# Phase 2 — Meta-heuristics: each (scenario, seed) pair runs as an independent
+#   Python process, up to PARALLEL_JOBS in parallel.
+# Phase 3 — Meta-evaluation: each scenario runs as an independent Python
+#   process, up to PARALLEL_JOBS in parallel.
 #
 # Usage:
-#   cd /home/eliothluy/Documentos/artigo_jussi/ns-o-ran-gym
+#   cd /home/elioth/Documentos/artigo_jussi/ns-o-ran-gym
 #   bash examples/run_all_scenarios.sh
+#
+# Useful overrides:
+#   PARALLEL_JOBS=8 SIM_TIME=5 SEEDS="1 2 3" bash examples/run_all_scenarios.sh
+#   RUN_BASELINES=0 RUN_METAHEURISTICS=1 META_ITERATIONS=8 bash examples/run_all_scenarios.sh
+#   BASELINE_MODES="pure_rr pure_bcqi pure_pf slice_weighted_pf slice_aqps" bash examples/run_all_scenarios.sh
+#   RESUME=0 bash examples/run_all_scenarios.sh   # re-run everything from scratch
 
-set -euo pipefail
+set -Eeuo pipefail
 
-REPO_ROOT="/home/elioth/Documentos/artigo_jussi"
-NS3_DIR="${REPO_ROOT}/ns-3-dev"
-GYM_DIR="${REPO_ROOT}/ns-o-ran-gym"
-RESULTS_DIR="${GYM_DIR}/results"
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+REPO_ROOT="${REPO_ROOT:-/home/elioth/Documentos/artigo_jussi}"
+NS3_DIR="${NS3_DIR:-${REPO_ROOT}/ns-3-dev}"
+GYM_DIR="${GYM_DIR:-${REPO_ROOT}/ns-o-ran-gym}"
 
-# ── Seed ──────────────────────────────────────────────────
-FIXED_SEED=1
-SEED_CYCLE=99999
+RUN_TAG="${RUN_TAG:-$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${GYM_DIR}/results_controlled/heuristics_metaheuristics/${RUN_TAG}}"
+BASELINE_OUTPUT_ROOT="${BASELINE_OUTPUT_ROOT:-${HEURISTIC_OUTPUT_ROOT:-${OUTPUT_ROOT}/heuristics_ns3}}"
+META_OUTPUT_ROOT="${META_OUTPUT_ROOT:-${OUTPUT_ROOT}/metaheuristics}"
+META_EVAL_OUTPUT="${META_EVAL_OUTPUT:-${OUTPUT_ROOT}/meta_evaluation}"
 
-# ── Training ──────────────────────────────────────────────
-# DDQN: ns-3 episodes avg ~7 steps (outage), need more episodes to fill buffer
-DDQN_EPISODES=50
-# SAC uses continuous space — keep longer training
-SAC_EPISODES=300
-# simTime for DDQN: ntsr=100 with periodMs=10 needs >=1.5s
-DDQN_SIM_TIME=2.0
-SAC_SIM_TIME=10.0
-APP_START=0.5
-PERIOD_MS=10
-CONSECUTIVE_OUTAGE_STEPS=5
+# ---------------------------------------------------------------------------
+# Phase toggles
+# ---------------------------------------------------------------------------
+RUN_BASELINES="${RUN_BASELINES:-${RUN_HEURISTICS:-1}}"
+RUN_METAHEURISTICS="${RUN_METAHEURISTICS:-1}"
+RUN_META_EVALUATION="${RUN_META_EVALUATION:-1}"
+BUILD_NS3="${BUILD_NS3:-1}"
 
-# ── Paper: ntsr=100 periodic reset (Algorithm 1, Line 17-19) ──
-NTSR=100
+# ---------------------------------------------------------------------------
+# Parallelism
+# ---------------------------------------------------------------------------
+PARALLEL_JOBS="${PARALLEL_JOBS:-6}"
+RESUME="${RESUME:-1}"
 
-# ── SAC hyperparameters ───────────────────────────────────
-SAC_BUFFER_SIZE=50000
-SAC_BATCH_SIZE=256
-SAC_LR=0.001
-SAC_GAMMA=0.99
-SAC_TAU=0.005
-SAC_ALPHA=0.1
-SAC_MAX_STEPS=$(python3 -c "print(int((${SAC_SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
+# ---------------------------------------------------------------------------
+# Simulation parameters
+# ---------------------------------------------------------------------------
+SCENARIOS="${SCENARIOS:-low_traffic normal congestion stressed insufficient_resources}"
+SEEDS="${SEEDS:-1 2 3}"
+RUNS="${RUNS:-1}"
 
-# ── DDQN hyperparameters (paper Hyp-set3, Table VI, calibrated for ns-3) ──
-DDQN_BUFFER_SIZE=128
-DDQN_BATCH_SIZE=32
-DDQN_LR=0.001
-DDQN_GAMMA=0.80
-DDQN_EPS_START=1.0
-DDQN_EPS_MIN=0.05
-DDQN_EPS_DECAY=0.998
-DDQN_TARGET_UPDATE=200
-DDQN_MAX_STEPS=$(python3 -c "print(int((${DDQN_SIM_TIME} - ${APP_START}) * 1000 / ${PERIOD_MS}))")
+SIM_TIME="${SIM_TIME:-5}"
+APP_START="${APP_START:-0.4}"
+DRAIN_TIME_SEC="${DRAIN_TIME_SEC:-0.2}"
+PERIOD_MS="${PERIOD_MS:-10}"
+TX_POWER="${TX_POWER:-43}"
+TDD_PATTERN="${TDD_PATTERN:-D|D|8D|4GB|4U|U|U}"
+RLC_MODE="${RLC_MODE:-um}"
 
-# ── Scenarios ─────────────────────────────────────────────
-SCENARIOS=(
-    "low_traffic"
-    "normal"
-    "congestion"
-    "stressed"
-    "insufficient_resources"
-)
+# ---------------------------------------------------------------------------
+# Baseline modes (all modes needed for the paper)
+# ---------------------------------------------------------------------------
+SCHEDULER_MODES="${SCHEDULER_MODES:-pure_rr pure_bcqi pure_pf}"
+RSLAQ_MODES="${RSLAQ_MODES:-slice_weighted_pf slice_weighted_rr slice_weighted_bcqi psta_equal}"
+AQPS_MODE="${AQPS_MODE:-slice_aqps}"
+HEURISTIC_MODES="${HEURISTIC_MODES:-slice_demand_greedy slice_sla_greedy slice_least_waste slice_qos_mixed slice_random_vine slice_meta_risk_elastic}"
 
+RSLAQ_REFERENCE_WEIGHTS="${RSLAQ_REFERENCE_WEIGHTS:-0.3333,0.4000,0.2667}"
+
+BASELINE_MODES="${BASELINE_MODES:-${SCHEDULER_MODES} ${RSLAQ_MODES} ${AQPS_MODE} ${HEURISTIC_MODES}}"
+
+# ---------------------------------------------------------------------------
+# Meta-heuristic parameters
+# ---------------------------------------------------------------------------
+META_METHOD="${META_METHOD:-all}"
+META_ITERATIONS="${META_ITERATIONS:-4}"
+META_POPULATION="${META_POPULATION:-6}"
+META_MUTATION_STRENGTH="${META_MUTATION_STRENGTH:-0.12}"
+META_INTRA_ALGO="${META_INTRA_ALGO:-PF}"
+META_RANDOM_SEED="${META_RANDOM_SEED:-2026}"
+META_SEED="${META_SEED:-1}"
+META_RUN="${META_RUN:-1}"
+
+mkdir -p "${OUTPUT_ROOT}" "${META_OUTPUT_ROOT}" "${META_EVAL_OUTPUT}"
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
 echo "============================================"
-echo "RSLAQ — All Scenarios | Single Seed (${FIXED_SEED})"
+echo "Paper campaign (parallel)"
 echo "============================================"
-echo "Seed:        ${FIXED_SEED} (fixed)"
-echo "DDQN:        ${DDQN_EPISODES} eps × ${NTSR} steps = $((DDQN_EPISODES * NTSR)) total (paper Hyp-set3)"
-echo "SAC:         ${SAC_EPISODES} eps × ${SAC_MAX_STEPS} steps"
-echo "Results:     ${RESULTS_DIR}/"
+echo "Output root       : ${OUTPUT_ROOT}"
+echo "Parallel jobs      : ${PARALLEL_JOBS}"
+echo "Resume             : ${RESUME}"
+echo "Scenarios          : ${SCENARIOS}"
+echo "Seeds              : ${SEEDS}"
+echo "Runs               : ${RUNS}"
+echo "SIM_TIME           : ${SIM_TIME}"
+echo ""
+echo "Run baselines      : ${RUN_BASELINES}"
+echo "Run metaheur       : ${RUN_METAHEURISTICS}"
+echo "Run meta-eval      : ${RUN_META_EVALUATION}"
+echo ""
+echo "Scheduler modes    : ${SCHEDULER_MODES}"
+echo "RSLAQ modes        : ${RSLAQ_MODES}"
+echo "AQPS mode          : ${AQPS_MODE}"
+echo "Heuristic modes    : ${HEURISTIC_MODES}"
+echo "Baseline modes     : ${BASELINE_MODES}"
+echo "RSLAQ ref weights  : ${RSLAQ_REFERENCE_WEIGHTS}"
+echo ""
+echo "Meta method        : ${META_METHOD}"
+echo "Meta iterations    : ${META_ITERATIONS}"
+echo "Meta population    : ${META_POPULATION}"
+echo "Meta intra-algo    : ${META_INTRA_ALGO}"
+echo "DRL                : disabled"
 echo ""
 
-# 1. Check ns-3 binary
-NS3_BIN="${NS3_DIR}/build/scratch/rslaq/rslaq-sim"
-if [[ ! -x "${NS3_BIN}" ]]; then
-    echo "[BUILD] ns-3 binary not found. Building rslaq-sim ..."
+# ---------------------------------------------------------------------------
+# Build ns-3 (once, before any phase)
+# ---------------------------------------------------------------------------
+if [[ "${BUILD_NS3}" == "1" ]]; then
+    echo "[BUILD] Building rslaq-sim..."
     cd "${NS3_DIR}"
-    ./ns3 configure --enable-examples --enable-tests
     ./ns3 build rslaq-sim
     echo "[BUILD] Done."
+    echo ""
 else
-    echo "[BUILD] ns-3 binary found at ${NS3_BIN}"
+    echo "[BUILD] Skipping (BUILD_NS3=${BUILD_NS3})"
 fi
 
-# 2. Create results directory
-mkdir -p "${RESULTS_DIR}"
+# ===========================================================================
+# Phase 1: Baselines (parallel job pool)
+# ===========================================================================
+if [[ "${RUN_BASELINES}" == "1" ]]; then
+    echo "============================================"
+    echo "Phase 1: Baseline/comparator matrix"
+    echo "============================================"
+    echo "Modes: ${BASELINE_MODES}"
+    echo "Parallel jobs: ${PARALLEL_JOBS}"
+    echo ""
 
-cd "${GYM_DIR}"
+    cd "${NS3_DIR}"
+    OUTPUT_ROOT="${BASELINE_OUTPUT_ROOT}" \
+    BUILD_NS3=0 \
+    PARALLEL_JOBS="${PARALLEL_JOBS}" \
+    RESUME="${RESUME}" \
+    SCENARIOS="${SCENARIOS}" \
+    BASELINE_MODES="${BASELINE_MODES}" \
+    SEEDS="${SEEDS}" \
+    RUNS="${RUNS}" \
+    SIM_TIME="${SIM_TIME}" \
+    APP_START="${APP_START}" \
+    DRAIN_TIME_SEC="${DRAIN_TIME_SEC}" \
+    PERIOD_MS="${PERIOD_MS}" \
+    TX_POWER="${TX_POWER}" \
+    TDD_PATTERN="${TDD_PATTERN}" \
+    RLC_MODE="${RLC_MODE}" \
+    ./run_all_scenarios.sh
+else
+    echo "[SKIP] Phase 1 (baselines) disabled"
+fi
 
-# ──────────────────────────────────────────────────────────
-# 3. SAC & DDQN — Per Scenario (parallel)
-# ──────────────────────────────────────────────────────────
-for scenario in "${SCENARIOS[@]}"; do
+# ===========================================================================
+# Phase 2: Meta-heuristics (parallel per scenario/seed pair)
+# ===========================================================================
+if [[ "${RUN_METAHEURISTICS}" == "1" ]]; then
     echo ""
     echo "============================================"
-    echo "Scenario: ${scenario} | SAC + DDQN (parallel)"
+    echo "Phase 2: Offline meta-heuristic search"
     echo "============================================"
+    echo "Methods: ${META_METHOD}"
+    echo "Iterations: ${META_ITERATIONS}  Population: ${META_POPULATION}"
+    echo "Intra-algo: ${META_INTRA_ALGO}"
+    echo "Parallel pairs: up to ${PARALLEL_JOBS}"
+    echo ""
 
-    echo "  [SAC]  Starting... (output: sac_${scenario}_seed${FIXED_SEED})"
-    python3 examples/rslaq_train_sac.py \
-        --scenario "${scenario}" \
-        --episodes "${SAC_EPISODES}" \
-        --seed "${FIXED_SEED}" \
-        --seed_cycle "${SEED_CYCLE}" \
-        --simTime "${SAC_SIM_TIME}" \
-        --appStart "${APP_START}" \
-        --periodMs "${PERIOD_MS}" \
-        --max_steps "${SAC_MAX_STEPS}" \
-        --observation_mode paper \
-        --action_mode continuous \
-        --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
-        --buffer_size "${SAC_BUFFER_SIZE}" \
-        --batch_size "${SAC_BATCH_SIZE}" \
-        --lr "${SAC_LR}" \
-        --gamma "${SAC_GAMMA}" \
-        --tau "${SAC_TAU}" \
-        --alpha "${SAC_ALPHA}" \
-        --output "${RESULTS_DIR}/sac_${scenario}_seed${FIXED_SEED}" &
+    cd "${GYM_DIR}"
 
-    echo "  [DDQN] Starting... (output: ddqn_${scenario}_seed${FIXED_SEED})"
-    python3 examples/rslaq_train_ddqn.py \
-        --scenario "${scenario}" \
-        --episodes "${DDQN_EPISODES}" \
-        --seed "${FIXED_SEED}" \
-        --seed_cycle "${SEED_CYCLE}" \
-        --simTime "${DDQN_SIM_TIME}" \
-        --appStart "${APP_START}" \
-        --periodMs "${PERIOD_MS}" \
-        --max_steps "${DDQN_MAX_STEPS}" \
-        --ntsr "${NTSR}" \
-        --observation_mode paper \
-        --action_mode discrete \
-        --consecutive_outage_steps "${CONSECUTIVE_OUTAGE_STEPS}" \
-        --buffer_size "${DDQN_BUFFER_SIZE}" \
-        --batch_size "${DDQN_BATCH_SIZE}" \
-        --lr "${DDQN_LR}" \
-        --gamma "${DDQN_GAMMA}" \
-        --epsilon_start "${DDQN_EPS_START}" \
-        --epsilon_min "${DDQN_EPS_MIN}" \
-        --epsilon_decay "${DDQN_EPS_DECAY}" \
-        --target_update "${DDQN_TARGET_UPDATE}" \
-        --output "${RESULTS_DIR}/ddqn_${scenario}_seed${FIXED_SEED}" &
+    # Generate (scenario, seed) pairs
+    pairs=()
+    for scenario in ${SCENARIOS}; do
+        for seed in ${SEEDS}; do
+            pairs+=("${scenario}:${seed}")
+        done
+    done
 
-    echo "  Waiting for both to finish..."
+    total_pairs=${#pairs[@]}
+    pair_idx=0
+
+    for pair in "${pairs[@]}"; do
+        scenario="${pair%%:*}"
+        seed="${pair##*:}"
+        pair_idx=$((pair_idx + 1))
+
+        echo "[META ${pair_idx}/${total_pairs}] scenario=${scenario} seed=${seed}"
+
+        (
+            cd "${GYM_DIR}"
+            python3 examples/run_rslaq_metaheuristics.py \
+                --method "${META_METHOD}" \
+                --scenario "${scenario}" \
+                --seed "${seed}" \
+                --run "${META_RUN}" \
+                --random_seed "${META_RANDOM_SEED}" \
+                --iterations "${META_ITERATIONS}" \
+                --population "${META_POPULATION}" \
+                --mutation_strength "${META_MUTATION_STRENGTH}" \
+                --intra_algo "${META_INTRA_ALGO}" \
+                --sim_time "${SIM_TIME}" \
+                --app_start "${APP_START}" \
+                --drain_time "${DRAIN_TIME_SEC}" \
+                --period_ms "${PERIOD_MS}" \
+                --tx_power "${TX_POWER}" \
+                --tdd_pattern "${TDD_PATTERN}" \
+                --rlc_mode "${RLC_MODE}" \
+                --ns3_dir "${NS3_DIR}" \
+                --output_root "${META_OUTPUT_ROOT}" \
+                > "${META_OUTPUT_ROOT}/.meta_${scenario}_seed${seed}.log" 2>&1
+        ) &
+
+        # Throttle
+        while (( $(jobs -rp | wc -l) >= PARALLEL_JOBS )); do
+            wait -n 2>/dev/null || sleep 0.1
+        done
+    done
+
+    echo "Waiting for remaining meta-heuristic jobs..."
     wait
-    echo "  [${scenario}] Done."
-done
 
+    # Report any failures
+    meta_fail=0
+    for pair in "${pairs[@]}"; do
+        scenario="${pair%%:*}"
+        seed="${pair##*:}"
+        log="${META_OUTPUT_ROOT}/.meta_${scenario}_seed${seed}.log"
+        if [[ -f "$log" ]] && grep -qi "traceback\|error\|failed" "$log" 2>/dev/null; then
+            echo "[META ERROR] ${scenario}/seed${seed} — see ${log}"
+            tail -5 "$log"
+            meta_fail=$((meta_fail + 1))
+        fi
+    done
+    if [[ "$meta_fail" -gt 0 ]]; then
+        echo "[META] ${meta_fail} pair(s) had errors."
+    else
+        echo "[META] All pairs completed."
+    fi
+    echo "Meta-heuristics output: ${META_OUTPUT_ROOT}"
+else
+    echo "[SKIP] Phase 2 (meta-heuristics) disabled"
+fi
+
+# ===========================================================================
+# Phase 3: Meta-evaluation (parallel per scenario)
+# ===========================================================================
+if [[ "${RUN_META_EVALUATION}" == "1" ]]; then
+    echo ""
+    echo "============================================"
+    echo "Phase 3: Meta-heuristic evaluation"
+    echo "============================================"
+    echo "Parallel scenarios: up to ${PARALLEL_JOBS}"
+    echo ""
+
+    cd "${GYM_DIR}"
+
+    eval_idx=0
+    total_eval=$(echo "${SCENARIOS}" | wc -w)
+
+    for scenario in ${SCENARIOS}; do
+        eval_idx=$((eval_idx + 1))
+        echo "[EVAL ${eval_idx}/${total_eval}] scenario=${scenario}"
+
+        scenario_search_root="${META_OUTPUT_ROOT}/scenario=${scenario}"
+
+        if [[ ! -d "$scenario_search_root" ]]; then
+            echo "  SKIP: no search root found at ${scenario_search_root}"
+            continue
+        fi
+
+        (
+            cd "${GYM_DIR}"
+            python3 examples/run_meta_evaluation.py \
+                --search_root "${scenario_search_root}" \
+                --output_root "${META_EVAL_OUTPUT}" \
+                --ns3_dir "${NS3_DIR}" \
+                --intra_algo "${META_INTRA_ALGO}" \
+                --sim_time "${SIM_TIME}" \
+                --app_start "${APP_START}" \
+                --drain_time "${DRAIN_TIME_SEC}" \
+                --period_ms "${PERIOD_MS}" \
+                --tx_power "${TX_POWER}" \
+                --tdd_pattern "${TDD_PATTERN}" \
+                --rlc_mode "${RLC_MODE}" \
+                --run "${META_RUN}" \
+                > "${META_EVAL_OUTPUT}/.eval_${scenario}.log" 2>&1
+        ) &
+
+        # Throttle
+        while (( $(jobs -rp | wc -l) >= PARALLEL_JOBS )); do
+            wait -n 2>/dev/null || sleep 0.1
+        done
+    done
+
+    echo "Waiting for remaining evaluation jobs..."
+    wait
+
+    # Report
+    eval_fail=0
+    for scenario in ${SCENARIOS}; do
+        log="${META_EVAL_OUTPUT}/.eval_${scenario}.log"
+        if [[ -f "$log" ]] && grep -qi "traceback\|error\|failed" "$log" 2>/dev/null; then
+            echo "[EVAL ERROR] ${scenario} — see ${log}"
+            tail -5 "$log"
+            eval_fail=$((eval_fail + 1))
+        fi
+    done
+    if [[ "$eval_fail" -gt 0 ]]; then
+        echo "[EVAL] ${eval_fail} scenario(s) had errors."
+    else
+        echo "[EVAL] All scenarios completed."
+    fi
+    echo "Meta-evaluation output: ${META_EVAL_OUTPUT}"
+else
+    echo "[SKIP] Phase 3 (meta-evaluation) disabled"
+fi
+
+# ===========================================================================
+# Done
+# ===========================================================================
 echo ""
 echo "============================================"
-echo "Training Complete!"
+echo "Campaign complete at $(date)"
 echo "============================================"
-echo "Results:"
-for scenario in "${SCENARIOS[@]}"; do
-    echo "  ${RESULTS_DIR}/sac_${scenario}_seed${FIXED_SEED}"
-    echo "  ${RESULTS_DIR}/ddqn_${scenario}_seed${FIXED_SEED}"
-done
+echo "Baselines output      : ${BASELINE_OUTPUT_ROOT}/results_rslaq_network_only"
+echo "Meta-heuristics output: ${META_OUTPUT_ROOT}"
+echo "Meta-evaluation output: ${META_EVAL_OUTPUT}"
+echo ""
+
+# Final summary
+baseline_manifest="${BASELINE_OUTPUT_ROOT}/results_rslaq_network_only/batch_manifest.csv"
+if [[ -f "$baseline_manifest" ]]; then
+    total=$(tail -n +2 "$baseline_manifest" | wc -l)
+    ok=$(grep -c ",ok," "$baseline_manifest" || true)
+    failed=$(tail -n +2 "$baseline_manifest" | grep -vc ",ok," || true)
+    echo "Baselines: ${ok} OK, ${failed} failed, ${total} total"
+fi
