@@ -47,15 +47,25 @@ def find_summary(eval_dir: Path) -> Path | None:
 
 
 def rescore_one(eval_dir: Path, *, dry_run: bool) -> tuple[float, float, str | None]:
-    """Re-score one eval. Returns (old_score, new_score, error_or_None)."""
+    """Re-score one eval. Returns (old_score, new_score, error_or_None).
+
+    Evaluations flagged ``failed=true`` (ns-3 crash, no usable summary.csv) are
+    skipped: their score is the crash penalty (-1e6) and must not be overwritten
+    by a re-score, nor do they have a summary.csv to read.
+    """
     sidecar = eval_dir / "candidate.json"
-    summary = find_summary(eval_dir)
-    if summary is None:
-        return 0.0, 0.0, "summary.csv not found under eval dir"
     try:
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return 0.0, 0.0, f"cannot read sidecar: {exc}"
+
+    if payload.get("failed", False):
+        # Crash-tolerated eval: keep its penalty score untouched.
+        return 0.0, 0.0, "skipped (failed=true, ns-3 crash)"
+
+    summary = find_summary(eval_dir)
+    if summary is None:
+        return 0.0, 0.0, "summary.csv not found under eval dir"
 
     old_score = float(payload.get("score", 0.0))
     try:

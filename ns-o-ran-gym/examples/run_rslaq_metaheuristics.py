@@ -236,11 +236,40 @@ def run_candidate(
             check=False,
         )
     if completed.returncode != 0:
-        raise RuntimeError(f"ns-3 run failed for {method} eval {evaluation_id}; see {log_file}")
+        # The ns-3 simulator occasionally hits an internal NS_ASSERT bug in the
+        # RLC UM reassembly path (SIGABRT). Rather than aborting the whole
+        # (scenario, seed) pair and discarding every other valid evaluation, we
+        # treat a crashed simulation as a hard penalty: the candidate receives a
+        # strongly negative score so the optimizer avoids that weight region,
+        # and the result is checkpointed (failed=True) so a resume does not
+        # retry the same crashing eval forever.
+        return _failed_evaluation(
+            eval_root=eval_root,
+            candidate_root=candidate_root,
+            log_file=log_file,
+            method=method,
+            evaluation_id=evaluation_id,
+            scenario=scenario,
+            seed=seed,
+            run=run,
+            weights=weights,
+            reason=f"ns-3 exit code {completed.returncode}",
+        )
 
     out_summary = summary_path(candidate_root, scenario, seed, run)
     if not out_summary.exists():
-        raise RuntimeError(f"summary.csv missing after {method} eval {evaluation_id}: {out_summary}")
+        return _failed_evaluation(
+            eval_root=eval_root,
+            candidate_root=candidate_root,
+            log_file=log_file,
+            method=method,
+            evaluation_id=evaluation_id,
+            scenario=scenario,
+            seed=seed,
+            run=run,
+            weights=weights,
+            reason="summary.csv missing after ns-3 run",
+        )
 
     rows = read_summary(out_summary)
     evaluation = Evaluation(
@@ -255,9 +284,17 @@ def run_candidate(
         log_file=log_file,
     )
 
-    # Checkpoint sidecar: persists this Evaluation so a crashed/restarted run
-    # can skip re-evaluating the same (method, evaluation_id) without losing
-    # RNG state (the weights come from the seeded optimizer, not from here).
+    _write_sidecar(candidate_root, evaluation)
+    return evaluation
+
+
+def _write_sidecar(candidate_root: Path, evaluation: Evaluation, *, failed: bool = False) -> None:
+    """Persist a candidate.json sidecar for checkpointing.
+
+    ``failed=True`` marks evaluations whose ns-3 run crashed; they carry a
+    heavily penalized score so they are neither re-tried on resume nor
+    mistaken for genuinely poor solutions during analysis.
+    """
     candidate_meta = candidate_root / "candidate.json"
     candidate_meta.write_text(json.dumps({
         "method": evaluation.method,
@@ -269,8 +306,57 @@ def run_candidate(
         "score": evaluation.score,
         "result_dir": str(evaluation.result_dir),
         "log_file": str(evaluation.log_file),
+        "failed": failed,
     }), encoding="utf-8")
 
+
+# Score assigned to any candidate whose ns-3 run crashed. Strongly negative so
+# the optimizer steers away, and below any legitimately-computed score.
+FAILED_SCORE = -1e6
+
+
+def _failed_evaluation(
+    *,
+    eval_root: Path,
+    candidate_root: Path,
+    log_file: Path,
+    method: str,
+    evaluation_id: int,
+    scenario: str,
+    seed: int,
+    run: int,
+    weights: Sequence[float],
+    reason: str,
+) -> Evaluation:
+    """Build and checkpoint a penalized Evaluation for a crashed ns-3 run.
+
+    Also appends a structured line to ``eval_root/.ns3_failures.log`` so the
+    dashboard / analysis can find every tolerated crash in one place.
+    """
+    normalized = normalize_weights(weights)
+    evaluation = Evaluation(
+        method=method,
+        evaluation_id=evaluation_id,
+        scenario=scenario,
+        seed=seed,
+        run=run,
+        weights=normalized,
+        score=FAILED_SCORE,
+        result_dir=result_dir(candidate_root, scenario, seed, run),
+        log_file=log_file,
+    )
+    _write_sidecar(candidate_root, evaluation, failed=True)
+
+    failures_log = eval_root / ".ns3_failures.log"
+    with failures_log.open("a", encoding="utf-8") as handle:
+        handle.write(
+            f"{scenario}\tseed={seed}\t{method}\teval={evaluation_id}\t"
+            f"weights={normalized}\treason={reason}\tlog={log_file}\n"
+        )
+    print(
+        f"[META fail] scenario={scenario} seed={seed} {method} eval {evaluation_id} "
+        f"crashed ({reason}); score={FAILED_SCORE} (continuing)"
+    )
     return evaluation
 
 

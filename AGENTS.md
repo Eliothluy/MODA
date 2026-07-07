@@ -156,7 +156,11 @@ Essa comparação deve mostrar se a otimização dos pesos de alocação gera me
 
 O paper deve manter AQPS e RSLAQ como bases relevantes.
 
-A comparação com RSLAQ deve ser mantida na análise experimental ou na discussão dos resultados, conforme a estrutura atual do paper. AQPS deve continuar sendo usado como base conceitual, metodológica ou comparativa, conforme definido na pesquisa.
+A comparação com RSLAQ deve ser mantida na análise experimental ou na discussão dos resultados, conforme a estrutura atual do paper. RSLAQ representa a base orientada por aprendizado/reinforcement learning usada para posicionar a proposta em relação a métodos adaptativos existentes; quando os resultados da Phase 4 estiverem disponíveis, eles devem entrar como baseline DRL principal do paper.
+
+AQPS deve continuar sendo usado como base conceitual, metodológica ou comparativa, conforme definido na pesquisa. No estado atual do código experimental, AQPS aparece como o modo `slice_aqps`: um baseline slice-aware que calcula orçamentos inteiros de RBGs por slice com garantia mínima para demandas ativas e ajuste por urgência/prioridade. Ele deve ser tratado como baseline adaptativo de alocação por slice, não como substituto da formulação principal baseada na otimização contínua dos pesos.
+
+RSLAQ e AQPS servem para responder se a otimização offline por meta-heurísticas é competitiva frente a abordagens adaptativas já consideradas no trabalho. A redação deve preservar essa função comparativa sem deslocar o foco do artigo para DRL, aprendizado por reforço ou projeto de novos schedulers.
 
 Agentes devem evitar remover RSLAQ ou AQPS da narrativa do paper.
 
@@ -314,6 +318,7 @@ Esta seção registra o estado experimental vigente, as mudanças aplicadas e os
 - **Decisão de projeto**: ambiente controlado com **3 seeds (1, 2, 3)** e `RUNS=1`. Não há intenção de expandir para 30 execuções por restrição de tempo de simulação. Agents não devem introduzir 30 seeds por iniciativa própria.
 - **Hiperparâmetros vigentes**: `META_ITERATIONS=12`, `META_POPULATION=6`, `META_RANDOM_SEED=2026`, `META_MUTATION_STRENGTH=0.12`, `META_INTRA_ALGO=PF`. Cada par (cenário, seed) executa GA (72 evals), PSO (72), SA (12) e híbrida (~78), totalizando ~234 avaliações da função objetivo por par.
 - **Fases**: Phase 1 (baselines) está 210/211 OK; Phase 2 (meta-heurísticas) em execução; Phase 3 (meta-eval) e Phase 4 (RSLAQ DDQN paper-faithful) agendadas na sequência via `resume_campaign.sh`.
+- **AQPS na campanha**: o baseline AQPS está habilitado como `slice_aqps` nos scripts de baselines e aparece no manifesto `heuristics_ns3/results_rslaq_network_only/batch_manifest.csv`. No estado verificado desta sessão, há 15 execuções planejadas de `slice_aqps`: 14 `ok` com `summary.csv` e 1 `run_failed` em `congestion`, `seed=1`, `run=1` (`ns3_run_failed`).
 
 ### 14.2 Mudanças de código aplicadas nesta sessão (não descrever como bugs novos)
 
@@ -347,3 +352,19 @@ Uma revisão crítica de pesquisa identificou pontos que devem ser refletidos na
 - **Ao mudar hiperparâmetros que afetem o RNG** (population, random_seed), o cache é invalidado e tudo precisa re-rodar do zero. Mudar apenas `iterations` preserva o cache.
 - **Para parar a campanha**: SIGTERM ao PID em `resume_campaign.pid` pode não propagar aos filhos; usar `pkill -KILL -f "ns3.46-rslaq-sim-default|run_rslaq_metaheuristics.py|run_all_scenarios.sh"` se necessário. O cache (sidecars já escritos) sobrevive a SIGKILL.
 - **Relevância**: o SOTA em RAN slicing (2024-2025) é dominado por DRL (DDPG, PPO, federated/hierarchical RL). O paper deve articular explicitamente por que meta-heurísticas offline (auditáveis, estáveis, sem treinamento) são a escolha certa — caso contrário, um revisor questionará por que não DRL.
+
+### 14.6 Dashboard de monitoramento
+
+Existe um dashboard Streamlit read-only para acompanhar a campanha em tempo real:
+
+- **Arquivo**: `ns-o-ran-gym/examples/dashboard.py`.
+- **Como rodar**: usar o venv dedicado em `ns-o-ran-gym/.venv-dashboard/` (PEP 668 bloqueia o python3 do sistema):
+  ```
+  cd ns-o-ran-gym
+  .venv-dashboard/bin/streamlit run examples/dashboard.py
+  ```
+  Abre em `http://localhost:8501`, com auto-refresh a cada 15s.
+- **O que mostra**: % global de conclusão e ETA (Seção A); heatmap cenário×seed e tabela de progresso por método (B); curvas de convergência, boxplots e ranking comparativo de GA/PSO/SA/híbrida por par selecionado (C); melhor candidato por cenário com pesos ótimos (D); ticker de atividade recente e detecção de erros nos logs (E).
+- **Fonte de dados**: lê apenas sidecars `candidate.json`, `best_candidate_*.json`, `metaheuristic_results_*.csv` e o `batch_manifest.csv` da Phase 1. **Nunca modifica a campanha** (read-only).
+- **Contagens embutidas** (iter=12, pop=6): GA=72, PSO=72, SA=12, híbrida=84 → 240 evals/par, 3600 global. Se hiperparâmetros mudarem, atualizar `EVALS_PER_METHOD` no `dashboard.py`.
+- **Limitação conhecida**: o `streamlit-autorefresh` opcional não está instalado; o app usa fallback via `<meta http-equiv="refresh">` (recarrega a página no browser a cada 15s). Para auto-refresh nativo (sem reload visível), instale `streamlit-autorefresh` no venv-dashboard.
