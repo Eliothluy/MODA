@@ -22,3 +22,7 @@ run_meta_parallel*.log
 
 # ns-3 build artifacts (já cobertos pelo ns-3-dev/.gitignore, reforçando)
 ns-3-dev/build/
+
+# Virtual environments (locais, não versionados)
+.venv-dashboard/
+.venv/
