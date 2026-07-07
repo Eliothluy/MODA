@@ -301,3 +301,49 @@ Agentes não devem:
 - transformar o artigo em uma proposta de novo scheduler em vez de uma análise de meta-heurísticas para otimização dos pesos.
 
 Quando alguma informação estiver ausente, o agente deve sinalizar a lacuna e propor uma forma de preenchê-la sem alterar o escopo do paper.
+
+---
+
+## 14. Contexto Operacional e Estado Experimental (Sessão 2026-07-07)
+
+Esta seção registra o estado experimental vigente, as mudanças aplicadas e os bugs conhecidos, de forma que agentes futuros herdem o contexto sem precisar rederivá-lo. Ela complementa (não substitui) as seções anteriores; em caso de conflito sobre escopo ou formulação, prevalecem as seções 1-13.
+
+### 14.1 Campanha vigente
+
+- **Run tag**: `20260626_122326`, em `ns-o-ran-gym/results_controlled/heuristics_metaheuristics/20260626_122326/`.
+- **Decisão de projeto**: ambiente controlado com **3 seeds (1, 2, 3)** e `RUNS=1`. Não há intenção de expandir para 30 execuções por restrição de tempo de simulação. Agents não devem introduzir 30 seeds por iniciativa própria.
+- **Hiperparâmetros vigentes**: `META_ITERATIONS=12`, `META_POPULATION=6`, `META_RANDOM_SEED=2026`, `META_MUTATION_STRENGTH=0.12`, `META_INTRA_ALGO=PF`. Cada par (cenário, seed) executa GA (72 evals), PSO (72), SA (12) e híbrida (~78), totalizando ~234 avaliações da função objetivo por par.
+- **Fases**: Phase 1 (baselines) está 210/211 OK; Phase 2 (meta-heurísticas) em execução; Phase 3 (meta-eval) e Phase 4 (RSLAQ DDQN paper-faithful) agendadas na sequência via `resume_campaign.sh`.
+
+### 14.2 Mudanças de código aplicadas nesta sessão (não descrever como bugs novos)
+
+Estas alterações já estão aplicadas e devem ser tratadas como o estado corrente:
+
+1. **Checkpoint de evals em `run_rslaq_metaheuristics.py`**: cada avaliação grava um sidecar `candidate.json` no diretório do eval. Ao reiniciar, o closure `evaluate` desserializa e pula o ns-3 quando os pesos pedidos batem com o cache (tolerância 1e-9). A persistência do `metaheuristic_results_*.csv` e do `best_candidate_*.json` é incremental (após cada método). O `import csv` foi adicionado (bug bloqueante que impedia a Phase 2 de salvar resultados).
+2. **Calibração da penalidade URLLC em `scoring.py`**: o divisor `(delay - 10)/200` foi trocado por `/20`. Com o divisor antigo, a penalidade era irrisória na faixa operacional (14,864 ms → −0,6 pts), permitindo que o "ótimo" violasse o SLA de 10 ms. Agora: 14,864 ms → −6,08 pts; saturação em 30 ms (−25 pts). O scoring usa `delay_ms_mean` (ponderado por pacote); os percentis `delay_ms_p95/p99` **não são usados** na função objetivo.
+3. **Re-score do cache**: o script `examples/rescore_cache.py` recalcula scores dos `summary.csv` em cache quando o `scoring.py` muda, sem re-rodar o ns-3. Os 150 evals em cache foram re-scored após a mudança acima (66 mudaram, delta médio −19,4 pts).
+4. **Hiperparâmetros**: `META_ITERATIONS` 4→12 em `run_all_scenarios.sh` e `resume_campaign.sh`. O cache é reaproveitado porque o RNG é seeded e os pesos dos primeiros evals são deterministicamente reproduzíveis.
+
+### 14.3 Bugs e limitações conhecidas (documentar no paper, não corrigir por iniciativa própria)
+
+- **Percentis de delay amostrados por janela, não por pacote**: no `rslaq-sim.cc`, `delay_ms_p95/p99` são calculados sobre médias por janela de 10 ms, o que produz inconsistências do tipo `delay_ms_mean > delay_ms_p95` em ~20% das linhas. A correção exigiria modificar o `StatsCallback` no C++ e re-rodar toda a campanha (Phase 1+2). **Decisão: adiar e documentar como limitação** (o scoring usa `delay_ms_mean`, então a otimização não é afetada).
+- **SA com orçamento baixo**: com `iterations=12`, o SA faz 12 avaliações — melhor que as 4 anteriores, mas ainda modesto. A escala da aceitação de Metropolis (`temperature * 20.0`) é uma compensação ad-hoc para a escala da função objetivo.
+- **PSO/Híbrida com renormalização pós-passo**: a projeção para o simplexo após cada atualização de velocidade destrói a semântica canônica do vetor velocidade. Funciona empiricamente mas não é PSO estritamente canônico.
+- **Hiperparâmetros ainda modestos**: `population=6, iterations=12` está acima do regime "piloto" anterior mas abaixo do ideal para meta-heurísticas. Aumentar a população invalidaria o cache existente.
+
+### 14.4 Achados da revisão crítica (devem orientar a redação, não serem revertidos)
+
+Uma revisão crítica de pesquisa identificou pontos que devem ser refletidos na redação do paper:
+
+- **Em cenários não-saturados (low_traffic, normal, stressed)**, os dados mostram que o scheduler é praticamente irrelevante: os 14 modos colapsam para throughput idênticos determinados pelo seed. Só `congestion` apresenta separação real entre modos. O paper deve declarar isso como **resultado negativo honesto**, não esconder.
+- **A híbrida perde para o PSO puro em 2 dos 3 cenários** relatados no draft atual. A contribuição não deve ser posicionada como "híbrida vencedora" sem evidência robusta. Posicionamento recomendado: híbrida como avaliação comparativa, com foco metodológico em **META_RISK_ELASTIC** (blending prior×online) e **AQPS** (budgets inteiros com garantia mínima) como baselines mais sólidas.
+- **N=3 seeds é insuficiente para testes estatísticos formais** (Wilcoxon/Friedman exigem n≥5). O paper deve reportar média±desvio e melhor/mediana, **não declarar significância**, e reconhecer a limitação explicitamente, remetendo significância formal a trabalho futuro.
+- **RSLAQ DDQN (Phase 4) é o baseline DRL do paper** e deve entrar na comparação principal quando disponível. Ele responde à pergunta "por que meta-heurísticas e não DRL?" que um revisor fará.
+
+### 14.5 Diretrizes operacionais para agents
+
+- **Não commitar** `results_controlled/`, `*.pid`, logs de campanha (`resume_campaign.log`, `.meta_*.log`, `run_*_parallel*.log`). O `.gitignore` da raiz e o `ns-o-ran-gym/.gitignore` já os protegem.
+- **Ao mudar `scoring.py`**, executar `examples/rescore_cache.py` para atualizar os sidecars em cache antes de relançar a Phase 2.
+- **Ao mudar hiperparâmetros que afetem o RNG** (population, random_seed), o cache é invalidado e tudo precisa re-rodar do zero. Mudar apenas `iterations` preserva o cache.
+- **Para parar a campanha**: SIGTERM ao PID em `resume_campaign.pid` pode não propagar aos filhos; usar `pkill -KILL -f "ns3.46-rslaq-sim-default|run_rslaq_metaheuristics.py|run_all_scenarios.sh"` se necessário. O cache (sidecars já escritos) sobrevive a SIGKILL.
+- **Relevância**: o SOTA em RAN slicing (2024-2025) é dominado por DRL (DDPG, PPO, federated/hierarchical RL). O paper deve articular explicitamente por que meta-heurísticas offline (auditáveis, estáveis, sem treinamento) são a escolha certa — caso contrário, um revisor questionará por que não DRL.

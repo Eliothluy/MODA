@@ -83,7 +83,12 @@ def score_summary_rows(rows: Iterable[dict[str, str]]) -> float:
     embb = by_slice["eMBB"]
 
     urllc_delay_ms = safe_float(urllc.get("delay_ms_mean"))
-    urllc_delay_penalty = clamp((urllc_delay_ms - 10.0) / 200.0)
+    # URLLC delay SLA violation. The URLLC latency budget is 10 ms; the penalty
+    # saturates at 30 ms (well past the URLLC viability threshold), so the
+    # divisor is 20 ms. The previous /200.0 made the penalty negligible across
+    # the observed operating range (e.g. 14.864 ms -> -0.6 pts), letting the
+    # optimizer accept solutions that openly violate the 10 ms target.
+    urllc_delay_penalty = clamp((urllc_delay_ms - 10.0) / 20.0)
 
     mtc_thr = safe_float(mtc.get("throughput_mbps_mean"))
     mtc_starvation_penalty = max(0.0, 1.0 - sla[2])

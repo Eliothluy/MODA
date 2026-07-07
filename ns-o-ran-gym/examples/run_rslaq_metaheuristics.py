@@ -11,6 +11,7 @@ slice_custom mode.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -145,6 +146,48 @@ def result_dir(output_root: Path, scenario: str, seed: int, run: int) -> Path:
     return summary_path(output_root, scenario, seed, run).parent
 
 
+def load_cached_evaluation(
+    candidate_root: Path,
+    method: str,
+    evaluation_id: int,
+    requested_weights: Sequence[float],
+) -> Evaluation | None:
+    """Return a cached Evaluation for this (method, eval_id) if a valid
+    candidate.json sidecar exists.
+
+    The cache is valid only when the requested weights match the cached ones
+    (within 1e-9). A mismatch means the RNG trajectory has diverged (e.g. a
+    partially rewritten eval dir); in that case the cache is discarded and the
+    caller re-runs the ns-3 evaluation.
+    """
+    sidecar = candidate_root / "candidate.json"
+    if not sidecar.exists():
+        return None
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    cached_weights = payload.get("weights")
+    if not isinstance(cached_weights, list) or len(cached_weights) != len(requested_weights):
+        return None
+    if any(abs(float(cached_weights[i]) - float(requested_weights[i])) > 1e-9
+           for i in range(len(requested_weights))):
+        return None
+    if str(payload.get("method")) != method or int(payload.get("evaluation_id", -1)) != evaluation_id:
+        return None
+    return Evaluation(
+        method=str(payload["method"]),
+        evaluation_id=int(payload["evaluation_id"]),
+        scenario=str(payload["scenario"]),
+        seed=int(payload["seed"]),
+        run=int(payload["run"]),
+        weights=[float(w) for w in payload["weights"]],
+        score=float(payload["score"]),
+        result_dir=Path(payload["result_dir"]),
+        log_file=Path(payload["log_file"]),
+    )
+
+
 def run_candidate(
     *,
     ns3_dir: Path,
@@ -200,7 +243,7 @@ def run_candidate(
         raise RuntimeError(f"summary.csv missing after {method} eval {evaluation_id}: {out_summary}")
 
     rows = read_summary(out_summary)
-    return Evaluation(
+    evaluation = Evaluation(
         method=method,
         evaluation_id=evaluation_id,
         scenario=scenario,
@@ -211,6 +254,24 @@ def run_candidate(
         result_dir=result_dir(candidate_root, scenario, seed, run),
         log_file=log_file,
     )
+
+    # Checkpoint sidecar: persists this Evaluation so a crashed/restarted run
+    # can skip re-evaluating the same (method, evaluation_id) without losing
+    # RNG state (the weights come from the seeded optimizer, not from here).
+    candidate_meta = candidate_root / "candidate.json"
+    candidate_meta.write_text(json.dumps({
+        "method": evaluation.method,
+        "evaluation_id": evaluation.evaluation_id,
+        "scenario": evaluation.scenario,
+        "seed": evaluation.seed,
+        "run": evaluation.run,
+        "weights": list(evaluation.weights),
+        "score": evaluation.score,
+        "result_dir": str(evaluation.result_dir),
+        "log_file": str(evaluation.log_file),
+    }), encoding="utf-8")
+
+    return evaluation
 
 
 def optimize_ga(
@@ -560,6 +621,12 @@ def main() -> None:
             print(f"[META] scenario={scenario} seed={seed} methods={methods}")
 
             def evaluate(method: str, evaluation_id: int, weights: Sequence[float]) -> Evaluation:
+                candidate_root = eval_root / f"{method}_eval_{evaluation_id:04d}"
+                cached = load_cached_evaluation(candidate_root, method, evaluation_id, weights)
+                if cached is not None:
+                    print(f"[META cache] scenario={scenario} seed={seed} {method} eval {evaluation_id} "
+                          f"score={cached.score:.4f} (skipped ns-3)")
+                    return cached
                 return run_candidate(
                     ns3_dir=args.ns3_dir,
                     eval_root=eval_root,
@@ -580,6 +647,7 @@ def main() -> None:
                 )
 
             all_evaluations: list[Evaluation] = []
+            results_filename = f"metaheuristic_results_{scenario}_seed{seed}.csv"
             for method in methods:
                 if method == "ga":
                     all_evaluations.extend(
@@ -594,14 +662,23 @@ def main() -> None:
                         optimize_hybrid(rng, evaluate, args.iterations, args.population, args.mutation_strength)
                     )
 
-            results_filename = f"metaheuristic_results_{scenario}_seed{seed}.csv"
-            write_results(search_root / results_filename, all_evaluations)
-            write_best(search_root / best_candidate_filename(scenario, seed), all_evaluations)
+                # Incremental persistence: after each method, rewrite the
+                # results CSV and best-candidate JSON over everything seen so
+                # far. A crash in the middle of a later method still leaves the
+                # earlier methods' results and best candidate on disk.
+                write_results(search_root / results_filename, all_evaluations)
+                write_best(search_root / best_candidate_filename(scenario, seed), all_evaluations)
+                if all_evaluations:
+                    best = max(all_evaluations, key=lambda item: item.score)
+                    print(f"  [{scenario}/seed{seed}] after {method}: "
+                          f"best={best.method} score={best.score:.4f} "
+                          f"weights={format_weights(best.weights)}")
 
             if all_evaluations:
                 best = max(all_evaluations, key=lambda item: item.score)
-                print(f"  Best {best.method} score={best.score:.4f} weights={format_weights(best.weights)}")
-                print(f"  Results: {search_root}")
+                print(f"  [{scenario}/seed{seed}] DONE: best={best.method} "
+                      f"score={best.score:.4f} weights={format_weights(best.weights)} "
+                      f"over {len(all_evaluations)} evals -> {search_root}")
 
 
 if __name__ == "__main__":

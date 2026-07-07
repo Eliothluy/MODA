@@ -35,12 +35,18 @@ BASELINE_OUTPUT_ROOT="${BASELINE_OUTPUT_ROOT:-${HEURISTIC_OUTPUT_ROOT:-${OUTPUT_
 META_OUTPUT_ROOT="${META_OUTPUT_ROOT:-${OUTPUT_ROOT}/metaheuristics}"
 META_EVAL_OUTPUT="${META_EVAL_OUTPUT:-${OUTPUT_ROOT}/meta_evaluation}"
 
+# RSLAQ DDQN (paper-faithful reward) sub-campaign root. Writing to a dedicated
+# sub-directory keeps the DRL outputs isolated from the network-only baselines
+# and meta-heuristics.
+RSLAQ_DDQN_PAPER_OUTPUT_ROOT="${RSLAQ_DDQN_PAPER_OUTPUT_ROOT:-${OUTPUT_ROOT}/rslaq_ddqn_paper}"
+
 # ---------------------------------------------------------------------------
 # Phase toggles
 # ---------------------------------------------------------------------------
 RUN_BASELINES="${RUN_BASELINES:-${RUN_HEURISTICS:-1}}"
 RUN_METAHEURISTICS="${RUN_METAHEURISTICS:-1}"
 RUN_META_EVALUATION="${RUN_META_EVALUATION:-1}"
+RUN_RSLAQ_DDQN_PAPER="${RUN_RSLAQ_DDQN_PAPER:-0}"
 BUILD_NS3="${BUILD_NS3:-1}"
 
 # ---------------------------------------------------------------------------
@@ -80,7 +86,7 @@ BASELINE_MODES="${BASELINE_MODES:-${SCHEDULER_MODES} ${RSLAQ_MODES} ${AQPS_MODE}
 # Meta-heuristic parameters
 # ---------------------------------------------------------------------------
 META_METHOD="${META_METHOD:-all}"
-META_ITERATIONS="${META_ITERATIONS:-4}"
+META_ITERATIONS="${META_ITERATIONS:-12}"
 META_POPULATION="${META_POPULATION:-6}"
 META_MUTATION_STRENGTH="${META_MUTATION_STRENGTH:-0.12}"
 META_INTRA_ALGO="${META_INTRA_ALGO:-PF}"
@@ -89,6 +95,10 @@ META_SEED="${META_SEED:-1}"
 META_RUN="${META_RUN:-1}"
 
 mkdir -p "${OUTPUT_ROOT}" "${META_OUTPUT_ROOT}" "${META_EVAL_OUTPUT}"
+
+if [[ "${RUN_RSLAQ_DDQN_PAPER}" == "1" ]]; then
+    mkdir -p "${RSLAQ_DDQN_PAPER_OUTPUT_ROOT}"
+fi
 
 # ---------------------------------------------------------------------------
 # Header
@@ -107,6 +117,7 @@ echo ""
 echo "Run baselines      : ${RUN_BASELINES}"
 echo "Run metaheur       : ${RUN_METAHEURISTICS}"
 echo "Run meta-eval      : ${RUN_META_EVALUATION}"
+echo "Run RSLAQ DDQN paper: ${RUN_RSLAQ_DDQN_PAPER}"
 echo ""
 echo "Scheduler modes    : ${SCHEDULER_MODES}"
 echo "RSLAQ modes        : ${RSLAQ_MODES}"
@@ -162,7 +173,12 @@ if [[ "${RUN_BASELINES}" == "1" ]]; then
     TX_POWER="${TX_POWER}" \
     TDD_PATTERN="${TDD_PATTERN}" \
     RLC_MODE="${RLC_MODE}" \
-    ./run_all_scenarios.sh
+    ./run_all_scenarios.sh || {
+        echo "[PHASE 1] ns-3 baseline batch reported non-zero exit (some jobs may have failed)."
+        echo "[PHASE 1] Continuing to Phases 2-4 so the campaign can still produce meta-heuristics"
+        echo "[PHASE 1] and RSLAQ DDQN paper-faithful outputs. Failed baseline jobs remain"
+        echo "[PHASE 1] marked run_failed in the manifest and should be retried separately."
+    }
 else
     echo "[SKIP] Phase 1 (baselines) disabled"
 fi
@@ -331,6 +347,81 @@ else
 fi
 
 # ===========================================================================
+# Phase 4: RSLAQ DDQN (paper-faithful reward)
+# ===========================================================================
+# Trains a DDQN agent with the paper-faithful RSLAQ reward on the same
+# scenario/seed grid used by Phases 1-3, so that the optimized policy can be
+# compared against the meta-heuristic best candidates and the scheduler
+# baselines (RR, BCQI, PF, RSLAQ weighted, AQPS, heuristics).
+#
+# This phase is a thin wrapper over examples/run_controlled_rslaq_validation.sh
+# with only the DDQN paper-faithful line enabled; every other DRL line
+# (resource-efficient DDQN, paper SAC, resource-efficient SAC, predictive SAC)
+# is disabled to keep the RSLAQ paper narrative intact.
+if [[ "${RUN_RSLAQ_DDQN_PAPER}" == "1" ]]; then
+    echo ""
+    echo "============================================"
+    echo "Phase 4: RSLAQ DDQN (paper-faithful reward)"
+    echo "============================================"
+    echo "Output root        : ${RSLAQ_DDQN_PAPER_OUTPUT_ROOT}"
+    echo "Scenarios          : ${SCENARIOS}"
+    echo "Seeds              : ${SEEDS}"
+    echo "Interaction steps  : ${DDQN_INTERACTION_STEPS:-20000}"
+    echo "Episode steps      : ${DDQN_EPISODE_STEPS:-100}"
+    echo "Training replicates : ${DDQN_TRAINING_REPLICATES:-1}"
+    echo "DRL jobs (parallel): ${DDQN_DRL_JOBS:-1}"
+    echo ""
+
+    cd "${GYM_DIR}"
+
+    SCENARIOS="${SCENARIOS}" \
+    SEEDS="${SEEDS}" \
+    EXPERIMENT_LINE="rslaq_ddqn_paper" \
+    OUTPUT_ROOT="${RSLAQ_DDQN_PAPER_OUTPUT_ROOT}" \
+    BUILD_NS3="0" \
+    RUN_BASELINES="0" \
+    RUN_DDQN="1" \
+    RUN_RESOURCE_EFFICIENT_DDQN="0" \
+    RUN_PAPER_SAC="0" \
+    RUN_RESOURCE_EFFICIENT_SAC="0" \
+    RUN_PREDICTIVE_SAC="0" \
+    RUN_PREDICTIVE_SAC_GRU="0" \
+    RUN_PREDICTIVE_SAC_LSTM="0" \
+    RUN_FORECASTER="0" \
+    RUN_FORECASTER_GRU="0" \
+    RUN_FORECASTER_LSTM="0" \
+    RUN_FORECASTER_COMPARISON="0" \
+    RUN_DRL_COMPARISON="0" \
+    SIM_TIME="${SIM_TIME}" \
+    APP_START="${APP_START}" \
+    PERIOD_MS="${PERIOD_MS}" \
+    INTERACTION_STEPS="${DDQN_INTERACTION_STEPS:-20000}" \
+    EPISODE_STEPS="${DDQN_EPISODE_STEPS:-100}" \
+    TRAINING_REPLICATES="${DDQN_TRAINING_REPLICATES:-1}" \
+    DRL_JOBS="${DDQN_DRL_JOBS:-1}" \
+    TRAINING_REPLICATE_SEED_STRIDE="${DDQN_REPLICATE_SEED_STRIDE:-1000}" \
+    DDQN_BUFFER_SIZE="${DDQN_BUFFER_SIZE:-10000}" \
+    DDQN_BATCH_SIZE="${DDQN_BATCH_SIZE:-64}" \
+    DDQN_LR="${DDQN_LR:-0.001}" \
+    DDQN_GAMMA="${DDQN_GAMMA:-0.80}" \
+    DDQN_EPS_START="${DDQN_EPS_START:-1.0}" \
+    DDQN_EPS_MIN="${DDQN_EPS_MIN:-0.05}" \
+    DDQN_EPS_DECAY="${DDQN_EPS_DECAY:-0.998}" \
+    DDQN_TARGET_UPDATE="${DDQN_TARGET_UPDATE:-200}" \
+    REWARD_ALPHA="${REWARD_ALPHA:-0.3333}" \
+    REWARD_BETA="${REWARD_BETA:-0.4000}" \
+    REWARD_GAMMA="${REWARD_GAMMA:-0.2667}" \
+    ENABLE_STEP_LOGGING="${ENABLE_STEP_LOGGING:-1}" \
+        bash examples/run_controlled_rslaq_validation.sh \
+            > "${RSLAQ_DDQN_PAPER_OUTPUT_ROOT}/.phase4_rslaq_ddqn_paper.log" 2>&1 \
+            || echo "[PHASE 4] RSLAQ DDQN paper-faithful sub-campaign reported non-zero exit. See ${RSLAQ_DDQN_PAPER_OUTPUT_ROOT}/.phase4_rslaq_ddqn_paper.log"
+
+    echo "[PHASE 4] RSLAQ DDQN paper-faithful sub-campaign done. Output: ${RSLAQ_DDQN_PAPER_OUTPUT_ROOT}"
+else
+    echo "[SKIP] Phase 4 (RSLAQ DDQN paper-faithful) disabled"
+fi
+
+# ===========================================================================
 # Done
 # ===========================================================================
 echo ""
@@ -340,6 +431,7 @@ echo "============================================"
 echo "Baselines output      : ${BASELINE_OUTPUT_ROOT}/results_rslaq_network_only"
 echo "Meta-heuristics output: ${META_OUTPUT_ROOT}"
 echo "Meta-evaluation output: ${META_EVAL_OUTPUT}"
+echo "RSLAQ DDQN paper      : ${RSLAQ_DDQN_PAPER_OUTPUT_ROOT}"
 echo ""
 
 # Final summary
