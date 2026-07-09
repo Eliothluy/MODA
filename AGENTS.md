@@ -316,7 +316,7 @@ Esta seção registra o estado experimental vigente, as mudanças aplicadas e os
 
 - **Run tag**: `20260626_122326`, em `ns-o-ran-gym/results_controlled/heuristics_metaheuristics/20260626_122326/`.
 - **Decisão de projeto**: ambiente controlado com **3 seeds (1, 2, 3)** e `RUNS=1`. Não há intenção de expandir para 30 execuções por restrição de tempo de simulação. Agents não devem introduzir 30 seeds por iniciativa própria.
-- **Hiperparâmetros vigentes**: `META_ITERATIONS=12`, `META_POPULATION=6`, `META_RANDOM_SEED=2026`, `META_MUTATION_STRENGTH=0.12`, `META_INTRA_ALGO=PF`. Cada par (cenário, seed) executa GA (72 evals), PSO (72), SA (12) e híbrida (~78), totalizando ~234 avaliações da função objetivo por par.
+- **Hiperparâmetros vigentes**: `META_ITERATIONS=12`, `META_POPULATION=6`, `META_RANDOM_SEED=2026`, `META_MUTATION_STRENGTH=0.12`, `META_INTRA_ALGO=PF`. Cada par (cenário, seed) executa GA (72 evals), PSO (72), SA (72, orçamento equalizado a `iterations×population`) e híbrida (84 = `iterations×(population+1)`, o +1 é o refinamento local SA por iteração), totalizando **300 avaliações da função objetivo por par**. O orçamento de avaliações do SA foi equalizado ao do GA/PSO (72) para uma comparação justa sob igual custo computacional; anteriormente o SA fazia apenas 12 evals (busca por trajetória única), o que era uma comparação injusta.
 - **Fases**: Phase 1 (baselines) está 210/211 OK; Phase 2 (meta-heurísticas) em execução; Phase 3 (meta-eval) e Phase 4 (RSLAQ DDQN paper-faithful) agendadas na sequência via `resume_campaign.sh`.
 - **AQPS na campanha**: o baseline AQPS está habilitado como `slice_aqps` nos scripts de baselines e aparece no manifesto `heuristics_ns3/results_rslaq_network_only/batch_manifest.csv`. No estado verificado desta sessão, há 15 execuções planejadas de `slice_aqps`: 14 `ok` com `summary.csv` e 1 `run_failed` em `congestion`, `seed=1`, `run=1` (`ns3_run_failed`).
 
@@ -332,7 +332,7 @@ Estas alterações já estão aplicadas e devem ser tratadas como o estado corre
 ### 14.3 Bugs e limitações conhecidas (documentar no paper, não corrigir por iniciativa própria)
 
 - **Percentis de delay amostrados por janela, não por pacote**: no `rslaq-sim.cc`, `delay_ms_p95/p99` são calculados sobre médias por janela de 10 ms, o que produz inconsistências do tipo `delay_ms_mean > delay_ms_p95` em ~20% das linhas. A correção exigiria modificar o `StatsCallback` no C++ e re-rodar toda a campanha (Phase 1+2). **Decisão: adiar e documentar como limitação** (o scoring usa `delay_ms_mean`, então a otimização não é afetada).
-- **SA com orçamento baixo**: com `iterations=12`, o SA faz 12 avaliações — melhor que as 4 anteriores, mas ainda modesto. A escala da aceitação de Metropolis (`temperature * 20.0`) é uma compensação ad-hoc para a escala da função objetivo.
+- **SA com escala de aceitação ad-hoc**: o orçamento do SA foi equalizado a 72 evals (= GA/PSO), resolvendo a inequidade anterior (12 evals). A escala da aceitação de Metropolis (`temperature * 20.0`) permanece uma compensação ad-hoc para a escala da função objetivo.
 - **PSO/Híbrida com renormalização pós-passo**: a projeção para o simplexo após cada atualização de velocidade destrói a semântica canônica do vetor velocidade. Funciona empiricamente mas não é PSO estritamente canônico.
 - **Hiperparâmetros ainda modestos**: `population=6, iterations=12` está acima do regime "piloto" anterior mas abaixo do ideal para meta-heurísticas. Aumentar a população invalidaria o cache existente.
 
