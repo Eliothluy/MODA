@@ -56,10 +56,14 @@ METHODS = ["ga", "pso", "sa", "hybrid"]
 METHOD_LABELS = {"ga": "GA", "pso": "PSO", "sa": "SA", "hybrid": "Híbrida"}
 METHOD_COLORS = {"ga": "#636EFA", "pso": "#EF553B", "sa": "#00CC96", "hybrid": "#AB63FA"}
 
-# Eval counts per method for iter=12, pop=6 (validated against run_rslaq_metaheuristics.py)
-EVALS_PER_METHOD = {"ga": 72, "pso": 72, "sa": 12, "hybrid": 84}
-EVALS_PER_PAIR = sum(EVALS_PER_METHOD.values())  # 240
-TOTAL_EVALS = EVALS_PER_PAIR * len(SCENARIOS) * len(SEEDS)  # 3600
+# Eval counts per method for iter=12, pop=6. SA budget is equalized to match
+# GA/PSO (iterations x population = 72), not the bare iteration count, so the
+# comparison across meta-heuristics is fair under an equal evaluation budget.
+# The hybrid runs iterations x (population + 1) = 84 (the +1 is the per-iteration
+# local SA refinement). Validated against run_rslaq_metaheuristics.py.
+EVALS_PER_METHOD = {"ga": 72, "pso": 72, "sa": 72, "hybrid": 84}
+EVALS_PER_PAIR = sum(EVALS_PER_METHOD.values())  # 300
+TOTAL_EVALS = EVALS_PER_PAIR * len(SCENARIOS) * len(SEEDS)  # 4500
 BASELINE_TOTAL = 211  # Phase 1 jobs expected (5 scenarios x 14 modes x 3 seeds + 1)
 
 REFRESH_SECONDS = 15

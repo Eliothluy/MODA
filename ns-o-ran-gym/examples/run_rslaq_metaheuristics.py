@@ -734,6 +734,14 @@ def main() -> None:
 
             all_evaluations: list[Evaluation] = []
             results_filename = f"metaheuristic_results_{scenario}_seed{seed}.csv"
+            # Budget equalization: GA/PSO evaluate (iterations x population) times,
+            # while SA is a single-trajectory method (1 evaluation per step). To
+            # make the comparison fair under an equal evaluation budget, the SA
+            # chain length is set to the same number of evaluations the GA/PSO
+            # population gets, not to the bare iteration count. The hybrid gets
+            # iterations x (population + 1) naturally (population + 1 local SA
+            # refinement per iteration).
+            sa_steps = max(args.iterations, args.iterations * args.population)
             for method in methods:
                 if method == "ga":
                     all_evaluations.extend(
@@ -742,7 +750,7 @@ def main() -> None:
                 elif method == "pso":
                     all_evaluations.extend(optimize_pso(rng, evaluate, args.iterations, args.population))
                 elif method == "sa":
-                    all_evaluations.extend(optimize_sa(rng, evaluate, args.iterations, args.mutation_strength))
+                    all_evaluations.extend(optimize_sa(rng, evaluate, sa_steps, args.mutation_strength))
                 elif method == "hybrid":
                     all_evaluations.extend(
                         optimize_hybrid(rng, evaluate, args.iterations, args.population, args.mutation_strength)
