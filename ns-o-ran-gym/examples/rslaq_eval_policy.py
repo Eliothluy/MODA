@@ -59,7 +59,14 @@ def apply_ue_profile(config, scenario, args):
 
 
 def ue_profile_from_config(config):
-    return tuple(int(config[k][0]) for k in ("embbUes", "urllcUes", "mtcUes"))
+    result = []
+    for k in ("embbUes", "urllcUes", "mtcUes"):
+        v = config[k]
+        if isinstance(v, (list, tuple)):
+            result.append(int(v[0]))
+        else:
+            result.append(int(v))
+    return tuple(result)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -117,7 +124,13 @@ def load_sac_agent(checkpoint_path, state_shape):
 
 
 def load_ddqn_agent(checkpoint_path, state_shape, action_size):
-    from examples.rslaq_train_ddqn import QNetwork
+    # Robust import: works whether launched from ns-o-ran-gym/ or elsewhere
+    import importlib.util
+    _ddqn_path = os.path.join(os.path.dirname(__file__), "rslaq_train_ddqn.py")
+    _spec = importlib.util.spec_from_file_location("rslaq_train_ddqn", _ddqn_path)
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    QNetwork = _mod.QNetwork
 
     net = QNetwork(state_shape, action_size).to(device)
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)

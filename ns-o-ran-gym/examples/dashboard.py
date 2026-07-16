@@ -22,8 +22,8 @@ Use the dedicated venv (PEP 668 blocks the system python):
 Then open http://localhost:8501. The page auto-refreshes every 15 s.
 
 Counts (iterations=12, population=6, the current campaign config):
-    GA = 72   PSO = 72   SA = 12   hybrid = 84   ->  240 evals / pair
-    5 scenarios x 3 seeds = 15 pairs             -> 3600 evals total
+    GA = 72   PSO = 72   SA = 72   hybrid = 84   ->  300 evals / pair
+    5 scenarios x 3 seeds = 15 pairs             -> 4500 evals total
 Method order within a pair: ga -> pso -> sa -> hybrid.
 """
 
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -55,6 +56,9 @@ SEEDS = [1, 2, 3]
 METHODS = ["ga", "pso", "sa", "hybrid"]
 METHOD_LABELS = {"ga": "GA", "pso": "PSO", "sa": "SA", "hybrid": "Híbrida"}
 METHOD_COLORS = {"ga": "#636EFA", "pso": "#EF553B", "sa": "#00CC96", "hybrid": "#AB63FA"}
+PHASE4_SCENARIOS = ["low_traffic", "normal", "stressed", "congestion"]
+PHASE4_TOTAL_JOBS = len(PHASE4_SCENARIOS) * len(SEEDS)
+PHASE4_LOG = RSLAQ_DDQN_ROOT / ".phase4_rslaq_ddqn_paper.log"
 
 # Eval counts per method for iter=12, pop=6. SA budget is equalized to match
 # GA/PSO (iterations x population = 72), not the bare iteration count, so the
@@ -152,6 +156,78 @@ def phase1_status() -> tuple[int, int, int]:
         return ok, failed, max(total, BASELINE_TOTAL)
     except (OSError, ValueError):
         return 0, 0, BASELINE_TOTAL
+
+
+@st.cache_data(ttl=REFRESH_SECONDS, show_spinner=False)
+def load_phase4_progress() -> pd.DataFrame:
+    """Return Phase 4 DDQN progress for the four selected paper scenarios."""
+    cols = ["scenario", "seed", "status", "episodes", "steps", "reward", "mtime", "path"]
+    rows: list[dict] = []
+    for scenario in PHASE4_SCENARIOS:
+        for seed in SEEDS:
+            run_dir = RSLAQ_DDQN_ROOT / f"ddqn_paper_{scenario}_seed{seed}"
+            training_log = run_dir / "ddqn_training_log.csv"
+            summary_json = run_dir / "ddqn_summary.json"
+            status = "agendada"
+            episodes = 0
+            steps = 0
+            reward = float("nan")
+            mtime = 0.0
+
+            if summary_json.exists():
+                status = "concluída"
+                mtime = summary_json.stat().st_mtime
+                try:
+                    payload = json.loads(summary_json.read_text(encoding="utf-8"))
+                    reward = float(payload.get("final_avg_100", payload.get("best_avg", float("nan"))))
+                    episodes = int(payload.get("episodes", 0) or 0)
+                    steps = int(payload.get("interaction_budget", 0) or 0)
+                except (OSError, ValueError, TypeError):
+                    reward = float("nan")
+            elif training_log.exists():
+                status = "em execução"
+                mtime = training_log.stat().st_mtime
+                try:
+                    log_df = pd.read_csv(training_log)
+                    episodes = len(log_df)
+                    if "steps" in log_df.columns:
+                        steps = int(pd.to_numeric(log_df["steps"], errors="coerce").fillna(0).sum())
+                    reward_col = "avg_reward" if "avg_reward" in log_df.columns else "total_reward"
+                    if reward_col in log_df.columns and not log_df.empty:
+                        rewards = pd.to_numeric(log_df[reward_col], errors="coerce").dropna()
+                        reward = float(rewards.tail(1).iloc[0]) if not rewards.empty else float("nan")
+                except (OSError, ValueError, IndexError):
+                    episodes = 0
+            elif run_dir.exists():
+                status = "iniciada"
+                mtime = run_dir.stat().st_mtime
+
+            rows.append({
+                "scenario": scenario,
+                "seed": seed,
+                "status": status,
+                "episodes": episodes,
+                "steps": steps,
+                "reward": reward,
+                "mtime": mtime,
+                "path": str(run_dir),
+            })
+    return pd.DataFrame(rows, columns=cols)
+
+
+@st.cache_data(ttl=REFRESH_SECONDS, show_spinner=False)
+def count_running_ddqn_processes() -> int:
+    """Count active DDQN training processes without touching campaign state."""
+    try:
+        proc = subprocess.run(
+            ["ps", "-eo", "cmd"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+    except OSError:
+        return 0
+    return sum(1 for line in proc.stdout.splitlines() if "rslaq_train_ddqn.py" in line)
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +330,8 @@ def main() -> None:
 
     df = load_evals()
     best_df = load_best_candidates()
+    phase4_df = load_phase4_progress()
+    running_ddqn = count_running_ddqn_processes()
     pairs = per_pair_progress(df)
     ok1, fail1, total1 = phase1_status()
     errors = scan_errors()
@@ -280,8 +358,8 @@ def main() -> None:
     pc2.markdown(_phase_badge(2, n_evals, TOTAL_EVALS), unsafe_allow_html=True)
     meta_eval_done = len(list(META_EVAL_ROOT.glob("*"))) if META_EVAL_ROOT.exists() else 0
     pc3.markdown(_phase_badge(3, meta_eval_done, len(SCENARIOS)), unsafe_allow_html=True)
-    ddqn_done = len(list(RSLAQ_DDQN_ROOT.glob("*"))) if RSLAQ_DDQN_ROOT.exists() else 0
-    pc4.markdown(_phase_badge(4, ddqn_done, 1, label="RSLAQ DDQN"), unsafe_allow_html=True)
+    phase4_completed = int(phase4_df["status"].eq("concluída").sum()) if not phase4_df.empty else 0
+    pc4.markdown(_phase_badge(4, phase4_completed, PHASE4_TOTAL_JOBS, label="RSLAQ DDQN"), unsafe_allow_html=True)
 
     if errors:
         st.error(f"⚠️ {len(errors)} erro(s) detectado(s) nos logs (último: {errors[-1]})")
@@ -426,6 +504,48 @@ def main() -> None:
                 )
                 fig_w.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10))
                 st.plotly_chart(fig_w, use_container_width=True)
+
+    st.divider()
+
+    # ---- Section E: Phase 4 DDQN progress -----------------------------------
+    st.subheader("Phase 4: RSLAQ DDQN paper-faithful")
+    p4c1, p4c2, p4c3 = st.columns(3)
+    phase4_started = int(phase4_df["status"].ne("agendada").sum()) if not phase4_df.empty else 0
+    p4c1.metric("DDQN concluídos", f"{phase4_completed}/{PHASE4_TOTAL_JOBS}")
+    p4c2.metric("Jobs em execução", str(running_ddqn), "processos rslaq_train_ddqn.py")
+    p4c3.metric("Saídas iniciadas", str(phase4_started))
+    st.progress(
+        phase4_completed / PHASE4_TOTAL_JOBS if PHASE4_TOTAL_JOBS else 0.0,
+        text=f"{phase4_completed}/{PHASE4_TOTAL_JOBS} treinamentos DDQN concluídos",
+    )
+
+    if phase4_df.empty:
+        st.info("Phase 4 ainda sem dados.")
+    else:
+        p4_show = phase4_df.copy()
+        p4_show["reward"] = p4_show["reward"].map(lambda v: f"{v:.3f}" if pd.notna(v) else "—")
+        st.dataframe(
+            p4_show[["scenario", "seed", "status", "episodes", "steps", "reward"]].rename(columns={
+                "scenario": "cenário",
+                "episodes": "episódios logados",
+                "steps": "steps logados",
+                "reward": "último reward",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        active_or_recent = phase4_df[phase4_df["mtime"] > 0].sort_values("mtime", ascending=False).head(6).copy()
+        if not active_or_recent.empty:
+            active_or_recent["atualizado"] = pd.to_datetime(active_or_recent["mtime"], unit="s").dt.strftime("%H:%M:%S")
+            st.caption("Atividade DDQN recente")
+            st.dataframe(
+                active_or_recent[["atualizado", "scenario", "seed", "status", "path"]].rename(columns={
+                    "scenario": "cenário",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     st.divider()
 

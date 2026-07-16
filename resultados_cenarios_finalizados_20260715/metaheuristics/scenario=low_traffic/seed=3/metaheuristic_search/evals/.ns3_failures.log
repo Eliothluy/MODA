@@ -1,0 +1,2 @@
+low_traffic	seed=3	ga	eval=24	weights=[0.6246234718686471, 0.08658589301110807, 0.28879063512024483]	reason=ns-3 exit code 250	log=results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=3/metaheuristic_search/evals/ga_eval_0024/ns3.log
+low_traffic	seed=3	ga	eval=25	weights=[0.7251746669640701, 0.08654603840221962, 0.18827929463371026]	reason=summary.csv missing after ns-3 run	log=results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=3/metaheuristic_search/evals/ga_eval_0025/ns3.log

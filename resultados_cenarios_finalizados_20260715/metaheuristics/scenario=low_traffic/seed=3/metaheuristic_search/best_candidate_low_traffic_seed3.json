@@ -1,0 +1,19 @@
+{
+  "method": "pso",
+  "evaluation_id": 72,
+  "scenario": "low_traffic",
+  "seed": 3,
+  "run": 1,
+  "score": 59.94690718,
+  "weights": {
+    "eMBB": 0.055368303101727856,
+    "URLLC": 0.4536930342981433,
+    "MTC": 0.4909386626001288
+  },
+  "ns3_args": {
+    "baselineMode": "slice_custom",
+    "weights": "0.055368,0.453693,0.490939"
+  },
+  "result_dir": "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=3/metaheuristic_search/evals/pso_eval_0072/results_rslaq_network_only/scenario=low_traffic/mode=slice_custom/seed=3_run=1",
+  "log_file": "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=3/metaheuristic_search/evals/pso_eval_0072/ns3.log"
+}

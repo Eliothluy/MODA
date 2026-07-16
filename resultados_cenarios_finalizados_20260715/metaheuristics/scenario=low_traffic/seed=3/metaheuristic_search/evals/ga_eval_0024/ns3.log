@@ -1,0 +1,111 @@
+========================================
+  RSLAQ Simulation (Slice-Aware + IPC)
+========================================
+Scenario     : low_traffic
+RF profile   : RAN650 n78 + AW3161-E-F-V2 outdoor panel
+Frequency    : 3.55 GHz
+Bandwidth    : 100 MHz
+Numerology   : 1 (SCS 30 kHz)
+UEs          : 10 (eMBB=2 URLLC=2 MTC=6)
+UE area      : uniform disc radius 100 m, UE height 1.5 m
+gNB height   : 10 m
+gNB antenna  : 4 ports, +/-45 deg pol, 17.9 dBi, 65x7 deg, tilt 6 deg, bearing 0 deg
+SimTime      : 5 s
+TxPower      : 43 dBm
+gNB NF       : 4 dB
+RLC mode     : UM
+Shadowing    : enabled
+Stats period : 10 ms
+BaselineMode : slice_custom
+IntraAlgo    : PF
+WeightPolicy : static
+Seed/Run     : 3/1
+IPC enabled  : NO (standalone)
+OutputDir    : results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=3/metaheuristic_search/evals/ga_eval_0024/results_rslaq_network_only/scenario=low_traffic/mode=slice_custom/seed=3_run=1
+Weights      : eMBB=0.624623 URLLC=0.086586 MTC=0.288791
+
+UE  1 [eMBB] port=12001 rate=     27.50 Mbps pkt=1500 B
+UE  2 [eMBB] port=12002 rate=     27.50 Mbps pkt=1500 B
+UE  3 [URLLC] port=12003 rate=      0.50 Mbps pkt=50 B
+UE  4 [URLLC] port=12004 rate=      0.50 Mbps pkt=50 B
+UE  5 [ MTC] port=12005 rate=      0.17 Mbps pkt=100 B
+UE  6 [ MTC] port=12006 rate=      0.17 Mbps pkt=100 B
+UE  7 [ MTC] port=12007 rate=      0.17 Mbps pkt=100 B
+UE  8 [ MTC] port=12008 rate=      0.17 Mbps pkt=100 B
+UE  9 [ MTC] port=12009 rate=      0.17 Mbps pkt=100 B
+UE 10 [ MTC] port=12010 rate=      0.17 Mbps pkt=100 B
+
+=== UE Mapping (RNTI real após attach) ===
+ Idx |   IMSI |   RNTI |  SliceId | SliceType
+-------------------------------------------
+   1 |      1 |      1 |        0 |     eMBB
+   2 |      2 |      2 |        0 |     eMBB
+   3 |      3 |      3 |        1 |    URLLC
+   4 |      4 |      4 |        1 |    URLLC
+   5 |      5 |      5 |        2 |      MTC
+   6 |      6 |      6 |        2 |      MTC
+   7 |      7 |      7 |        2 |      MTC
+   8 |      8 |      8 |        2 |      MTC
+   9 |      9 |      9 |        2 |      MTC
+  10 |     10 |     10 |        2 |      MTC
+==========================================
+UE/RNTI mapping written to: results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=3/metaheuristic_search/evals/ga_eval_0024/results_rslaq_network_only/scenario=low_traffic/mode=slice_custom/seed=3_run=1/low_traffic_ue_rnti_mapping.csv
+
+NS_ASSERT failed, cond="m_current >= m_dataStart && m_current < m_dataEnd", msg="You have attempted to read beyond the bounds of the available buffer space. This usually indicates that a Header::Deserialize or Trailer::Deserialize method is trying to read data which was not written by a Header::Serialize or Trailer::Serialize method. In short: check the code of your Serialize and Deserialize methods.", +2.553564281s 4 file=/home/elioth/Documentos/artigo_jussi/ns-3-dev/src/network/model/buffer.h, line=997
+NS_FATAL, terminating
+   0# ns3::Buffer::Iterator::PeekU8() at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/network/model/buffer.h:997
+   1# ns3::Buffer::Iterator::ReadU8() at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/network/model/buffer.h:1018
+   2# ns3::Packet::RemoveHeader(ns3::Header&) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/network/model/packet.cc:285
+   3# ns3::NrQosRuleClassifier::Classify(ns3::Ptr<ns3::Packet>, ns3::NrQosRule::Direction, unsigned short) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-qos-rule-classifier.cc:142
+   4# ns3::NrEpcUeNas::Send(ns3::Ptr<ns3::Packet>, unsigned short) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-epc-ue-nas.cc:196
+   5# ns3::NrUeNetDevice::DoSend(ns3::Ptr<ns3::Packet>, ns3::Address const&, unsigned short) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-ue-net-device.cc:241
+   6# ns3::NrNetDevice::Send(ns3::Ptr<ns3::Packet>, ns3::Address const&, unsigned short) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-net-device.cc:296
+   7# ns3::TrafficControlLayer::Send(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::QueueDiscItem>) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/traffic-control/model/traffic-control-layer.cc:386
+   8# ns3::Ipv4Interface::Send(ns3::Ptr<ns3::Packet>, ns3::Ipv4Header const&, ns3::Ipv4Address) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/internet/model/ipv4-interface.cc:308
+   9# ns3::Ipv4L3Protocol::SendRealOut(ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet>, ns3::Ipv4Header const&) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/internet/model/ipv4-l3-protocol.cc:988
+  10# ns3::Ipv4L3Protocol::IpForward(ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/internet/model/ipv4-l3-protocol.cc:1065
+  11# void std::__invoke_impl<void, void (ns3::Ipv4L3Protocol::*&)(ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&), ns3::Ipv4L3Protocol*, ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&>(std::__invoke_memfun_deref, void (ns3::Ipv4L3Protocol::*&)(ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&), ns3::Ipv4L3Protocol*&&, ns3::Ptr<ns3::Ipv4Route>&&, ns3::Ptr<ns3::Packet const>&&, ns3::Ipv4Header const&) at /usr/include/c++/13/bits/invoke.h:74
+  12# std::function<void (ns3::Ipv4L3Protocol*, ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&)>::operator()(ns3::Ipv4L3Protocol*, ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&) const at /usr/include/c++/13/bits/std_function.h:591
+  13# std::function<void (ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&)>::operator()(ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&) const at /usr/include/c++/13/bits/std_function.h:591
+  14# ns3::Ipv4StaticRouting::RouteInput(ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&, ns3::Ptr<ns3::NetDevice const>, ns3::Callback<void, ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&> const&, ns3::Callback<void, ns3::Ptr<ns3::Ipv4MulticastRoute>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&> const&, ns3::Callback<void, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&, unsigned int> const&, ns3::Callback<void, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&, ns3::Socket::SocketErrno> const&) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/internet/model/ipv4-static-routing.cc:561
+  15# ns3::Ipv4ListRouting::RouteInput(ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&, ns3::Ptr<ns3::NetDevice const>, ns3::Callback<void, ns3::Ptr<ns3::Ipv4Route>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&> const&, ns3::Callback<void, ns3::Ptr<ns3::Ipv4MulticastRoute>, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&> const&, ns3::Callback<void, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&, unsigned int> const&, ns3::Callback<void, ns3::Ptr<ns3::Packet const>, ns3::Ipv4Header const&, ns3::Socket::SocketErrno> const&) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/internet/model/ipv4-list-routing.cc:171
+  16# ns3::Ipv4L3Protocol::Receive(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/internet/model/ipv4-l3-protocol.cc:642
+  17# std::_Function_handler<void (ns3::Ipv4L3Protocol*, ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType), void (ns3::Ipv4L3Protocol::*)(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType)>::_M_invoke(std::_Any_data const&, ns3::Ipv4L3Protocol*&&, ns3::Ptr<ns3::NetDevice>&&, ns3::Ptr<ns3::Packet const>&&, unsigned short&&, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType&&) at :0
+  18# std::_Function_handler<void (ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType), ns3::Callback<void, ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType>::Callback<void (ns3::Ipv4L3Protocol::*)(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType), ns3::Ipv4L3Protocol*, 0>(void (ns3::Ipv4L3Protocol::*)(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType), ns3::Ipv4L3Protocol*)::{lambda((auto:1&&)...)#1}>::_M_invoke(std::_Any_data const&, ns3::Ptr<ns3::NetDevice>&&, ns3::Ptr<ns3::Packet const>&&, unsigned short&&, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType&&) at :0
+  19# std::function<void (ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType)>::operator()(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType) const at /usr/include/c++/13/bits/std_function.h:591
+  20# void std::__invoke_impl<void, void (ns3::TrafficControlLayer::*&)(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType), ns3::Ptr<ns3::TrafficControlLayer>, ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType>(std::__invoke_memfun_deref, void (ns3::TrafficControlLayer::*&)(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType), ns3::Ptr<ns3::TrafficControlLayer>&&, ns3::Ptr<ns3::NetDevice>&&, ns3::Ptr<ns3::Packet const>&&, unsigned short&&, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType&&) at /usr/include/c++/13/bits/invoke.h:74
+  21# std::function<void (ns3::Ptr<ns3::TrafficControlLayer>, ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType)>::operator()(ns3::Ptr<ns3::TrafficControlLayer>, ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType) const at /usr/include/c++/13/bits/std_function.h:591
+  22# std::function<void (ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType)>::operator()(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&, ns3::Address const&, ns3::NetDevice::PacketType) const at /usr/include/c++/13/bits/std_function.h:591
+  23# ns3::Node::NonPromiscReceiveFromDevice(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/network/model/node.cc:293
+  24# bool std::__invoke_impl<bool, bool (ns3::Node::*&)(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&), ns3::Node*, ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&>(std::__invoke_memfun_deref, bool (ns3::Node::*&)(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&), ns3::Node*&&, ns3::Ptr<ns3::NetDevice>&&, ns3::Ptr<ns3::Packet const>&&, unsigned short&&, ns3::Address const&) at /usr/include/c++/13/bits/invoke.h:74
+  25# std::function<bool (ns3::Node*, ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&)>::operator()(ns3::Node*, ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&) const at /usr/include/c++/13/bits/std_function.h:591
+  26# std::function<bool (ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&)>::operator()(ns3::Ptr<ns3::NetDevice>, ns3::Ptr<ns3::Packet const>, unsigned short, ns3::Address const&) const at /usr/include/c++/13/bits/std_function.h:591
+  27# ns3::NrNetDevice::Receive(ns3::Ptr<ns3::Packet>) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-net-device.cc:276
+  28# std::_Function_handler<void (ns3::Ptr<ns3::NrUeNetDevice>, ns3::Ptr<ns3::Packet>), void (ns3::NrNetDevice::*)(ns3::Ptr<ns3::Packet>)>::_M_invoke(std::_Any_data const&, ns3::Ptr<ns3::NrUeNetDevice>&&, ns3::Ptr<ns3::Packet>&&) at :0
+  29# std::_Function_handler<void (ns3::Ptr<ns3::Packet>), ns3::Callback<void, ns3::Ptr<ns3::Packet> >::Callback<void (ns3::NrNetDevice::*)(ns3::Ptr<ns3::Packet>), ns3::Ptr<ns3::NrUeNetDevice>, 0>(void (ns3::NrNetDevice::*)(ns3::Ptr<ns3::Packet>), ns3::Ptr<ns3::NrUeNetDevice>)::{lambda((auto:1&&)...)#1}>::_M_invoke(std::_Any_data const&, ns3::Ptr<ns3::Packet>&&) at :0
+  30# std::function<void (ns3::Ptr<ns3::Packet>)>::operator()(ns3::Ptr<ns3::Packet>) const at /usr/include/c++/13/bits/std_function.h:591
+  31# ns3::MemberNrAsSapUser<ns3::NrEpcUeNas>::RecvData(ns3::Ptr<ns3::Packet>) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-as-sap.h:250
+  32# ns3::NrUeRrc::DoReceivePdcpSdu(ns3::NrPdcpSapUser::ReceivePdcpSduParameters) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-ue-rrc.cc:689
+  33# ns3::NrPdcpSpecificNrPdcpSapUser<ns3::NrUeRrc>::ReceivePdcpSdu(ns3::NrPdcpSapUser::ReceivePdcpSduParameters) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-pdcp-sap.h:146
+  34# ns3::NrPdcp::DoReceivePdu(ns3::Ptr<ns3::Packet>) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-pdcp.cc:221
+  35# ns3::NrPdcpSpecificNrRlcSapUser::ReceivePdcpPdu(ns3::Ptr<ns3::Packet>) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-pdcp.cc:52
+  36# operator() at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc-um.cc:668
+  37# ns3::NrRlcUm::ReassembleAndDeliver(ns3::Ptr<ns3::Packet>) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc-um.cc:848
+  38# ns3::NrRlcUm::ReassembleSnInterval(ns3::nr::SequenceNumber10, ns3::nr::SequenceNumber10) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc-um.cc:1198
+  39# ns3::NrRlcUm::DoReceivePdu(ns3::NrMacSapUser::ReceivePduParameters) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc-um.cc:577
+  40# ns3::NrRlcSpecificNrMacSapUser::ReceivePdu(ns3::NrMacSapUser::ReceivePduParameters) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc.cc:67
+  41# ns3::NrSimpleUeComponentCarrierManager::DoReceivePdu(ns3::NrMacSapUser::ReceivePduParameters) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-simple-ue-component-carrier-manager.cc:239
+  42# ns3::NrSimpleUeCcmMacSapUser::ReceivePdu(ns3::NrMacSapUser::ReceivePduParameters) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-simple-ue-component-carrier-manager.cc:104
+  43# ns3::NrUeMac::DoReceivePhyPdu(ns3::Ptr<ns3::Packet>) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-ue-mac.cc:695
+  44# ns3::MacUeMemberPhySapUser::ReceivePhyPdu(ns3::Ptr<ns3::Packet>) at /home/elioth/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-ue-mac.cc:188
+  45# void std::__invoke_impl<void, void (ns3::NrUePhySapUser::*&)(ns3::Ptr<ns3::Packet>), ns3::NrUePhySapUser*&, ns3::Ptr<ns3::Packet>&>(std::__invoke_memfun_deref, void (ns3::NrUePhySapUser::*&)(ns3::Ptr<ns3::Packet>), ns3::NrUePhySapUser*&, ns3::Ptr<ns3::Packet>&) at /usr/include/c++/13/bits/invoke.h:74
+  46# ns3::DefaultSimulatorImpl::ProcessOneEvent() at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/core/model/default-simulator-impl.cc:133
+  47# ns3::DefaultSimulatorImpl::Run() at /home/elioth/Documentos/artigo_jussi/ns-3-dev/src/core/model/default-simulator-impl.cc:186
+  48# main at /home/elioth/Documentos/artigo_jussi/ns-3-dev/scratch/rslaq/rslaq-sim.cc:1871
+  49# __libc_start_call_main at ../sysdeps/nptl/libc_start_call_main.h:58
+  50# __libc_start_main_impl at ../csu/libc-start.c:360
+  51# _start at :0
+  52# 
+
+terminate called without an active exception
+Command 'build/scratch/rslaq/ns3.46-rslaq-sim-default --scenario=low_traffic --baselineMode=slice_custom --weights=0.624623,0.086586,0.288791 --intraAlgo=PF --simTime=5 --appStart=0.4 --drainTimeSec=0.2 --periodMs=10 --seed=3 --run=1 --txPower=43 --tddPattern=D|D|8D|4GB|4U|U|U --rlcMode=um --outputDir=results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=3/metaheuristic_search/evals/ga_eval_0024' died with <Signals.SIGABRT: 6>.
