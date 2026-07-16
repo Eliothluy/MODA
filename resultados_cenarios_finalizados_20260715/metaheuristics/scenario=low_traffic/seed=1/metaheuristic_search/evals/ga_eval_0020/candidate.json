@@ -1,0 +1,15 @@
+{
+  "method": "ga",
+  "evaluation_id": 20,
+  "scenario": "low_traffic",
+  "seed": 1,
+  "run": 1,
+  "weights": [
+    0.7251746669640701,
+    0.08654603840221962,
+    0.18827929463371026
+  ],
+  "score": 59.81967003666668,
+  "result_dir": "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=1/metaheuristic_search/evals/ga_eval_0020/results_rslaq_network_only/scenario=low_traffic/mode=slice_custom/seed=1_run=1",
+  "log_file": "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=low_traffic/seed=1/metaheuristic_search/evals/ga_eval_0020/ns3.log"
+}

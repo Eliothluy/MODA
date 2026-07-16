@@ -1,0 +1,19 @@
+{
+  "method": "sa",
+  "evaluation_id": 21,
+  "scenario": "congestion",
+  "seed": 2,
+  "run": 1,
+  "score": 85.27964980333334,
+  "weights": {
+    "eMBB": 0.8161885614850775,
+    "URLLC": 0.1799209411035522,
+    "MTC": 0.0038904974113703437
+  },
+  "ns3_args": {
+    "baselineMode": "slice_custom",
+    "weights": "0.816189,0.179921,0.003890"
+  },
+  "result_dir": "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=congestion/seed=2/metaheuristic_search/evals/sa_eval_0021/results_rslaq_network_only/scenario=congestion/mode=slice_custom/seed=2_run=1",
+  "log_file": "/home/elioth/Documentos/artigo_jussi/ns-o-ran-gym/results_controlled/heuristics_metaheuristics/20260626_122326/metaheuristics/scenario=congestion/seed=2/metaheuristic_search/evals/sa_eval_0021/ns3.log"
+}
