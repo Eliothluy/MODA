@@ -32,7 +32,12 @@ from nsoran.scoring import (
     read_summary,
     safe_float,
     score_summary_rows,
+    score_summary_rows_v2,
 )
+
+# Selecionável via --score_version. v1 é o default (compatibilidade com a
+# campanha e o cache antigos); a campanha v2 (correções da auditoria) usa v2.
+SCORE_FUNCTIONS = {"v1": score_summary_rows, "v2": score_summary_rows_v2}
 
 
 @dataclass
@@ -151,14 +156,17 @@ def load_cached_evaluation(
     method: str,
     evaluation_id: int,
     requested_weights: Sequence[float],
+    score_version: str = "v1",
 ) -> Evaluation | None:
     """Return a cached Evaluation for this (method, eval_id) if a valid
     candidate.json sidecar exists.
 
     The cache is valid only when the requested weights match the cached ones
-    (within 1e-9). A mismatch means the RNG trajectory has diverged (e.g. a
-    partially rewritten eval dir); in that case the cache is discarded and the
-    caller re-runs the ns-3 evaluation.
+    (within 1e-9) AND the cached score_version matches the requested one. A
+    weight mismatch means the RNG trajectory has diverged; a score_version
+    mismatch means the sidecar was produced by a different objective. In either
+    case the cache is discarded and the caller re-runs the ns-3 evaluation.
+    (Sidecars written before v2 lack the field and default to "v1".)
     """
     sidecar = candidate_root / "candidate.json"
     if not sidecar.exists():
@@ -174,6 +182,8 @@ def load_cached_evaluation(
            for i in range(len(requested_weights))):
         return None
     if str(payload.get("method")) != method or int(payload.get("evaluation_id", -1)) != evaluation_id:
+        return None
+    if str(payload.get("score_version", "v1")) != score_version:
         return None
     return Evaluation(
         method=str(payload["method"]),
@@ -206,6 +216,8 @@ def run_candidate(
     tx_power: float,
     tdd_pattern: str,
     rlc_mode: str,
+    score_fn=score_summary_rows,
+    score_version: str = "v1",
 ) -> Evaluation:
     candidate_root = eval_root / f"{method}_eval_{evaluation_id:04d}"
     candidate_root.mkdir(parents=True, exist_ok=True)
@@ -279,21 +291,24 @@ def run_candidate(
         seed=seed,
         run=run,
         weights=normalize_weights(weights),
-        score=score_summary_rows(rows),
+        score=score_fn(rows),
         result_dir=result_dir(candidate_root, scenario, seed, run),
         log_file=log_file,
     )
 
-    _write_sidecar(candidate_root, evaluation)
+    _write_sidecar(candidate_root, evaluation, score_version=score_version)
     return evaluation
 
 
-def _write_sidecar(candidate_root: Path, evaluation: Evaluation, *, failed: bool = False) -> None:
+def _write_sidecar(candidate_root: Path, evaluation: Evaluation, *,
+                   failed: bool = False, score_version: str = "v1") -> None:
     """Persist a candidate.json sidecar for checkpointing.
 
     ``failed=True`` marks evaluations whose ns-3 run crashed; they carry a
     heavily penalized score so they are neither re-tried on resume nor
-    mistaken for genuinely poor solutions during analysis.
+    mistaken for genuinely poor solutions during analysis. ``score_version``
+    records which objective (v1/v2) produced ``score`` so mixed caches are
+    never silently compared.
     """
     candidate_meta = candidate_root / "candidate.json"
     candidate_meta.write_text(json.dumps({
@@ -304,6 +319,7 @@ def _write_sidecar(candidate_root: Path, evaluation: Evaluation, *, failed: bool
         "run": evaluation.run,
         "weights": list(evaluation.weights),
         "score": evaluation.score,
+        "score_version": score_version,
         "result_dir": str(evaluation.result_dir),
         "log_file": str(evaluation.log_file),
         "failed": failed,
@@ -660,6 +676,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seeds", default=None, help="Space-separated list of seeds (overrides --seed)")
     parser.add_argument("--run", type=int, default=1)
     parser.add_argument("--random_seed", type=int, default=2026)
+    parser.add_argument("--score_version", choices=["v1", "v2"], default="v1",
+                        help="Objective function: v1 (original) or v2 (audit reformulation)")
+    parser.add_argument("--per_seed_search", action="store_true",
+                        help="Vary the optimizer RNG per ns-3 seed (random_seed + seed) "
+                             "so the search trajectory differs across seeds (v2 campaign)")
     parser.add_argument("--iterations", type=int, default=4)
     parser.add_argument("--population", type=int, default=6)
     parser.add_argument("--mutation_strength", type=float, default=0.12)
@@ -697,9 +718,18 @@ def main() -> None:
 
     methods = ["ga", "pso", "sa", "hybrid"] if args.method == "all" else [args.method]
 
+    score_fn = SCORE_FUNCTIONS[args.score_version]
+    print(f"[META] score_version={args.score_version} ({score_fn.__name__})")
+
     for scenario in args.scenarios:
         for seed in args.seeds:
-            rng = random.Random(args.random_seed)
+            # Trajetória de busca independente por seed do ns-3 (v2). Na v1 o
+            # --random_seed era fixo para todas as seeds, tornando a busca
+            # idêntica entre elas; somar a seed do ns-3 descorrelaciona as buscas
+            # sem quebrar a reprodutibilidade (determinístico por par).
+            search_random_seed = (args.random_seed + seed
+                                  if args.per_seed_search else args.random_seed)
+            rng = random.Random(search_random_seed)
             search_root = args.output_root / f"scenario={scenario}" / f"seed={seed}" / "metaheuristic_search"
             eval_root = search_root / "evals"
             eval_root.mkdir(parents=True, exist_ok=True)
@@ -708,7 +738,8 @@ def main() -> None:
 
             def evaluate(method: str, evaluation_id: int, weights: Sequence[float]) -> Evaluation:
                 candidate_root = eval_root / f"{method}_eval_{evaluation_id:04d}"
-                cached = load_cached_evaluation(candidate_root, method, evaluation_id, weights)
+                cached = load_cached_evaluation(candidate_root, method, evaluation_id, weights,
+                                                score_version=args.score_version)
                 if cached is not None:
                     print(f"[META cache] scenario={scenario} seed={seed} {method} eval {evaluation_id} "
                           f"score={cached.score:.4f} (skipped ns-3)")
@@ -730,6 +761,8 @@ def main() -> None:
                     tx_power=args.tx_power,
                     tdd_pattern=args.tdd_pattern,
                     rlc_mode=args.rlc_mode,
+                    score_fn=score_fn,
+                    score_version=args.score_version,
                 )
 
             all_evaluations: list[Evaluation] = []

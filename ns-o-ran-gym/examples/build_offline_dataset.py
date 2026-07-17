@@ -1,179 +1,86 @@
 #!/usr/bin/env python3
-"""Consolidate meta-heuristic evaluation data into a Parquet dataset for offline RL.
+"""Consolidate metaheuristic + heuristic results into a Parquet dataset.
 
-Reads all candidate.json sidecars (+ metadata.json + summary.csv) from the
-finalized scenarios folder and produces a single Parquet file with columns:
-  - State (context): scenario one-hot, num_ues, offered_load, packet_size
-  - Action: w_embb, w_urllc, w_mtc
-  - Reward: score (filtered: crashes with score=-1e6 discarded)
-  - Auxiliary metrics: delay_urllc, pdr, sla, throughput
+Thin CLI over nsoran.offline_dataset. Produces one flat contextual-bandit
+table (context, action=slice weights, reward=score) combining:
+  - all metaheuristic search evaluations (candidate.json sidecars), and
+  - all heuristic/baseline runs (scored with the same nsoran.scoring objective;
+    pure_* modes are always excluded — see nsoran/offline_dataset.py).
+
+The default output is offline_dataset_v2.parquet. The original
+offline_dataset.parquet (v1, metaheuristics only) is intentionally left
+untouched so previously trained checkpoints remain reproducible.
 
 Usage:
-    cd /home/elioth/Documentos/artigo_jussi/ns-o-ran-gym
-    .venv-dashboard/bin/python examples/build_offline_dataset.py
+    cd ns-o-ran-gym
+    python3 examples/build_offline_dataset.py
+    python3 examples/build_offline_dataset.py --no-heuristics --output /tmp/ds.parquet
 """
 
 from __future__ import annotations
 
-import json
+import argparse
+import os
 import sys
 from pathlib import Path
 
-import pandas as pd
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-REPO_ROOT = Path("/home/elioth/Documentos/artigo_jussi")
-DATA_ROOT = REPO_ROOT / "resultados_cenarios_finalizados_20260715"
-META_ROOT = DATA_ROOT / "metaheuristics"
-OUTPUT_PARQUET = DATA_ROOT / "offline_dataset.parquet"
+from nsoran.offline_dataset import SCENARIOS, SEEDS, build_dataset
 
-SCENARIOS = ["low_traffic", "normal", "congestion", "stressed"]
-SEEDS = [1, 2, 3]
-SLICE_ORDER = ["eMBB", "URLLC", "MTC"]
-
-# Cache metadata per scenario (it's the same across seeds/modes within a scenario)
-_metadata_cache: dict[str, dict] = {}
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def load_scenario_metadata(scenario: str) -> dict:
-    """Load network state features from a metadata.json in the scenario."""
-    if scenario in _metadata_cache:
-        return _metadata_cache[scenario]
-    # Find any metadata.json in this scenario
-    candidates = list((META_ROOT / f"scenario={scenario}").rglob("metadata.json"))
-    if not candidates:
-        # Fallback: heuristics_ns3
-        candidates = list((DATA_ROOT / "heuristics_ns3/results_rslaq_network_only" /
-                           f"scenario={scenario}").glob("*/metadata.json"))
-    if not candidates:
-        raise FileNotFoundError(f"No metadata.json found for scenario {scenario}")
-    meta = json.loads(candidates[0].read_text(encoding="utf-8"))
-    _metadata_cache[scenario] = meta
-    return meta
-
-
-def extract_state_features(scenario: str) -> dict:
-    """Extract network-state features that define the 'context' for the bandit."""
-    meta = load_scenario_metadata(scenario)
-    # metadata.json uses dicts keyed by slice name, not lists
-    nues = meta.get("num_ues_per_slice", {})
-    if isinstance(nues, dict):
-        nues_e = nues.get("eMBB", 0)
-        nues_u = nues.get("URLLC", 0)
-        nues_m = nues.get("MTC", 0)
-    else:
-        nues_e = nues[0] if len(nues) > 0 else 0
-        nues_u = nues[1] if len(nues) > 1 else 0
-        nues_m = nues[2] if len(nues) > 2 else 0
-    load = meta.get("offered_load_mbps_per_slice", {})
-    if isinstance(load, dict):
-        load_e = load.get("eMBB", 0)
-        load_u = load.get("URLLC", 0)
-        load_m = load.get("MTC", 0)
-    else:
-        load_e = load[0] if len(load) > 0 else 0
-        load_u = load[1] if len(load) > 1 else 0
-        load_m = load[2] if len(load) > 2 else 0
-    pkt = meta.get("packet_size_bytes_per_slice", {})
-    if isinstance(pkt, dict):
-        pkt_e = pkt.get("eMBB", 0)
-        pkt_u = pkt.get("URLLC", 0)
-        pkt_m = pkt.get("MTC", 0)
-    else:
-        pkt_e = pkt[0] if len(pkt) > 0 else 0
-        pkt_u = pkt[1] if len(pkt) > 1 else 0
-        pkt_m = pkt[2] if len(pkt) > 2 else 0
-    total_ues = meta.get("num_ues", nues_e + nues_u + nues_m)
-    return {
-        "num_ues_total": int(total_ues),
-        "num_ues_embb": int(nues_e),
-        "num_ues_urllc": int(nues_u),
-        "num_ues_mtc": int(nues_m),
-        "offered_load_embb": float(load_e),
-        "offered_load_urllc": float(load_u),
-        "offered_load_mtc": float(load_m),
-        "pkt_size_embb": int(pkt_e),
-        "pkt_size_urllc": int(pkt_u),
-        "pkt_size_mtc": int(pkt_m),
-    }
-
-
-def load_summary_metrics(eval_dir: Path, scenario: str, seed: int) -> dict:
-    """Load auxiliary metrics from summary.csv inside an eval directory."""
-    summary = (eval_dir / "results_rslaq_network_only" / f"scenario={scenario}" /
-               "mode=slice_custom" / f"seed={seed}_run=1" / "summary.csv")
-    if not summary.exists():
-        return {}
-    try:
-        import csv
-        with summary.open() as f:
-            rows = {r["slice"]: r for r in csv.DictReader(f)}
-        result = {}
-        for sl in SLICE_ORDER:
-            r = rows.get(sl, {})
-            result[f"delay_{sl.lower()}_mean"] = float(r.get("delay_ms_mean", 0))
-            result[f"pdr_{sl.lower()}"] = float(r.get("pdr_pct", 0))
-            result[f"sla_{sl.lower()}"] = float(r.get("sla_satisfaction_pct", 0))
-            result[f"thr_{sl.lower()}"] = float(r.get("throughput_mbps_mean", 0))
-        result["throughput_total"] = sum(result.get(f"thr_{sl.lower()}", 0) for sl in SLICE_ORDER)
-        result["sla_min"] = min(result.get(f"sla_{sl.lower()}", 100) for sl in SLICE_ORDER)
-        return result
-    except Exception:
-        return {}
+def parse_args() -> argparse.Namespace:
+    default_data_root = REPO_ROOT / "resultados_cenarios_finalizados_20260715"
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--data-root", type=Path, default=default_data_root,
+                        help="Finalized results folder (default: %(default)s)")
+    parser.add_argument("--meta-root", type=Path, default=None,
+                        help="Metaheuristics tree (default: <data-root>/metaheuristics)")
+    parser.add_argument("--heuristics-root", type=Path, default=None,
+                        help="Heuristic runs tree (default: <data-root>/heuristics_ns3/results_rslaq_network_only)")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="Output parquet (default: <data-root>/offline_dataset_v2.parquet)")
+    parser.add_argument("--scenarios", nargs="+", default=SCENARIOS)
+    parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS)
+    parser.add_argument("--no-heuristics", action="store_true",
+                        help="Only ingest metaheuristic evals (v1-equivalent content)")
+    parser.add_argument("--exclude-dynamic-modes", action="store_true",
+                        help="Drop dynamic-weight heuristic modes (keep only static-weight ones)")
+    return parser.parse_args()
 
 
 def main() -> None:
-    sys.path.insert(0, str(REPO_ROOT / "ns-o-ran-gym/src"))
-    rows = []
-    skipped_crash = 0
-    skipped_missing = 0
+    args = parse_args()
+    meta_root = args.meta_root or args.data_root / "metaheuristics"
+    heuristics_root = args.heuristics_root or (
+        args.data_root / "heuristics_ns3" / "results_rslaq_network_only")
+    output = args.output or args.data_root / "offline_dataset_v2.parquet"
 
-    for scenario in SCENARIOS:
-        state_features = extract_state_features(scenario)
-        print(f"[{scenario}] state features: {state_features}")
-        for seed in SEEDS:
-            evals_dir = META_ROOT / f"scenario={scenario}/seed={seed}/metaheuristic_search/evals"
-            if not evals_dir.exists():
-                print(f"  seed {seed}: no evals dir, skipping")
-                continue
-            for sidecar in sorted(evals_dir.glob("*/candidate.json")):
-                try:
-                    p = json.loads(sidecar.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    skipped_missing += 1
-                    continue
-                score = float(p.get("score", -1e6))
-                if score <= -1e5:  # crash-tolerated eval
-                    skipped_crash += 1
-                    continue
-                weights = p.get("weights", [0, 0, 0])
-                row = {
-                    "scenario": scenario,
-                    "seed": seed,
-                    "method": p.get("method", "?"),
-                    "eval_id": p.get("evaluation_id", 0),
-                    "w_embb": float(weights[0]) if len(weights) > 0 else 0,
-                    "w_urllc": float(weights[1]) if len(weights) > 1 else 0,
-                    "w_mtc": float(weights[2]) if len(weights) > 2 else 0,
-                    "score": score,
-                }
-                row.update(state_features)
-                # Auxiliary metrics
-                metrics = load_summary_metrics(sidecar.parent, scenario, seed)
-                row.update(metrics)
-                rows.append(row)
+    df, stats = build_dataset(
+        meta_root=meta_root,
+        heuristics_root=heuristics_root,
+        scenarios=args.scenarios,
+        seeds=args.seeds,
+        include_heuristics=not args.no_heuristics,
+        include_dynamic_modes=not args.exclude_dynamic_modes,
+    )
 
-    df = pd.DataFrame(rows)
-    print(f"\nTotal rows: {len(df)} | skipped crashes: {skipped_crash} | skipped missing: {skipped_missing}")
+    if df.empty:
+        print("No rows produced — check the input paths.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Total rows: {len(df)} | skips: {stats or 'none'}")
+    for source, count in df["source"].value_counts().items():
+        print(f"  source={source}: {count}")
     print(f"Scenarios: {sorted(df['scenario'].unique())}")
-    print(f"Score range: {df['score'].min():.2f} to {df['score'].max():.2f}")
-    print(f"Score mean: {df['score'].mean():.2f} +/- {df['score'].std():.2f}")
+    print(f"Score range: {df['score'].min():.2f} to {df['score'].max():.2f} "
+          f"(mean {df['score'].mean():.2f} +/- {df['score'].std():.2f})")
 
-    # One-hot encode scenario
-    for sc in SCENARIOS:
-        df[f"is_{sc}"] = (df["scenario"] == sc).astype(int)
-
-    df.to_parquet(OUTPUT_PARQUET, index=False)
-    print(f"\nParquet saved: {OUTPUT_PARQUET} ({OUTPUT_PARQUET.stat().st_size / 1024:.0f} KB)")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(output, index=False)
+    print(f"\nParquet saved: {output} ({output.stat().st_size / 1024:.0f} KB)")
     print(f"Columns ({len(df.columns)}): {list(df.columns)}")
 
 

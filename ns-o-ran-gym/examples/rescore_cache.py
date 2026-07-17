@@ -23,7 +23,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from nsoran.scoring import read_summary, score_summary_rows  # noqa: E402
+from nsoran.scoring import (  # noqa: E402
+    read_summary,
+    score_summary_rows,
+    score_summary_rows_v2,
+)
+
+SCORE_FUNCTIONS = {"v1": score_summary_rows, "v2": score_summary_rows_v2}
 
 DEFAULT_OUTPUT_ROOT = (
     Path(__file__).resolve().parents[1]
@@ -46,7 +52,8 @@ def find_summary(eval_dir: Path) -> Path | None:
     return matches[0] if matches else None
 
 
-def rescore_one(eval_dir: Path, *, dry_run: bool) -> tuple[float, float, str | None]:
+def rescore_one(eval_dir: Path, *, dry_run: bool, score_fn=score_summary_rows,
+                score_version: str = "v1") -> tuple[float, float, str | None]:
     """Re-score one eval. Returns (old_score, new_score, error_or_None).
 
     Evaluations flagged ``failed=true`` (ns-3 crash, no usable summary.csv) are
@@ -70,12 +77,13 @@ def rescore_one(eval_dir: Path, *, dry_run: bool) -> tuple[float, float, str | N
     old_score = float(payload.get("score", 0.0))
     try:
         rows = read_summary(summary)
-        new_score = score_summary_rows(rows)
+        new_score = score_fn(rows)
     except Exception as exc:  # noqa: BLE001 - surface any scoring failure
         return old_score, 0.0, f"scoring failed: {exc}"
 
     if not dry_run:
         payload["score"] = new_score
+        payload["score_version"] = score_version
         sidecar.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return old_score, new_score, None
 
@@ -89,7 +97,11 @@ def main() -> int:
         help="Root containing scenario=*/seed=*/metaheuristic_search/evals/",
     )
     parser.add_argument("--dry-run", action="store_true", help="Report changes without writing")
+    parser.add_argument("--score_version", choices=["v1", "v2"], default="v1",
+                        help="Objective to re-score with (must match the campaign's).")
     args = parser.parse_args()
+    score_fn = SCORE_FUNCTIONS[args.score_version]
+    print(f"[rescore] score_version={args.score_version} ({score_fn.__name__})")
 
     eval_dirs = find_eval_dirs(args.output_root)
     if not eval_dirs:
@@ -106,7 +118,8 @@ def main() -> int:
     sample_changes: list[tuple[str, float, float]] = []
 
     for eval_dir in eval_dirs:
-        old, new, err = rescore_one(eval_dir, dry_run=args.dry_run)
+        old, new, err = rescore_one(eval_dir, dry_run=args.dry_run,
+                                    score_fn=score_fn, score_version=args.score_version)
         rel = eval_dir.name
         if err is not None:
             errors += 1

@@ -1,218 +1,143 @@
 #!/usr/bin/env python3
-"""Offline RL training for slice weight optimization.
+"""Offline training of the 3 slice-weight policies (xApp line).
 
 Trains 3 neural policies from the consolidated Parquet dataset:
-  1. DDQN-offline: Q-regression over discretized action space (66 simplex bins)
-  2. SAC-offline:  Behavioral cloning of top-K candidates (actor MLP with softmax)
-  3. PPO-offline:  Reward-weighted regression (policy gradient without Bellman)
+  1. ddqn: Q-regression over discretized action space (66 simplex bins)
+  2. sac:  behavioral cloning of top-20% candidates (actor MLP with softmax)
+  3. ppo:  reward-weighted regression (RWR)
 
-The data does NOT form an MDP (no next_state), so these are trained as
-contextual-bandit / supervised policies, not with TD-learning.
+The data does NOT form an MDP (no next_state), so these are contextual-bandit /
+supervised policies, not TD-learning — see nsoran/offline_models.py.
 
 Usage:
-    cd /home/elioth/Documentos/artigo_jussi/ns-o-ran-gym
-    .venv-dashboard/bin/python examples/train_offline_rl.py
+    cd ns-o-ran-gym
+    python3 examples/train_offline_rl.py
+    python3 examples/train_offline_rl.py --epochs 20 --models sac
+    python3 examples/train_offline_rl.py --seeds 42 43 44 45 46   # multi-seed
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-REPO_ROOT = Path("/home/elioth/Documentos/artigo_jussi")
-DATA_ROOT = REPO_ROOT / "resultados_cenarios_finalizados_20260715"
-PARQUET_PATH = DATA_ROOT / "offline_dataset.parquet"
-MODELS_DIR = REPO_ROOT / "models"
-MODELS_DIR.mkdir(exist_ok=True)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-# State features (input to all models)
-STATE_COLS = [
-    "num_ues_total", "num_ues_embb", "num_ues_urllc", "num_ues_mtc",
-    "offered_load_embb", "offered_load_urllc", "offered_load_mtc",
-    "pkt_size_embb", "pkt_size_urllc", "pkt_size_mtc",
-    "is_low_traffic", "is_normal", "is_congestion", "is_stressed",
-]
-ACTION_COLS = ["w_embb", "w_urllc", "w_mtc"]
-SCENARIOS = ["low_traffic", "normal", "congestion", "stressed"]
+from nsoran.offline_models import (
+    ACTION_COLS,
+    DEVICE,
+    STATE_COLS,
+    ActorNet,
+    PolicyNet,
+    QNet,
+    build_simplex_actions,
+    compute_norm_params,
+    nearest_action_index,
+    save_checkpoint,
+)
 
-# Training config
-EPOCHS = 300
-LR = 1e-3
-BATCH_SIZE = 128
-TRAIN_SPLIT = 0.8  # 80% train, 20% test (by scenario-seed group)
-SEED = 42
-DEVICE = torch.device("cpu")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATASET = (REPO_ROOT / "resultados_cenarios_finalizados_20260715"
+                   / "offline_dataset_v2.parquet")
 
 
 # ---------------------------------------------------------------------------
 # Data preparation
 # ---------------------------------------------------------------------------
-def load_and_split(parquet_path: Path) -> tuple[dict, dict, pd.DataFrame]:
+def load_and_split(parquet_path: Path, train_split: float, seed: int):
     """Load Parquet, normalize, split train/test by (scenario, seed) groups."""
     df = pd.read_parquet(parquet_path)
     print(f"Loaded {len(df)} rows from {parquet_path.name}")
 
-    # Normalize state features to [0,1] using min-max
-    state_df = df[STATE_COLS].copy()
-    state_min = state_df.min()
-    state_max = state_df.max()
-    state_range = (state_max - state_min).replace(0, 1)
-    state_norm = (state_df - state_min) / state_range
+    norm_params = compute_norm_params(df)
+    state_min = pd.Series(norm_params["min"])[STATE_COLS]
+    state_range = pd.Series(norm_params["range"])[STATE_COLS]
+    state_norm = (df[STATE_COLS] - state_min) / state_range
 
     actions = df[ACTION_COLS].values.astype(np.float32)
     scores = df["score"].values.astype(np.float32)
 
     # Split by (scenario, seed) — ensures no leakage
-    rng = np.random.RandomState(SEED)
+    rng = np.random.RandomState(seed)
     groups = df.groupby(["scenario", "seed"]).size().reset_index()[["scenario", "seed"]].values
     rng.shuffle(groups)
-    n_train = int(len(groups) * TRAIN_SPLIT)
+    n_train = int(len(groups) * train_split)
     train_groups = set(tuple(g) for g in groups[:n_train])
 
     group_keys = list(zip(df["scenario"], df["seed"]))
     train_mask = np.array([g in train_groups for g in group_keys])
 
-    X_train = state_norm.values[train_mask].astype(np.float32)
-    X_test = state_norm.values[~train_mask].astype(np.float32)
-    A_train = actions[train_mask]
-    A_test = actions[~train_mask]
-    R_train = scores[train_mask]
-    R_test = scores[~train_mask]
+    train = {"X": state_norm.values[train_mask].astype(np.float32),
+             "A": actions[train_mask], "R": scores[train_mask],
+             "df": df[train_mask].reset_index(drop=True)}
+    test = {"X": state_norm.values[~train_mask].astype(np.float32),
+            "A": actions[~train_mask], "R": scores[~train_mask],
+            "df": df[~train_mask].reset_index(drop=True)}
 
-    train = {"X": X_train, "A": A_train, "R": R_train, "df": df[train_mask].reset_index(drop=True)}
-    test = {"X": X_test, "A": A_test, "R": R_test, "df": df[~train_mask].reset_index(drop=True)}
-
-    norm_params = {"min": state_min.to_dict(), "range": state_range.to_dict()}
-    print(f"Train: {len(X_train)} rows | Test: {len(X_test)} rows")
-    print(f"Train score: {R_train.mean():.2f} +/- {R_train.std():.2f}")
-    print(f"Test  score: {R_test.mean():.2f} +/- {R_test.std():.2f}")
-    return train, test, df
+    print(f"Train: {len(train['X'])} rows | Test: {len(test['X'])} rows")
+    print(f"Train score: {train['R'].mean():.2f} +/- {train['R'].std():.2f}")
+    print(f"Test  score: {test['R'].mean():.2f} +/- {test['R'].std():.2f}")
+    return train, test, df, norm_params
 
 
 # ---------------------------------------------------------------------------
-# Discretized action table for DDQN-offline
+# Model 1: ddqn (Q-regression)
 # ---------------------------------------------------------------------------
-def build_simplex_actions(step: float = 0.1) -> np.ndarray:
-    """Generate all weight vectors on the 3-simplex with given step."""
-    actions = []
-    n = int(round(1.0 / step))
-    for i in range(n + 1):
-        for j in range(n + 1 - i):
-            k = n - i - j
-            actions.append([i * step, j * step, k * step])
-    return np.array(actions, dtype=np.float32)
-
-
-def nearest_action_index(weights: np.ndarray, action_table: np.ndarray) -> int:
-    """Find the index of the nearest discretized action."""
-    dists = np.sum((action_table - weights) ** 2, axis=1)
-    return int(np.argmin(dists))
-
-
-# ---------------------------------------------------------------------------
-# Model 1: DDQN-offline (Q-regression)
-# ---------------------------------------------------------------------------
-class QNet(nn.Module):
-    def __init__(self, state_dim: int, n_actions: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, 128), nn.ReLU(),
-            nn.Linear(128, 128), nn.ReLU(),
-            nn.Linear(128, n_actions),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
-
-
-def train_ddqn_offline(train: dict, test: dict, action_table: np.ndarray) -> dict:
-    """Train Q-network by regression: Q(state, action_idx) -> score."""
-    print("\n=== DDQN-offline (Q-regression) ===")
+def train_ddqn_offline(train, test, action_table, args, ckpt_kwargs) -> dict:
+    print("\n=== ddqn (contextual-bandit Q-regression) ===")
     n_actions = len(action_table)
     state_dim = train["X"].shape[1]
 
-    # Map continuous actions to nearest discrete index
     train_aidx = np.array([nearest_action_index(a, action_table) for a in train["A"]])
-    test_aidx = np.array([nearest_action_index(a, action_table) for a in test["A"]])
 
     model = QNet(state_dim, n_actions).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     X_t = torch.tensor(train["X"], device=DEVICE)
     aidx_t = torch.tensor(train_aidx, device=DEVICE, dtype=torch.long)
     R_t = torch.tensor(train["R"], device=DEVICE)
 
-    best_test_score = -np.inf
-    best_state = None
     loss_history = []
-
-    for epoch in range(EPOCHS):
+    for epoch in range(args.epochs):
         model.train()
-        # Predict Q for all actions, gather the ones matching the data
-        q_all = model(X_t)
-        q_pred = q_all.gather(1, aidx_t.unsqueeze(1)).squeeze(1)
+        q_pred = model(X_t).gather(1, aidx_t.unsqueeze(1)).squeeze(1)
         loss = F.mse_loss(q_pred, R_t)
-
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         loss_history.append(loss.item())
-
         if (epoch + 1) % 50 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1}: loss={loss.item():.2f}")
+            print(f"  Epoch {epoch + 1}: loss={loss.item():.2f}")
 
-    # Save
-    model_path = MODELS_DIR / "ddqn_offline.pt"
-    torch.save({"state_dict": model.state_dict(), "state_dim": state_dim,
-                "n_actions": n_actions, "action_table": action_table,
-                "state_cols": STATE_COLS, "loss_history": loss_history}, model_path)
+    model_path = args.models_dir / "ddqn_offline.pt"
+    save_checkpoint(model_path, model, model_type="ddqn", state_dim=state_dim,
+                    loss_history=loss_history, action_table=action_table,
+                    **ckpt_kwargs)
     print(f"  Saved: {model_path}")
 
-    # Final eval: predicted weights per scenario
     model.eval()
     with torch.no_grad():
-        X_test_t = torch.tensor(test["X"], device=DEVICE)
-        best_aidx = model(X_test_t).argmax(dim=1).cpu().numpy()
-    pred_weights = action_table[best_aidx]
-
-    return {"model_path": str(model_path), "pred_weights_test": pred_weights,
-            "test_df": test["df"].reset_index(drop=True)}
+        best_aidx = model(torch.tensor(test["X"], device=DEVICE)).argmax(dim=1).cpu().numpy()
+    return {"model_path": str(model_path), "pred_weights_test": action_table[best_aidx],
+            "test_df": test["df"]}
 
 
 # ---------------------------------------------------------------------------
-# Model 2: SAC-offline (behavioral cloning of top-K)
+# Model 2: sac (behavioral cloning of top-K)
 # ---------------------------------------------------------------------------
-class ActorNet(nn.Module):
-    def __init__(self, state_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, 128), nn.ReLU(),
-            nn.Linear(128, 128), nn.ReLU(),
-            nn.Linear(128, 3),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        logits = self.net(x)
-        return F.softmax(logits, dim=-1)  # ensures simplex
-
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
-        return self.forward(x)
-
-
-def train_sac_offline(train: dict, test: dict) -> dict:
-    """Behavioral cloning: train actor to predict weights of top-K candidates."""
-    print("\n=== SAC-offline (behavioral cloning top-K) ===")
+def train_sac_offline(train, test, args, ckpt_kwargs) -> dict:
+    print("\n=== sac (behavioral cloning top-20%) ===")
     state_dim = train["X"].shape[1]
 
-    # Select top-K candidates per scenario (top 20% by score)
-    df_train = train["df"].copy()
+    df_train = train["df"]
     top_k_list = []
     for sc in df_train["scenario"].unique():
         sub = df_train[df_train["scenario"] == sc]
@@ -221,176 +146,193 @@ def train_sac_offline(train: dict, test: dict) -> dict:
     top_df = pd.concat(top_k_list)
     print(f"  Top-K candidates: {len(top_df)} (from {len(df_train)} train rows)")
 
-    X_top = train["X"][top_df.index.values]
-    A_top = train["A"][top_df.index.values]
-
-    X_t = torch.tensor(X_top, device=DEVICE)
-    A_t = torch.tensor(A_top, device=DEVICE)
+    X_t = torch.tensor(train["X"][top_df.index.values], device=DEVICE)
+    A_t = torch.tensor(train["A"][top_df.index.values], device=DEVICE)
 
     model = ActorNet(state_dim).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_history = []
-
-    for epoch in range(EPOCHS):
+    for epoch in range(args.epochs):
         model.train()
-        pred = model(X_t)
-        loss = F.mse_loss(pred, A_t)
+        loss = F.mse_loss(model(X_t), A_t)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         loss_history.append(loss.item())
         if (epoch + 1) % 50 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1}: loss={loss.item():.6f}")
+            print(f"  Epoch {epoch + 1}: loss={loss.item():.6f}")
 
-    model_path = MODELS_DIR / "sac_offline.pt"
-    torch.save({"state_dict": model.state_dict(), "state_dim": state_dim,
-                "state_cols": STATE_COLS, "loss_history": loss_history}, model_path)
+    model_path = args.models_dir / "sac_offline.pt"
+    save_checkpoint(model_path, model, model_type="sac", state_dim=state_dim,
+                    loss_history=loss_history, **ckpt_kwargs)
     print(f"  Saved: {model_path}")
 
     model.eval()
     with torch.no_grad():
-        X_test_t = torch.tensor(test["X"], device=DEVICE)
-        pred_weights = model(X_test_t).cpu().numpy()
-
+        pred_weights = model(torch.tensor(test["X"], device=DEVICE)).cpu().numpy()
     return {"model_path": str(model_path), "pred_weights_test": pred_weights,
-            "test_df": test["df"].reset_index(drop=True)}
+            "test_df": test["df"]}
 
 
 # ---------------------------------------------------------------------------
-# Model 3: PPO-offline (reward-weighted regression)
+# Model 3: ppo (reward-weighted regression)
 # ---------------------------------------------------------------------------
-class PolicyNet(nn.Module):
-    """Gaussian policy with softmax output for simplex constraint."""
-    def __init__(self, state_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, 128), nn.ReLU(),
-            nn.Linear(128, 128), nn.ReLU(),
-        )
-        self.mean_head = nn.Linear(128, 3)
-        self.log_std = nn.Parameter(torch.zeros(3))
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        h = self.net(x)
-        mean = self.mean_head(h)
-        log_std = self.log_std.expand_as(mean).clamp(-3, 0)
-        return mean, log_std
-
-    def predict(self, x: torch.Tensor) -> torch.Tensor:
-        mean, _ = self.forward(x)
-        return F.softmax(mean, dim=-1)
-
-
-def train_ppo_offline(train: dict, test: dict) -> dict:
-    """Reward-weighted regression: maximize sum(exp(reward/tau) * log_pi(a|s))."""
-    print("\n=== PPO-offline (reward-weighted regression) ===")
+def train_ppo_offline(train, test, args, ckpt_kwargs) -> dict:
+    print("\n=== ppo (reward-weighted regression) ===")
     state_dim = train["X"].shape[1]
 
     X_t = torch.tensor(train["X"], device=DEVICE)
     A_t = torch.tensor(train["A"], device=DEVICE)
     R_t = torch.tensor(train["R"], device=DEVICE)
 
-    # Normalize rewards to [0,1] for weighting
     R_min, R_max = R_t.min(), R_t.max()
     R_norm = (R_t - R_min) / (R_max - R_min + 1e-8)
-    # Weights: exp(reward / tau) — temperature controls focus on high-reward
     tau = 0.1
     weights = torch.exp(R_norm / tau)
     weights = weights / weights.sum()
 
     model = PolicyNet(state_dim).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_history = []
-
-    n = len(X_t)
-    for epoch in range(EPOCHS):
+    for epoch in range(args.epochs):
         model.train()
-        mean, log_std = model(X_t)
-        std = torch.exp(log_std)
-        # Gaussian log-likelihood (pre-softmax, then project to simplex)
-        # Use Dirichlet-like loss: treat softmax(mean) as concentration
+        mean, _ = model(X_t)
         pred_weights = F.softmax(mean, dim=-1)
-        # Weighted MSE toward observed actions (reward-weighted)
         mse = ((pred_weights - A_t) ** 2).sum(dim=1)
         loss = (weights * mse).mean()
-
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         loss_history.append(loss.item())
         if (epoch + 1) % 50 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1}: weighted_loss={loss.item():.6f}")
+            print(f"  Epoch {epoch + 1}: weighted_loss={loss.item():.6f}")
 
-    model_path = MODELS_DIR / "ppo_offline.pt"
-    torch.save({"state_dict": model.state_dict(), "state_dim": state_dim,
-                "state_cols": STATE_COLS, "loss_history": loss_history}, model_path)
+    model_path = args.models_dir / "ppo_offline.pt"
+    save_checkpoint(model_path, model, model_type="ppo", state_dim=state_dim,
+                    loss_history=loss_history, **ckpt_kwargs)
     print(f"  Saved: {model_path}")
 
     model.eval()
     with torch.no_grad():
-        X_test_t = torch.tensor(test["X"], device=DEVICE)
-        pred_weights = model.predict(X_test_t).cpu().numpy()
-
+        pred_weights = model.predict(torch.tensor(test["X"], device=DEVICE)).cpu().numpy()
     return {"model_path": str(model_path), "pred_weights_test": pred_weights,
-            "test_df": test["df"].reset_index(drop=True)}
+            "test_df": test["df"]}
 
 
 # ---------------------------------------------------------------------------
 # Evaluation helper
 # ---------------------------------------------------------------------------
 def evaluate_predictions(results: dict, df_full: pd.DataFrame) -> dict:
-    """For each model, compute predicted weights per test scenario and compare
-    the Q/score proxy to the best meta-heuristic score."""
+    """Per test scenario: mean predicted weights vs best score in the data."""
     summary = {}
     test_df = results["test_df"]
     pred_w = results["pred_weights_test"]
-
     for sc in test_df["scenario"].unique():
         mask = test_df["scenario"].values == sc
         if mask.sum() == 0:
             continue
-        # Predicted weights: average over test rows of this scenario
-        avg_pred = pred_w[mask].mean(axis=0)
-        # Best meta-heuristic score for this scenario (ground truth)
-        best_meta = df_full[df_full["scenario"] == sc]["score"].max()
-        # Mean predicted weights
-        summary.setdefault(sc, {})["avg_pred_weights"] = avg_pred.tolist()
-        summary[sc]["best_meta_score"] = float(best_meta)
+        summary[sc] = {
+            "avg_pred_weights": pred_w[mask].mean(axis=0).tolist(),
+            "best_meta_score": float(df_full[df_full["scenario"] == sc]["score"].max()),
+        }
     return summary
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main() -> None:
-    print("Loading data...")
-    train, test, df_full = load_and_split(PARQUET_PATH)
-    action_table = build_simplex_actions(step=0.1)
-    print(f"Discretized actions: {len(action_table)} bins")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
+    parser.add_argument("--models-dir", type=Path, default=REPO_ROOT / "models")
+    parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--train-split", type=float, default=0.8)
+    parser.add_argument("--models", nargs="+", choices=["ddqn", "sac", "ppo"],
+                        default=["ddqn", "sac", "ppo"])
+    seed_group = parser.add_mutually_exclusive_group()
+    seed_group.add_argument("--seed", type=int, default=42)
+    seed_group.add_argument("--seeds", nargs="+", type=int, default=None,
+                            help="Multi-seed training: one run per seed in "
+                                 "<models-dir>/seed<k>/, plus metrics_multiseed.json")
+    return parser.parse_args()
 
-    results_ddqn = train_ddqn_offline(train, test, action_table)
-    results_sac = train_sac_offline(train, test)
-    results_ppo = train_ppo_offline(train, test)
 
-    # Evaluate
-    print("\n" + "=" * 70)
-    print("EVALUATION: predicted weights per scenario (test set)")
-    print("=" * 70)
+def run_one_seed(args, seed: int) -> dict:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    args.models_dir.mkdir(parents=True, exist_ok=True)
+
+    train, test, df_full, norm_params = load_and_split(
+        args.dataset, args.train_split, seed)
+    ckpt_kwargs = {
+        "norm_params": norm_params,
+        "train_seed": seed,
+        "dataset_path": str(args.dataset),
+        "dataset_version": args.dataset.stem.replace("offline_dataset", "").strip("_") or "v1",
+    }
+
+    trainers = {
+        "ddqn": lambda: train_ddqn_offline(train, test, build_simplex_actions(0.1),
+                                           args, ckpt_kwargs),
+        "sac": lambda: train_sac_offline(train, test, args, ckpt_kwargs),
+        "ppo": lambda: train_ppo_offline(train, test, args, ckpt_kwargs),
+    }
+
     all_metrics = {}
-    for name, res in [("DDQN", results_ddqn), ("SAC", results_sac), ("PPO", results_ppo)]:
+    for name in args.models:
+        results = trainers[name]()
+        all_metrics[name] = evaluate_predictions(results, df_full)
+
+    print("\n" + "=" * 70)
+    print(f"EVALUATION (seed {seed}): predicted weights per scenario (test set)")
+    print("=" * 70)
+    for name, summ in all_metrics.items():
         print(f"\n--- {name} ---")
-        summ = evaluate_predictions(res, df_full)
-        all_metrics[name] = summ
         for sc in sorted(summ.keys()):
             w = summ[sc]["avg_pred_weights"]
-            best = summ[sc]["best_meta_score"]
-            print(f"  {sc:<18}: pred weights=[{w[0]:.3f}, {w[1]:.3f}, {w[2]:.3f}] | best meta score={best:.2f}")
+            print(f"  {sc:<18}: pred weights=[{w[0]:.3f}, {w[1]:.3f}, {w[2]:.3f}] "
+                  f"| best score in data={summ[sc]['best_meta_score']:.2f}")
 
-    # Save metrics
-    metrics_path = MODELS_DIR / "metrics.json"
-    with metrics_path.open("w") as f:
-        json.dump(all_metrics, f, indent=2)
+    metrics_path = args.models_dir / "metrics.json"
+    metrics_path.write_text(json.dumps(all_metrics, indent=2))
     print(f"\nMetrics saved: {metrics_path}")
+    return all_metrics
+
+
+def main() -> None:
+    args = parse_args()
+
+    if not args.seeds:
+        run_one_seed(args, args.seed)
+        return
+
+    # Multi-seed: one full run per seed, then aggregate mean +/- std.
+    base_dir = args.models_dir
+    per_seed = {}
+    for seed in args.seeds:
+        print(f"\n{'#' * 70}\n# SEED {seed}\n{'#' * 70}")
+        args.models_dir = base_dir / f"seed{seed}"
+        per_seed[seed] = run_one_seed(args, seed)
+    args.models_dir = base_dir
+
+    aggregate: dict = {}
+    for name in args.models:
+        aggregate[name] = {}
+        scenarios = sorted({sc for m in per_seed.values() for sc in m.get(name, {})})
+        for sc in scenarios:
+            weights = np.array([m[name][sc]["avg_pred_weights"]
+                                for m in per_seed.values() if sc in m.get(name, {})])
+            aggregate[name][sc] = {
+                "mean_pred_weights": weights.mean(axis=0).tolist(),
+                "std_pred_weights": weights.std(axis=0).tolist(),
+                "n_seeds": int(len(weights)),
+                "per_seed": {str(s): m[name][sc]["avg_pred_weights"]
+                             for s, m in per_seed.items() if sc in m.get(name, {})},
+            }
+    out = base_dir / "metrics_multiseed.json"
+    out.write_text(json.dumps({"seeds": args.seeds, "models": aggregate}, indent=2))
+    print(f"\nMulti-seed aggregate saved: {out}")
 
 
 if __name__ == "__main__":

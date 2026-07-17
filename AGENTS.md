@@ -359,6 +359,25 @@ Uma revisão crítica de pesquisa identificou pontos que devem ser refletidos na
 - **Para parar a campanha**: SIGTERM ao PID em `resume_campaign.pid` pode não propagar aos filhos; usar `pkill -KILL -f "ns3.46-rslaq-sim-default|run_rslaq_metaheuristics.py|run_all_scenarios.sh"` se necessário. O cache (sidecars já escritos) sobrevive a SIGKILL.
 - **Relevância**: o SOTA em RAN slicing (2024-2025) é dominado por DRL (DDPG, PPO, federated/hierarchical RL). O paper deve articular explicitamente por que meta-heurísticas offline (auditáveis, estáveis, sem treinamento) são a escolha certa — caso contrário, um revisor questionará por que não DRL.
 
+### 14.7 Campanha v2 — reformulação sancionada da auditoria (2026-07-17)
+
+A auditoria (`auditoria_tecnica_completa.md`, verificada contra os dados brutos: ~95% fiel) motivou uma **reformulação sancionada pelo usuário**. Isto NÃO revoga as limitações documentadas da campanha **v1** (§14.3/§14.4): a v1 permanece intacta (snapshot `resultados_cenarios_finalizados_20260715/` + backup `~/Documentos/artigo_jussi_backup_20260717/`) e suas limitações continuam válidas para o dataset v1. A v2 é uma linha **separada e versionada**; nunca misturar métricas/scores v1 e v2 sem rótulo.
+
+**Correções aplicadas (Fases 1–2):**
+- **Percentis de delay por pacote** (corrige §14.3): `rslaq-sim.cc` agora agrega o `delayHistogram` do FlowMonitor por slice (`DelayBinWidth=0.5ms`); `delay_ms_p95/p99` viram por-pacote e há nova coluna `delay_ms_p999`. `mean > p95` deixa de ser artefato (pode ainda ocorrer legitimamente em cauda pesada).
+- **Novas colunas** no `summary.csv`: `delay_ms_p999`, `deadline_violation_pct`, `reliability_in_time_pct`, `sla_thr_pct`, `sla_pdr_pct`, `sla_delay_pct`, `plr_detected_pct`.
+- **`sla_satisfaction_pct` composto**: `min(S_thr, S_pdr, S_delay)` com alvos por slice em `SLA_TARGETS` (elimina o paradoxo SLA=100% com PDR baixo/delay alto). O antigo throughput-only foi substituído.
+- **PLR reconciliado**: `plr_pct = (tx-rx)/tx` (perda efetiva, inclui filas residuais); a métrica antiga do FlowMonitor vira `plr_detected_pct`.
+- **HARQ**: `LogHarqState` implementado (corrige o `harq_tracking.csv` vazio); campos de processo HARQ são `NA` (não expostos nesta subclasse) — sem fabricação.
+- **Score v2** (`scoring.py::score_summary_rows_v2`): feasibility-first — restrições rígidas (p99_URLLC≤10ms, PDR_URLLC/MTC mínimos, throughput_eMBB≥fração da oferta); infeasível recebe score<0 proporcional à violação, sempre perdendo para qualquer feasível. `score_summary_rows` (v1) permanece intacta.
+- **Runner/rescore/cache**: `--score_version {v1,v2}` e `--per_seed_search`; o sidecar grava `score_version` e o cache não mistura versões. `run_all_scenarios.sh`: env `META_SCORE_VERSION`, `META_PER_SEED_SEARCH`; `REPO_ROOT` agora derivado da localização do script (corrige o hardcode `/home/elioth`).
+
+**Campanha v2 (Fase 3):** orçamento reduzido justificado pela convergência em ~10 evals (§10 da auditoria): `META_ITERATIONS=8 META_POPULATION=6` (48 evals GA/PSO/SA, 56 híbrida), **10 seeds**, `SIM_TIME=15`, output root `results_controlled/heuristics_metaheuristics_v2/`. Piloto: `congestion × 10 seeds` para validar scoring v2 e **calibrar** os limiares de viabilidade (o PDR≥99.999% do §D da auditoria é inatingível nesta simulação; usar limiares realistas que deixem ≥1 região do simplex viável por cenário). Com n≥5 os testes pareados (Wilcoxon/Friedman) tornam-se válidos — ver `examples/analyze_v2_stats.py`.
+
+**Análise v2:** `examples/analyze_v2_stats.py` (estatística) e `examples/generate_v2_audit_figures.py` (figuras da auditoria) → `paper_v2_campaign/`.
+
+**Pendência conhecida:** a exportação de `delay_hist.csv` por slice (para CDF/CCDF por-pacote verdadeira) NÃO foi incluída no binário do piloto; as figuras usam âncoras de percentil por seed. Adicionar antes da campanha v2 completa se a CDF por-pacote for necessária ao paper.
+
 ### 14.6 Dashboard de monitoramento
 
 Existe um dashboard Streamlit read-only para acompanhar a campanha em tempo real:

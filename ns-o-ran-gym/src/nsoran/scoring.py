@@ -109,3 +109,68 @@ def score_summary_rows(rows: Iterable[dict[str, str]]) -> float:
     score -= 40.0 * mtc_starvation_penalty
     score -= 100.0 * embb_buffer_penalty
     return score
+
+
+# ---------------------------------------------------------------------------
+# Score v2 (reformulação da auditoria): feasibility-first com restrições rígidas
+# ---------------------------------------------------------------------------
+# Limiares de viabilidade por slice. Devem espelhar SLA_TARGETS no C++
+# (rslaq-sim.cc). Calibrados no piloto v2 (auditoria §D): o PDR≥99.999% do §D é
+# inatingível nesta simulação (URLLC observado 43–100%), então usamos limiares
+# realistas que deixam ao menos uma região do simplex viável por cenário.
+V2_URLLC_DELAY_MS_MAX = 10.0   # deadline p99 URLLC (restrição rígida)
+V2_URLLC_PDR_MIN_PCT = 90.0    # confiabilidade mínima URLLC
+V2_MTC_PDR_MIN_PCT = 80.0      # anti-starvation MTC
+V2_EMBB_THR_FRAC_OFFERED = 0.60  # eMBB deve entregar >=60% da carga ofertada
+
+
+def score_summary_rows_v2(rows: Iterable[dict[str, str]]) -> float:
+    """Score feasibility-first (auditoria).
+
+    Restrições rígidas (proposta §D): p99_URLLC<=10ms, PDR_URLLC>=min,
+    PDR_MTC>=min, throughput_eMBB>=fração da carga ofertada. Uma solução
+    INFEASÍVEL recebe score negativo proporcional à soma das violações
+    normalizadas (gradiente rumo à viabilidade); portanto SEMPRE perde para
+    qualquer solução feasível (score>=0). Uma solução FEASÍVEL é pontuada pela
+    média da satisfação de SLA composta por slice (a mesma métrica composta
+    min(S_thr,S_pdr,S_delay) calculada no C++), em [0,100]. Sem termo de
+    utilização (a auditoria observou que premiar esgotar espectro é indevido).
+
+    Mantém a assinatura list[dict]->float de score_summary_rows para ser
+    plugável no runner via --score_version=v2, sem tocar nos otimizadores.
+    """
+    by_slice = {row.get("slice", ""): row for row in rows}
+    if not all(name in by_slice for name in SLICE_NAMES):
+        return -1e9
+
+    urllc = by_slice["URLLC"]
+    mtc = by_slice["MTC"]
+    embb = by_slice["eMBB"]
+
+    urllc_p99 = safe_float(urllc.get("delay_ms_p99"))
+    urllc_pdr = safe_float(urllc.get("pdr_pct"))
+    mtc_pdr = safe_float(mtc.get("pdr_pct"))
+    # eMBB: satisfação de carga ofertada (%) já é throughput/oferta; a restrição
+    # é entregar >= V2_EMBB_THR_FRAC_OFFERED da carga ofertada.
+    embb_offered = safe_float(embb.get("offered_load_satisfaction_pct"))
+    embb_thr_target_pct = 100.0 * V2_EMBB_THR_FRAC_OFFERED
+
+    # --- Violações normalizadas das restrições rígidas ---
+    violations = 0.0
+    if urllc_p99 > V2_URLLC_DELAY_MS_MAX and V2_URLLC_DELAY_MS_MAX > 0.0:
+        violations += (urllc_p99 - V2_URLLC_DELAY_MS_MAX) / V2_URLLC_DELAY_MS_MAX
+    if urllc_pdr < V2_URLLC_PDR_MIN_PCT and V2_URLLC_PDR_MIN_PCT > 0.0:
+        violations += (V2_URLLC_PDR_MIN_PCT - urllc_pdr) / V2_URLLC_PDR_MIN_PCT
+    if mtc_pdr < V2_MTC_PDR_MIN_PCT and V2_MTC_PDR_MIN_PCT > 0.0:
+        violations += (V2_MTC_PDR_MIN_PCT - mtc_pdr) / V2_MTC_PDR_MIN_PCT
+    if embb_offered < embb_thr_target_pct and embb_thr_target_pct > 0.0:
+        violations += (embb_thr_target_pct - embb_offered) / embb_thr_target_pct
+
+    if violations > 0.0:
+        # Infeasível: sempre < 0 <= qualquer feasível.
+        return -100.0 * violations
+
+    # Feasível: média da satisfação de SLA composta por slice (do C++ v2).
+    sla = [clamp(safe_float(by_slice[name].get("sla_satisfaction_pct")) / 100.0)
+           for name in SLICE_NAMES]
+    return 100.0 * (sum(sla) / len(sla))

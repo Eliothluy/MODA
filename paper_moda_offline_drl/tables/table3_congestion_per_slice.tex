@@ -1,0 +1,35 @@
+\begin{table}[t]
+\centering
+\caption{Per-slice allocation and QoS under \emph{congestion}. MODA-Q/BC keep MTC alive; the raw metaheuristic optimum starves it (delay $>$1\,s). RBG share (\%), offered-load satisfaction (\%), mean delay (ms).}
+\label{tab:moda_congestion}
+\begin{tabular}{llccc}
+\toprule
+Method & Slice & RBG\% & Satisf.\% & Delay (ms) \\
+\midrule
+MODA-Q & eMBB & 51.0 & 28.5 & 444 \\
+ & URLLC & 9.2 & 95.6 & 15 \\
+ & MTC & 39.8 & 61.5 & 179 \\
+\addlinespace[2pt]
+MODA-BC & eMBB & 51.1 & 27.9 & 442 \\
+ & URLLC & 12.3 & 96.5 & 7 \\
+ & MTC & 36.6 & 56.0 & 197 \\
+\addlinespace[2pt]
+MODA-RWR & eMBB & 51.2 & 27.9 & 432 \\
+ & URLLC & 18.8 & 94.8 & 5 \\
+ & MTC & 30.0 & 45.1 & 263 \\
+\addlinespace[2pt]
+Best meta. & eMBB & 61.4 & 33.7 & 389 \\
+ & URLLC & 17.6 & 96.5 & 5 \\
+ & MTC & 21.0 & 31.0 & 1289 \\
+\addlinespace[2pt]
+RSLAQ fixed & eMBB & 40.5 & 22.4 & 541 \\
+ & URLLC & 27.3 & 96.5 & 5 \\
+ & MTC & 32.2 & 50.8 & 239 \\
+\addlinespace[2pt]
+Equal & eMBB & 38.2 & 20.8 & 609 \\
+ & URLLC & 24.4 & 96.5 & 5 \\
+ & MTC & 37.4 & 55.8 & 198 \\
+\addlinespace[2pt]
+\bottomrule
+\end{tabular}
+\end{table}

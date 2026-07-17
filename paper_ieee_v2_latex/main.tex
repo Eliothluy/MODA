@@ -1,0 +1,362 @@
+%% IEEE conference manuscript — v2-campaign methodology.
+%% Faithful LaTeX transcription of ../artigo_ieee_v2_en.md.
+%% PENDING markers: numbers/claims to fill from the v2 campaign
+%% (results_controlled/heuristics_metaheuristics_v2/), rendered in red via
+%% \pending{...}. Toggle \draftpendingtrue/false to show/hide them.
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+
+% --- PENDING (draft) marker ------------------------------------------------
+\newif\ifdraftpending
+\draftpendingtrue  % set \draftpendingfalse for a clean (marker-free) build
+\newcommand{\pending}[1]{%
+  \ifdraftpending{\color{red}\textbf{[PENDING-v2: #1]}}\else{}\fi}
+
+\begin{document}
+
+\title{Constraint-Aware Metaheuristic Optimization of\\
+Slice Allocation Weights in 5G/O-RAN Networks}
+
+\author{\IEEEauthorblockN{\pending{author names}}
+\IEEEauthorblockA{\pending{affiliation, city, country}\\
+\pending{emails}}}
+
+\maketitle
+
+\begin{abstract}
+Network slicing requires radio access networks to partition resources among
+service classes with conflicting requirements: throughput for eMBB, latency
+and reliability for URLLC, and massive connectivity for MTC. We formulate
+inter-slice resource allocation as a continuous optimization problem over a
+weight vector on the probability simplex, in which each weight controls one
+slice's share of the physical resource block (PRB) budget, while conventional
+schedulers (proportional fair) remain in charge of intra-slice allocation. We
+compare four metaheuristics---Particle Swarm Optimization (PSO), a Genetic
+Algorithm (GA), Simulated Annealing (SA), and a hybrid method combining
+population-based exploration with stochastic local refinement---under a
+\emph{feasibility-first objective} that treats slice service-level agreements
+(SLAs) as hard constraints: URLLC packet-level 99th-percentile delay,
+per-slice packet delivery ratio, and eMBB offered-load satisfaction. Unlike
+weighted-sum formulations, this objective cannot reward configurations that
+starve a slice. Each candidate is evaluated by a full-stack 5G simulation
+(ns-3 / 5G-LENA) with per-packet latency instrumentation, across
+\pending{4} traffic scenarios and 10 independent seeds, under an equalized
+evaluation budget of 48 evaluations per method. Paired non-parametric tests
+(Friedman, Wilcoxon signed-rank) over per-seed best scores show that
+\pending{main statistical finding}. Under congestion, the best evolved weight
+vectors \pending{headline physical result: deadline-violation rate / worst-slice
+SLA vs.\ baselines}. All code, scenarios, and per-seed artifacts are available
+for reproduction.
+\end{abstract}
+
+\begin{IEEEkeywords}
+network slicing, 5G, O-RAN, metaheuristics, constrained optimization, particle
+swarm optimization, genetic algorithms, simulated annealing, resource
+allocation.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Fifth-generation (5G) networks support network slicing natively, allowing
+heterogeneous service classes to share one physical infrastructure under
+distinct service-level agreements (SLAs). Enhanced Mobile Broadband (eMBB)
+slices prioritize sustained throughput; Ultra-Reliable Low-Latency
+Communication (URLLC) slices prioritize bounded latency and delivery
+reliability; massive Machine-Type Communication (MTC) slices prioritize
+serving many low-rate devices without starvation. Because these objectives
+conflict whenever radio resources are scarce, inter-slice allocation is a
+multi-objective decision problem whose difficulty grows with load.
+
+O-RAN architectures encourage programmable control loops (rApps/xApps) that
+adjust radio-layer policy without replacing the underlying schedulers. A
+pragmatic design keeps a standard intra-slice scheduler (e.g., proportional
+fair) and optimizes, at the inter-slice level, a small continuous vector of
+allocation weights that partitions the PRB budget among slices. This
+separation retains compatibility with production schedulers and reduces the
+search space to a low-dimensional simplex---but the mapping from weights to
+network KPIs remains non-convex, noisy, and only accessible through simulation
+or measurement, which motivates black-box metaheuristic search.
+
+A central methodological problem, often overlooked, is the \emph{objective
+function}. Weighted-sum scores over KPI aggregates can assign high scores to
+degenerate allocations: in a preliminary version of this study, a weighted-sum
+objective ranked \emph{first} a configuration that effectively starved the MTC
+slice (packet delivery ratio of 2.4\%, mean delay above 4\,s) because a
+throughput-only SLA indicator saturated at 100\%. This is not an implementation
+accident but a structural failure mode of soft-penalty scalarizations. We
+therefore adopt a feasibility-first formulation in which SLA violations are
+hard constraints and infeasible candidates are always dominated by feasible
+ones, and we instrument the simulator with \emph{per-packet} latency
+percentiles so that tail-latency constraints are measured rather than
+approximated by window averages.
+
+The contributions of this paper are:
+\begin{enumerate}
+\item A constraint-aware formulation of inter-slice weight optimization on the
+simplex, with hard SLA constraints on URLLC tail latency (per-packet p99),
+per-slice delivery ratio, and eMBB offered-load satisfaction.
+\item A controlled comparison of PSO, GA, SA, and a hybrid metaheuristic under
+an equalized evaluation budget (48 evaluations per method) across \pending{4}
+traffic scenarios and 10 independent seeds, with paired non-parametric
+statistical testing.
+\item A per-packet measurement methodology for slice SLAs in ns-3/5G-LENA---
+packet-level delay percentiles (p95/p99/p99.9), deadline-violation rate, and
+in-time reliability---replacing window-sampled statistics that systematically
+underestimate tails.
+\item A physical-KPI evaluation of the best evolved allocations against pure
+schedulers (RR, PF, BCQI), slice-aware baselines, and adaptive heuristics
+(including AQPS), showing when weight optimization pays off and when it does
+not.
+\end{enumerate}
+
+\section{Related Work}
+\pending{related-work section: RSLAQ (DRL-based SLA control in O-RAN)~\cite{rslaq},
+AQPS (QoS-aware priority scheduling)~\cite{aqps}, metaheuristics for RAN
+resource allocation, network-slicing surveys. Complete after reference
+consolidation.}
+
+Distinctly from DRL approaches such as RSLAQ~\cite{rslaq}, which learn a control
+policy online, our approach searches offline for a static per-scenario weight
+configuration; it requires no training infrastructure, is auditable (every
+evaluated candidate is persisted with its full KPI record), and its outputs can
+seed either static configuration (Non-RT RIC time scale) or serve as ground
+truth for learned policies. It is \emph{not} a Near-RT control mechanism: each
+candidate evaluation costs a full simulation, which confines metaheuristic
+search to offline/periodic optimization.
+
+\section{Problem Formulation}
+\subsection{Decision variables}
+Let $S = 3$ slices indexed by $i \in \{\mathrm{eMBB}, \mathrm{URLLC},
+\mathrm{MTC}\}$. A candidate solution is the continuous weight vector
+\begin{equation}
+\mathbf{w} = [w_{\mathrm{eMBB}}, w_{\mathrm{URLLC}}, w_{\mathrm{MTC}}], \quad
+w_i \ge 0, \quad \sum_{i} w_i = 1,
+\end{equation}
+i.e., a point on the 2-simplex. The MAC scheduler partitions the per-slot
+resource block group (RBG) budget proportionally to $\mathbf{w}$ among slices
+with active demand (budget unused by inactive slices is redistributed), and a
+proportional-fair policy allocates within each slice. Candidates produced by
+the optimizers are projected back onto the simplex by clipping negative
+components and renormalizing.
+
+\subsection{Constraint-aware objective}
+Each candidate is evaluated by one end-to-end simulation, from which per-slice
+KPIs are extracted. The objective is \emph{feasibility-first} maximization:
+\begin{equation}
+F(\mathbf{w}) =
+\begin{cases}
+\dfrac{100}{S}\sum_{i} \mathrm{SLA}_i(\mathbf{w}) & \text{if } V(\mathbf{w}) = 0,\\[2mm]
+-100\, V(\mathbf{w}) & \text{otherwise,}
+\end{cases}
+\end{equation}
+where $V(\mathbf{w}) \ge 0$ is the sum of normalized violations of the hard
+constraints
+\begin{align}
+D^{99}_{\mathrm{URLLC}} &\le 10~\mathrm{ms}, &
+\mathrm{PDR}_{\mathrm{URLLC}} &\ge P^{\min}_{U}, \\
+\mathrm{PDR}_{\mathrm{MTC}} &\ge P^{\min}_{M}, &
+T_{\mathrm{eMBB}} &\ge \phi\, L_{\mathrm{eMBB}},
+\end{align}
+with $D^{99}$ the \emph{per-packet} 99th-percentile downlink delay, PDR the
+end-to-end packet delivery ratio, $T$ the delivered throughput, $L$ the offered
+load, and $\phi$ the minimum served fraction. $\mathrm{SLA}_i \in [0,1]$ is a
+composite per-slice satisfaction, $\mathrm{SLA}_i = \min(S^{thr}_i, S^{pdr}_i,
+S^{delay}_i)$---the \emph{worst} dimension governs, so no slice dimension can
+compensate another. Two properties follow by construction: (i) any feasible
+candidate dominates every infeasible one; (ii) among infeasible candidates the
+search still receives a gradient toward feasibility, avoiding flat penalty
+regions.
+
+Constraint thresholds were calibrated on a pilot campaign so that every
+scenario retains a non-empty feasible region:
+\pending{final calibrated $P^{\min}_U$, $P^{\min}_M$, $\phi$; pre-calibration
+defaults 90\%, 80\%, 0.60. Report the calibration outcome here.}
+
+This formulation operationalizes the URLLC latency budget as a measured
+packet-level constraint rather than a soft penalty on mean delay---a design
+decision motivated by the failure mode described in Section~\ref{sec:intro}.
+
+\section{Optimization Methods}
+All methods maximize the same $F(\mathbf{w})$, receive the same evaluation
+budget, and share the checkpointed evaluation pipeline (Section~\ref{sec:campaign}).
+
+\textbf{PSO.} A swarm of 6 particles with inertia 0.55 and cognitive/social
+coefficients 1.30; positions are renormalized onto the simplex after each
+update. $8 \times 6 = 48$ evaluations.
+
+\textbf{GA.} Population 6 with elitism, blend crossover on the simplex, and
+Gaussian mutation ($\sigma = 0.12$) followed by renormalization. $8 \times 6 =
+48$ evaluations.
+
+\textbf{SA.} Single-trajectory annealing with Gaussian perturbations and a
+decreasing temperature schedule. To equalize budgets, the chain length is set
+to 48 evaluations (matching GA/PSO), not to the iteration count.
+
+\textbf{Hybrid.} A population method combining an elite archive, PSO-inspired
+updates, GA-style recombination, and one SA-style local refinement of the
+global best per iteration. Because of the extra local step it consumes 56
+evaluations ($8 \times (6{+}1)$); comparisons at the common 48-evaluation
+ceiling are also reported to keep the budget comparison fair.
+\pending{verify both budget readings appear in the results tables.}
+
+The optimizer RNG is seeded independently per simulation seed
+($\mathit{search\_seed} = \mathit{base\_seed} + \mathit{ns3\_seed}$), so the 10
+repetitions are independent searches, not one trajectory replayed on 10
+channels.
+
+\section{Experimental Methodology}\label{sec:campaign}
+\subsection{Simulation environment}
+Experiments use ns-3 with the 5G-LENA NR module~\cite{5glena}. A single gNB
+(3.55~GHz, 100~MHz, numerology $\mu{=}1$, TDD \texttt{D|D|8D|4GB|4U|U|U}, RLC
+UM, 43~dBm) serves stationary UEs placed on a disk of radius 100~m; each UE
+receives a downlink UDP flow from a remote host through the core network. UEs
+are grouped into the three slices in contiguous ID ranges; FlowMonitor maps
+flows back to slices by destination port. A custom slice-aware MAC scheduler
+partitions the RBG budget according to $\mathbf{w}$ (Section~III-A).
+
+\subsection{Traffic scenarios}
+\pending{confirm final scenario table. Four scenarios in the main paper
+(low\_traffic, normal, congestion, stressed); a fifth profile
+(insufficient\_resources) is simulated and reported as a robustness check.}
+
+\begin{table}[t]
+\centering
+\caption{Traffic scenarios (nominal offered load).}
+\label{tab:scenarios}
+\begin{tabular}{lccc}
+\toprule
+Scenario & UEs (eMBB/URLLC/MTC) & Offered load (Mb/s) \\
+\midrule
+low\_traffic & 2 / 2 / 6 & 57 \\
+normal & 5 / 5 / 10 & 73 \\
+stressed & \pending{n} & 128 \\
+congestion & 15 / 10 / 35 & 245 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These are nominal input profiles; the operational regime (whether the cell is
+actually congested) is diagnosed from measured PDR and delay, not assumed from
+the label. Simulation time is 15~s per evaluation with 0.4~s application
+warm-up and 0.2~s drain (KPIs are computed over the active window only).
+
+\subsection{Per-packet SLA instrumentation}
+Latency statistics are computed from the FlowMonitor \emph{per-packet delay
+histogram} (bin width 0.5~ms), merged per slice: percentiles p95/p99/p99.9 are
+interpolated within bins; the \emph{deadline-violation rate} is the fraction of
+delivered packets exceeding the slice's latency budget; \emph{in-time
+reliability} is the fraction of transmitted packets delivered within budget
+(undelivered packets count as violations). Packet loss is reported end to end
+($\mathrm{PLR} = (tx - rx)/tx$, so $\mathrm{PDR} + \mathrm{PLR} = 100\%$ by
+construction), with detected-loss (FlowMonitor) kept as a separate diagnostic.
+We emphasize this because window-averaged sampling---used in a preliminary
+version of this pipeline---produced $\text{mean} > \text{p95}$ artifacts in
+about one fifth of the measured cells and systematically hid tail latency; all
+results in this paper use per-packet statistics.
+
+\subsection{Campaign protocol and reproducibility}
+For every (scenario, seed) pair, all four methods run under the same objective,
+the same seeds (1--10), and the same simulator build. Every candidate
+evaluation is persisted with a JSON sidecar (weights, score, objective version,
+full KPI record), which makes the search resumable and the comparison auditable
+a posteriori. Baselines (pure RR/PF/BCQI, slice-aware variants, adaptive
+heuristics including AQPS) run under the identical protocol and seeds.
+\pending{total evaluation counts and total compute time of the campaign.}
+
+\subsection{Statistical analysis}
+The experimental unit is the \emph{best score per (method, scenario, seed)}---
+one independent search outcome per seed, 10 per method/scenario. We report
+mean\,$\pm$\,sd, median, and bootstrap 95\% CIs; the omnibus Friedman test
+across the four methods; and pairwise Wilcoxon signed-rank tests with
+rank-biserial effect sizes~\cite{demsar}. With $n = 10$ paired seeds these
+tests are adequately powered for large effects; we do not claim significance
+where $p \ge 0.05$.
+
+\section{Results}
+All numbers below come exclusively from the v2 campaign. Tables are filled by
+\texttt{analyze\_v2\_stats.py}; figures by \texttt{generate\_v2\_audit\_figures.py}.
+
+\subsection{Feasibility structure of the search space}
+\pending{per scenario: fraction of evaluated candidates satisfying all hard
+constraints; which constraint binds most often (expected: URLLC p99 under
+congestion); whether any scenario has an empty feasible region after
+calibration.}
+
+\subsection{Method comparison under equal budget}
+\pending{Table: best score per seed (mean$\pm$sd, median, CI95) per
+method$\times$scenario; Friedman $\chi^2$/p per scenario; pairwise Wilcoxon
+$p$ + effect sizes. Figures: per-seed dispersion strips; score bars.}
+
+\pending{Convergence: evaluations to reach 95\% of final best, per method.}
+
+\subsection{Physical SLA outcomes of the best allocations}
+\pending{Table/figures: URLLC p99 and p99.9, deadline-violation rate,
+worst-slice SLA, MTC PDR per method. Key question: does ANY method satisfy all
+SLAs simultaneously, and at what load does that stop being possible?}
+
+\subsection{Comparison with schedulers and heuristics}
+\pending{best metaheuristic vs pure RR/PF/BCQI, slice-aware baselines, AQPS and
+adaptive heuristics---same protocol, same seeds. Physical Pareto: total
+throughput $\times$ URLLC p99.}
+
+\subsection{Weight stability across seeds}
+\pending{violin of best-candidate weights per slice across seeds; coefficient
+of variation per scenario---whether the optimum is a property of the scenario
+or of the noise realization.}
+
+\section{Discussion}
+\pending{rewrite around actual findings. Anchor points:}
+\begin{enumerate}
+\item \emph{When does weight optimization pay off?} Preliminary evidence
+indicates gains concentrate under resource contention; quantify with v2.
+\item \emph{Feasibility vs.\ score.} Document how the recommended allocations
+differ from the weighted-sum optima (which starved MTC).
+\item \emph{Practical deployment.} Search cost per scenario
+(\pending{CPU-hours}) confines the approach to Non-RT RIC time scales; discuss
+the xApp path and its relation to learned policies.
+\item \emph{Method choice.} \pending{whether any method is statistically
+distinguishable at $n{=}10$; if not, say so plainly---a negative result with
+adequate testing is publishable and honest.}
+\end{enumerate}
+
+\section{Threats to Validity}
+\begin{enumerate}
+\item \textbf{Simulation scope.} Single cell, stationary UEs, downlink UDP
+only; topology and load co-vary across scenarios.
+\item \textbf{Statistical power.} $n = 10$ paired seeds supports detection of
+large effects only; small differences may remain undetected. We report effect
+sizes and CIs alongside p-values.
+\item \textbf{Budget asymmetry.} The hybrid consumes 56 evaluations vs.\ 48;
+both full-budget and common-ceiling comparisons are reported.
+\item \textbf{Threshold calibration.} Hard-constraint thresholds were
+calibrated on a pilot and held fixed; different SLA contracts would change the
+feasible region. The calibration procedure and sensitivity are documented.
+\item \textbf{Evaluation noise.} A single simulation evaluates each candidate;
+seed effects are handled across, not within, searches.
+\pending{report any evaluation timeouts/crashes and their hard-penalty handling.}
+\item \textbf{Measurement caveats.} FlowMonitor throughput includes IP/UDP
+headers; delay histograms have 0.5~ms resolution (percentile error bounded by
+bin width); histogram-based percentiles are interpolated.
+\end{enumerate}
+
+\section{Conclusion}
+\pending{write after results. Required elements: (i) the constraint-aware
+formulation and per-packet instrumentation as the methodological contribution;
+(ii) the statistically-tested method comparison (state clearly if methods are
+indistinguishable); (iii) the physical-KPI verdict---does optimized slicing
+satisfy all SLAs simultaneously, and under which loads; (iv) future work:
+online adaptation (xApp), multi-cell, mobility, learned policies distilled from
+the search.}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

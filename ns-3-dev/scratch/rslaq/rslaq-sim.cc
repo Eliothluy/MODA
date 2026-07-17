@@ -89,6 +89,25 @@ static bool g_ipcEnabled = false;
 static bool g_useSliceScheduler = true;
 static const std::array<double, 3> SLA_MIN_MBPS = {50.0, 1.0, 1.0};
 
+// Alvos de SLA compostos por slice (eMBB, URLLC, MTC) para a métrica v2 de
+// satisfação. Substituem o critério antigo "throughput >= SLA_MIN_MBPS" (que
+// dava 100% mesmo com PDR de 2% e delay de segundos). A satisfação passa a ser
+// min(S_thr, S_pdr, S_delay). thrMinFracOffered é fração da carga ofertada do
+// slice (evita o limiar trivial de 1 Mbps do MTC); delayMaxMs é o deadline
+// usado tanto na componente S_delay quanto nas métricas deadline_violation /
+// reliability_in_time. URLLC = 10 ms (alvo URLLC); eMBB/MTC frouxos.
+struct SliceSlaTargets
+{
+    double thrMinFracOffered; //!< fração mínima da carga ofertada do slice
+    double pdrMinPct;         //!< PDR mínimo (%)
+    double delayMaxMs;        //!< deadline de latência (ms)
+};
+static const std::array<SliceSlaTargets, 3> SLA_TARGETS = {{
+    {0.60, 80.0, 100.0}, // eMBB
+    {0.60, 90.0, 10.0},  // URLLC
+    {0.60, 80.0, 200.0}, // MTC
+}};
+
 // Previous KPM values for delta calculation (IPC mode)
 struct KpmPrevValues
 {
@@ -626,6 +645,13 @@ struct SliceAggStats
     double delaySumSec = 0.0;
     double jitterSumSec = 0.0;
     std::vector<double> throughputSamplesMbps;
+    // Histograma de delay POR PACOTE, mesclado dos FlowStats::delayHistogram de
+    // cada fluxo do slice (todos com o mesmo DelayBinWidth). Substitui a
+    // amostragem por janela de 10 ms usada antes nos percentis (bug §14.3):
+    // permite p95/p99/p99.9 corretos e as métricas de deadline por pacote.
+    std::map<uint32_t, uint64_t> delayBins; //!< índice do bin -> contagem
+    uint64_t delayBinTotal = 0;             //!< total de pacotes histogramados
+    double delayBinWidthSec = 0.0;          //!< largura do bin (s)
 };
 
 struct SimState
@@ -659,6 +685,66 @@ Percentile(std::vector<double> values, double pct)
     }
     double frac = pos - static_cast<double>(lo);
     return values[lo] * (1.0 - frac) + values[hi] * frac;
+}
+
+// --- Percentis e contagens a partir do histograma de delay por pacote ---
+// Todos os fluxos de um slice compartilham o mesmo DelayBinWidth, então os bins
+// se alinham por índice (binStart = índice * binWidth). Estes helpers operam
+// sobre o mapa {índice -> contagem} acumulado em SliceAggStats.
+
+// Percentil interpolado (em ms) sobre o histograma de delay (bins em segundos).
+static double
+PercentileFromBins(const std::map<uint32_t, uint64_t>& bins,
+                   uint64_t total,
+                   double binWidthSec,
+                   double pct)
+{
+    if (bins.empty() || total == 0 || binWidthSec <= 0.0)
+    {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    double target = (pct / 100.0) * static_cast<double>(total);
+    uint64_t cum = 0;
+    for (const auto& kv : bins) // std::map itera por índice crescente
+    {
+        uint64_t next = cum + kv.second;
+        if (static_cast<double>(next) >= target)
+        {
+            // Interpola dentro do bin [binStart, binStart+binWidth).
+            double binStartMs = static_cast<double>(kv.first) * binWidthSec * 1000.0;
+            double frac = (kv.second > 0)
+                              ? (target - static_cast<double>(cum)) / static_cast<double>(kv.second)
+                              : 0.0;
+            frac = std::max(0.0, std::min(1.0, frac));
+            return binStartMs + frac * binWidthSec * 1000.0;
+        }
+        cum = next;
+    }
+    // pct >= 100: retorna o início do último bin ocupado.
+    return static_cast<double>(bins.rbegin()->first) * binWidthSec * 1000.0;
+}
+
+// Pacotes com delay > deadlineMs (bins cujo início >= deadline).
+static uint64_t
+CountAboveDeadlineBins(const std::map<uint32_t, uint64_t>& bins,
+                       double binWidthSec,
+                       double deadlineMs)
+{
+    if (bins.empty() || binWidthSec <= 0.0)
+    {
+        return 0;
+    }
+    double deadlineSec = deadlineMs / 1000.0;
+    uint64_t count = 0;
+    for (const auto& kv : bins)
+    {
+        double binStartSec = static_cast<double>(kv.first) * binWidthSec;
+        if (binStartSec >= deadlineSec)
+        {
+            count += kv.second;
+        }
+    }
+    return count;
 }
 
 static std::string
@@ -814,7 +900,11 @@ WriteSummaryCsv(const std::string& outputDir,
         << "pdr_pct,plr_pct,buffer_bytes_mean,buffer_bytes_p95,buffer_bytes_p99,"
         << "rsh_real_pct_mean,budget_utilization_pct_mean,unused_budget_pct_mean,"
         << "allocation_fidelity_pct_mean,offered_load_satisfaction_pct,"
-        << "sla_satisfaction_pct,allocated_rbg_total,rx_bytes_total,tx_bytes_total\n";
+        << "sla_satisfaction_pct,allocated_rbg_total,rx_bytes_total,tx_bytes_total,"
+        // Colunas v2 (auditoria): percentis/violações de deadline por PACOTE,
+        // componentes do SLA composto e PLR detectado (FlowMonitor) preservado.
+        << "delay_ms_p999,deadline_violation_pct,reliability_in_time_pct,"
+        << "sla_thr_pct,sla_pdr_pct,sla_delay_pct,plr_detected_pct\n";
 
     std::vector<RslaqMacScheduler::SliceAllocationStats> allocStats;
     if (g_schedulerPtr)
@@ -825,10 +915,11 @@ WriteSummaryCsv(const std::string& outputDir,
     for (SliceType slice : {SliceType::EMBB, SliceType::URLLC, SliceType::MTC})
     {
         const SliceAggStats& agg = g_baseline.sliceStats[slice];
-        std::vector<double> delaySamples;
         std::vector<double> jitterSamples;
         std::vector<double> bufferSamples;
 
+        // delay: percentis vêm do histograma por pacote (agg.delayBins); as
+        // amostras por janela seguem alimentando apenas jitter e buffer.
         for (const auto& kv : g_baseline.ueStats)
         {
             const UeStats& ue = kv.second;
@@ -836,7 +927,6 @@ WriteSummaryCsv(const std::string& outputDir,
             {
                 continue;
             }
-            delaySamples.insert(delaySamples.end(), ue.delaySamplesMs.begin(), ue.delaySamplesMs.end());
             jitterSamples.insert(jitterSamples.end(), ue.jitterSamplesMs.begin(), ue.jitterSamplesMs.end());
             bufferSamples.insert(bufferSamples.end(), ue.bufferSamplesBytes.begin(), ue.bufferSamplesBytes.end());
         }
@@ -848,9 +938,34 @@ WriteSummaryCsv(const std::string& outputDir,
         double delayMean = (agg.rxPackets > 0) ? agg.delaySumSec * 1000.0 / agg.rxPackets : 0.0;
         double jitterMean = (agg.rxPackets > 1) ? agg.jitterSumSec * 1000.0 / (agg.rxPackets - 1) : 0.0;
         double pdrPct = (agg.txPackets > 0) ? 100.0 * static_cast<double>(agg.rxPackets) / agg.txPackets : 0.0;
-        double plrPct = (agg.txPackets > 0) ? 100.0 * static_cast<double>(agg.lostPackets) / agg.txPackets : 0.0;
+        // PLR reconciliado com o PDR: perda efetiva fim-a-fim = (tx - rx)/tx.
+        // Inclui pacotes ainda em fila no fim (que o FlowMonitor não classifica
+        // como "lost"), resolvendo a inconsistência plr~0 com pdr<100.
+        double plrPct = (agg.txPackets > 0)
+                            ? 100.0 * static_cast<double>(agg.txPackets - agg.rxPackets) / agg.txPackets
+                            : 0.0;
+        // PLR "detectado" pelo FlowMonitor (métrica antiga) preservado p/ diagnóstico.
+        double plrDetectedPct =
+            (agg.txPackets > 0) ? 100.0 * static_cast<double>(agg.lostPackets) / agg.txPackets : 0.0;
 
         uint32_t idx = static_cast<uint32_t>(slice);
+
+        // Percentis de delay POR PACOTE (histograma), corrigindo o bug §14.3 de
+        // amostragem por janela. p999 é novo.
+        double delayP95 = PercentileFromBins(agg.delayBins, agg.delayBinTotal, agg.delayBinWidthSec, 95.0);
+        double delayP99 = PercentileFromBins(agg.delayBins, agg.delayBinTotal, agg.delayBinWidthSec, 99.0);
+        double delayP999 = PercentileFromBins(agg.delayBins, agg.delayBinTotal, agg.delayBinWidthSec, 99.9);
+
+        // Deadline por slice: violações (pacotes rx com delay > deadline) e
+        // confiabilidade no prazo (rx dentro do prazo / tx; não-entregues contam
+        // como violação).
+        double deadlineMs = SLA_TARGETS[idx].delayMaxMs;
+        uint64_t violated = CountAboveDeadlineBins(agg.delayBins, agg.delayBinWidthSec, deadlineMs);
+        double deadlineViolationPct =
+            (agg.delayBinTotal > 0) ? 100.0 * static_cast<double>(violated) / agg.delayBinTotal : 0.0;
+        uint64_t inTime = (agg.delayBinTotal >= violated) ? (agg.delayBinTotal - violated) : 0;
+        double reliabilityInTimePct =
+            (agg.txPackets > 0) ? 100.0 * static_cast<double>(inTime) / agg.txPackets : 0.0;
         std::string rshMean = "NA";
         std::string budgetUtilizationMean = "NA";
         std::string unusedBudgetMean = "NA";
@@ -873,9 +988,24 @@ WriteSummaryCsv(const std::string& outputDir,
         double offeredLoadSatisfactionPct = (offeredLoadMbps > 0.0)
                                                ? std::min(100.0, 100.0 * throughputMean / offeredLoadMbps)
                                                : std::numeric_limits<double>::quiet_NaN();
-        double slaSatisfactionPct = (SLA_MIN_MBPS[idx] > 0.0)
-                                        ? std::min(100.0, 100.0 * throughputMean / SLA_MIN_MBPS[idx])
-                                        : std::numeric_limits<double>::quiet_NaN();
+
+        // SLA composto v2: min(S_thr, S_pdr, S_delay) — captura a PIOR dimensão,
+        // eliminando o paradoxo "SLA=100% com PDR=2% e delay=segundos". Alvos
+        // por slice em SLA_TARGETS; thr alvo = fração da carga ofertada.
+        const SliceSlaTargets& tgt = SLA_TARGETS[idx];
+        double thrTargetMbps = tgt.thrMinFracOffered * offeredLoadMbps;
+        double sThr = (thrTargetMbps > 0.0) ? std::min(1.0, throughputMean / thrTargetMbps) : 1.0;
+        double sPdr = (tgt.pdrMinPct > 0.0) ? std::min(1.0, pdrPct / tgt.pdrMinPct) : 1.0;
+        // S_delay usa o p99 por pacote: 1.0 se p99 <= deadline, decaindo depois.
+        double sDelay = 1.0;
+        if (!std::isnan(delayP99) && delayP99 > tgt.delayMaxMs && delayP99 > 0.0)
+        {
+            sDelay = tgt.delayMaxMs / delayP99;
+        }
+        double slaThrPct = 100.0 * sThr;
+        double slaPdrPct = 100.0 * sPdr;
+        double slaDelayPct = 100.0 * sDelay;
+        double slaSatisfactionPct = 100.0 * std::min({sThr, sPdr, sDelay});
 
         double bufferMean = std::numeric_limits<double>::quiet_NaN();
         if (!bufferSamples.empty())
@@ -889,8 +1019,8 @@ WriteSummaryCsv(const std::string& outputDir,
             << CsvValue(Percentile(agg.throughputSamplesMbps, 50.0)) << ","
             << CsvValue(Percentile(agg.throughputSamplesMbps, 95.0)) << ","
             << CsvValue(delayMean, 3) << ","
-            << CsvValue(Percentile(delaySamples, 95.0), 3) << ","
-            << CsvValue(Percentile(delaySamples, 99.0), 3) << ","
+            << CsvValue(delayP95, 3) << ","
+            << CsvValue(delayP99, 3) << ","
             << CsvValue(jitterMean, 3) << ","
             << CsvValue(pdrPct, 3) << ","
             << CsvValue(plrPct, 3) << ","
@@ -905,7 +1035,14 @@ WriteSummaryCsv(const std::string& outputDir,
             << CsvValue(slaSatisfactionPct, 3) << ","
             << allocatedTotal << ","
             << agg.rxBytes << ","
-            << agg.txBytes << "\n";
+            << agg.txBytes << ","
+            << CsvValue(delayP999, 3) << ","
+            << CsvValue(deadlineViolationPct, 3) << ","
+            << CsvValue(reliabilityInTimePct, 3) << ","
+            << CsvValue(slaThrPct, 3) << ","
+            << CsvValue(slaPdrPct, 3) << ","
+            << CsvValue(slaDelayPct, 3) << ","
+            << CsvValue(plrDetectedPct, 3) << "\n";
     }
 }
 
@@ -1832,7 +1969,7 @@ main(int argc, char* argv[])
     endpointNodes.Add(remoteHostContainer);
     endpointNodes.Add(ueNodes);
     Ptr<FlowMonitor> monitor = flowmonHelper.Install(endpointNodes);
-    monitor->SetAttribute("DelayBinWidth", DoubleValue(0.001));
+    monitor->SetAttribute("DelayBinWidth", DoubleValue(0.0005));
     monitor->SetAttribute("JitterBinWidth", DoubleValue(0.001));
     monitor->SetAttribute("PacketSizeBinWidth", DoubleValue(20));
     Ptr<Ipv4FlowClassifier> classifier =
@@ -1926,6 +2063,30 @@ main(int argc, char* argv[])
         sa.lostPackets += st.lostPackets;
         sa.delaySumSec += st.delaySum.GetSeconds();
         sa.jitterSumSec += st.jitterSum.GetSeconds();
+
+        // Mescla o histograma de delay POR PACOTE deste fluxo no acumulador do
+        // slice (bins alinhados por índice; todos usam o mesmo DelayBinWidth).
+        const Histogram& dh = st.delayHistogram;
+        for (uint32_t b = 0; b < dh.GetNBins(); ++b)
+        {
+            uint32_t c = dh.GetBinCount(b);
+            if (c == 0)
+            {
+                continue;
+            }
+            double binW = dh.GetBinEnd(b) - dh.GetBinStart(b);
+            if (binW <= 0.0)
+            {
+                continue;
+            }
+            if (sa.delayBinWidthSec == 0.0)
+            {
+                sa.delayBinWidthSec = binW;
+            }
+            uint32_t idx = static_cast<uint32_t>(std::llround(dh.GetBinStart(b) / binW));
+            sa.delayBins[idx] += c;
+            sa.delayBinTotal += c;
+        }
     }
 
     std::cout << "\n========================================\n"

@@ -25,7 +25,10 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-REPO_ROOT="${REPO_ROOT:-/home/elioth/Documentos/artigo_jussi}"
+# Default derivado da localização do script (…/ns-o-ran-gym/examples/x.sh ->
+# repo root), corrigindo o antigo hardcode /home/elioth inexistente.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd "${_SCRIPT_DIR}/../.." && pwd)}"
 NS3_DIR="${NS3_DIR:-${REPO_ROOT}/ns-3-dev}"
 GYM_DIR="${GYM_DIR:-${REPO_ROOT}/ns-o-ran-gym}"
 
@@ -93,6 +96,14 @@ META_INTRA_ALGO="${META_INTRA_ALGO:-PF}"
 META_RANDOM_SEED="${META_RANDOM_SEED:-2026}"
 META_SEED="${META_SEED:-1}"
 META_RUN="${META_RUN:-1}"
+# Score objective: v1 (original) or v2 (audit reformulation). PER_SEED_SEARCH=1
+# decorrelates the optimizer trajectory across ns-3 seeds (v2 campaign).
+META_SCORE_VERSION="${META_SCORE_VERSION:-v1}"
+META_PER_SEED_SEARCH="${META_PER_SEED_SEARCH:-0}"
+META_PER_SEED_FLAG=""
+if [[ "${META_PER_SEED_SEARCH}" == "1" ]]; then
+    META_PER_SEED_FLAG="--per_seed_search"
+fi
 
 mkdir -p "${OUTPUT_ROOT}" "${META_OUTPUT_ROOT}" "${META_EVAL_OUTPUT}"
 
@@ -238,6 +249,8 @@ if [[ "${RUN_METAHEURISTICS}" == "1" ]]; then
                 --rlc_mode "${RLC_MODE}" \
                 --ns3_dir "${NS3_DIR}" \
                 --output_root "${META_OUTPUT_ROOT}" \
+                --score_version "${META_SCORE_VERSION}" \
+                ${META_PER_SEED_FLAG} \
                 > "${META_OUTPUT_ROOT}/.meta_${scenario}_seed${seed}.log" 2>&1
         ) &
 

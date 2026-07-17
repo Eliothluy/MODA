@@ -896,6 +896,29 @@ RslaqMacScheduler::LogActiveDlDiagnostic(uint64_t callId, uint64_t timeMs,
 void
 RslaqMacScheduler::LogHarqState(uint64_t callId, uint64_t timeMs) const
 {
+    // Corrige o defeito do harq_tracking.csv vazio (só cabeçalho). Esta subclasse
+    // não expõe as contagens de processos HARQ (activeHarqCount/harqCapacity/
+    // canInsert vivem na maquinaria HARQ do NrMacSchedulerNs3, inacessível aqui —
+    // o próprio LogActiveDlDiagnostic escreve 0 nesses campos). Registramos o que
+    // é de fato conhecido — dlBufferSize por RNTI (m_lastDlBufferSize) — e
+    // marcamos os campos de HARQ como NA, sem fabricar valores.
+    if (!m_harqTrackingCsv.is_open())
+    {
+        return;
+    }
+    for (uint32_t s = 0; s < m_numSlices; s++)
+    {
+        for (uint32_t rnti : m_sliceUeRnti[s])
+        {
+            uint16_t r = static_cast<uint16_t>(rnti);
+            uint32_t bufSize = GetUeDlBufferSize(r);
+            m_harqTrackingCsv << callId << "," << timeMs << "," << m_scenarioName << ","
+                              << s << "," << r << ","
+                              << "NA" << "," << "NA" << "," << "NA" << ","
+                              << bufSize << "," << "NA" << "\n";
+        }
+    }
+    m_harqTrackingCsv.flush();
 }
 
 NrMacSchedulerNs3::BeamSymbolMap
