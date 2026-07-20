@@ -1,5 +1,5 @@
 % ============================================================
-% Topologia completa dos 3 cenários de simulação
+% Topologia completa dos 4 cenários de simulação
 % Parâmetros comuns (PHY/MAC/canal) + específicos por cenário
 % ============================================================
 
@@ -17,6 +17,8 @@
 \multicolumn{2}{l}{\textit{Radio Access}} \\
 Number of gNBs               & 1 \\
 gNB position / height        & (0, 0) / 10 m \\
+UE spatial distribution      & Uniform disc, radius 100 m \\
+UE height                    & 1.5 m \\
 Operating frequency          & 3.55 GHz (n78) \\
 Channel bandwidth            & 100 MHz \\
 Numerology ($\mu$)           & 1 (SCS 30 kHz) \\
@@ -26,7 +28,7 @@ Total RBGs                   & 16 \\
 TX power (aggregate)         & 43 dBm \\
 gNB noise figure             & 4.0 dB \\
 Duplex mode                  & TDD \\
-TDD pattern (applied)        & DL|DL|DL|S|UL|UL|UL \\
+TDD pattern (applied)        & DL$|$DL$|$DL$|$S$|$UL$|$UL$|$UL \\
 \midrule
 \multicolumn{2}{l}{\textit{Antenna (RAN650 n78 + AW3161 panel)}} \\
 Ports                        & 4 (1$\times$2 dual-pol) \\
@@ -48,19 +50,13 @@ RLC mode                     & UM (Unacknowledged Mode) \\
 Max TX buffer size           & 10 MiB \\
 QoS flow mapping             & RLC\_UM\_ALWAYS \\
 \midrule
-\multicolumn{2}{l}{\textit{UE distribution}} \\
-Spatial distribution         & Uniform disc, centered at gNB \\
-Cell radius                  & 100 m \\
-UE height                    & 1.5 m \\
-Mobility                     & Stationary (ConstantPosition) \\
-\midrule
 \multicolumn{2}{l}{\textit{Simulation}} \\
 Simulation time              & 5.0 s \\
 Warm-up (app start)          & 0.4 s \\
 Drain time                   & 0.2 s \\
 Indication period            & 10 ms \\
 Backhaul (EPC)               & P2P 100 Gbps, 1 ms delay \\
-Seeds                         & 1, 2, 3 \\
+Seeds                        & 1, 2, 3 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -73,39 +69,74 @@ Seeds                         & 1, 2, 3 \\
 \centering
 \caption{Scenario-specific parameters: UEs, traffic, and SLA per slice.}
 \label{tab:scenarios}
-\begin{tabular}{lrrr}
+\begin{tabular}{lrrrr}
 \toprule
- & \textbf{Low Traffic} & \textbf{Normal} & \textbf{Congestion} \\
+ & \textbf{Low Traffic} & \textbf{Normal} & \textbf{Congestion} & \textbf{Stressed} \\
 \midrule
-\multicolumn{4}{l}{\textit{Number of UEs}} \\
-Total UEs        & 10  & 20  & 60 \\
-eMBB UEs         & 2   & 5   & 15 \\
-URLLC UEs        & 2   & 5   & 10 \\
-MTC UEs          & 6   & 10  & 35 \\
+\multicolumn{5}{l}{\textit{Number of UEs}} \\
+Total UEs        & 10  & 20  & 60  & 40 \\
+eMBB UEs         & 2   & 5   & 15  & 8 \\
+URLLC UEs        & 2   & 5   & 10  & 12 \\
+MTC UEs          & 6   & 10  & 35  & 20 \\
 \midrule
-\multicolumn{4}{l}{\textit{Offered load per slice (Mbps)}} \\
-eMBB             & 55  & 70  & 180 \\
-URLLC            & 1   & 1   & 5 \\
-MTC              & 1   & 2   & 60 \\
-Total offered    & 57  & 73  & 245 \\
+\multicolumn{5}{l}{\textit{Offered load per slice (Mbps)}} \\
+eMBB             & 55  & 70  & 180 & 100 \\
+URLLC            & 1   & 1   & 5   & 3 \\
+MTC              & 1   & 2   & 60  & 25 \\
+Total offered    & 57  & 73  & 245 & 128 \\
 \midrule
-\multicolumn{4}{l}{\textit{Offered load per UE (Mbps)}} \\
-eMBB             & 27.5 & 14.0 & 12.0 \\
-URLLC            & 0.5  & 0.2  & 0.5 \\
-MTC              & 0.17 & 0.2  & 1.71 \\
+\multicolumn{5}{l}{\textit{Offered load per UE (Mbps)}} \\
+eMBB             & 27.5 & 14.0 & 12.0 & 12.5 \\
+URLLC            & 0.5  & 0.2  & 0.5  & 0.25 \\
+MTC              & 0.17 & 0.2  & 1.71 & 1.25 \\
 \midrule
-\multicolumn{4}{l}{\textit{Packet size (bytes)}} \\
-eMBB             & 1500 & 1500 & 1500 \\
-URLLC            & 50   & 50   & 100 \\
-MTC              & 100  & 100  & 500 \\
+\multicolumn{5}{l}{\textit{Packet size (bytes)}} \\
+eMBB             & 1500 & 1500 & 1500 & 1500 \\
+URLLC            & 50   & 50   & 100  & 100 \\
+MTC              & 100  & 100  & 500  & 500 \\
 \midrule
-\multicolumn{4}{l}{\textit{SLA minimum throughput (Mbps)}} \\
-eMBB             & 50   & 50   & 50 \\
-URLLC            & 1    & 1    & 1 \\
-MTC              & 1    & 1    & 1 \\
+\multicolumn{5}{l}{\textit{SLA minimum throughput (Mbps)}} \\
+eMBB             & 50   & 50   & 50   & 50 \\
+URLLC            & 1    & 1    & 1    & 1 \\
+MTC              & 1    & 1    & 1    & 1 \\
 \midrule
-\multicolumn{4}{l}{\textit{Traffic model}} \\
-All slices       & \multicolumn{3}{c}{OnOff CBR (UDP downlink)} \\
+\multicolumn{5}{l}{\textit{Traffic model}} \\
+All slices       & \multicolumn{4}{c}{OnOff CBR (UDP downlink)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ------------------------------------------------------------
+% TABELA: Tempo médio de inferência dos modelos offline
+% Benchmark: 10\,000 inferências por modelo/cenário, CPU, PyTorch
+% ------------------------------------------------------------
+\begin{table}[H]
+\centering
+\caption{Offline policy inference time (CPU, 10\,000 runs per cell).}
+\label{tab:inference_time}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Model} & \textbf{Low Traffic} & \textbf{Normal} & \textbf{Congestion} & \textbf{Stressed} \\
+\midrule
+\multicolumn{5}{l}{\textit{Mean $\pm$ std (ms)}} \\
+DDQN-offline   & 0.071 $\pm$ 0.014 & 0.076 $\pm$ 0.015 & 0.076 $\pm$ 0.017 & 0.071 $\pm$ 0.017 \\
+SAC-offline    & 0.069 $\pm$ 0.017 & 0.067 $\pm$ 0.014 & 0.066 $\pm$ 0.015 & 0.062 $\pm$ 0.013 \\
+PPO-offline    & 0.067 $\pm$ 0.011 & 0.067 $\pm$ 0.012 & 0.071 $\pm$ 0.017 & 0.070 $\pm$ 0.015 \\
+\midrule
+\multicolumn{5}{l}{\textit{Percentiles (ms)}} \\
+\multicolumn{5}{l}{DDQN-offline} \\
+\quad P50       & 0.066 & 0.070 & 0.067 & 0.065 \\
+\quad P95       & 0.103 & 0.111 & 0.113 & 0.107 \\
+\quad P99       & 0.127 & 0.127 & 0.132 & 0.126 \\
+\multicolumn{5}{l}{SAC-offline} \\
+\quad P50       & 0.062 & 0.061 & 0.060 & 0.057 \\
+\quad P95       & 0.107 & 0.100 & 0.102 & 0.094 \\
+\quad P99       & 0.122 & 0.116 & 0.123 & 0.112 \\
+\multicolumn{5}{l}{PPO-offline} \\
+\quad P50       & 0.062 & 0.062 & 0.063 & 0.063 \\
+\quad P95       & 0.095 & 0.097 & 0.111 & 0.105 \\
+\quad P99       & 0.113 & 0.114 & 0.131 & 0.124 \\
 \bottomrule
 \end{tabular}
 \end{table}

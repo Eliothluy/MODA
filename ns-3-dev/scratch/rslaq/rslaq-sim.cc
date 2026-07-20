@@ -1816,6 +1816,15 @@ main(int argc, char* argv[])
         Ptr<Ipv4StaticRouting> ueStatic =
             ipv4RoutingHelper.GetStaticRouting(ueNodes.Get(i)->GetObject<Ipv4>());
         ueStatic->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
+        // UEs são hosts terminais, nunca roteadores. Com IP forwarding ligado
+        // (default do ns-3), um SDU corrompido entregue pelo reassembly do RLC
+        // UM sob perda pesada (bug conhecido do 5G-LENA; AGENTS.md §14.3) tem
+        // destino-lixo não-local e é REENVIADO pelo UE via NAS, estourando um
+        // NS_ASSERT no NrQosRuleClassifier (leitura além do buffer) e matando
+        // a simulação com SIGABRT. Desabilitar o forwarding faz o pacote
+        // corrompido ser descartado no RouteInput, sem crash e sem afetar o
+        // tráfego legítimo (que é sempre local ao UE).
+        ueNodes.Get(i)->GetObject<Ipv4>()->SetAttribute("IpForward", BooleanValue(false));
     }
 
     // ---- Attach UEs ----

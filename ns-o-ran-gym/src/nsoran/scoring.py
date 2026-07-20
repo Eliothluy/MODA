@@ -112,65 +112,58 @@ def score_summary_rows(rows: Iterable[dict[str, str]]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Score v2 (reformulação da auditoria): feasibility-first com restrições rígidas
+# Score v2 (reformulação da auditoria): URLLC latency como ÚNICA restrição rígida
 # ---------------------------------------------------------------------------
-# Limiares de viabilidade por slice. Devem espelhar SLA_TARGETS no C++
-# (rslaq-sim.cc). Calibrados no piloto v2 (auditoria §D): o PDR≥99.999% do §D é
-# inatingível nesta simulação (URLLC observado 43–100%), então usamos limiares
-# realistas que deixam ao menos uma região do simplex viável por cenário.
-V2_URLLC_DELAY_MS_MAX = 10.0   # deadline p99 URLLC (restrição rígida)
-V2_URLLC_PDR_MIN_PCT = 90.0    # confiabilidade mínima URLLC
-V2_MTC_PDR_MIN_PCT = 80.0      # anti-starvation MTC
-V2_EMBB_THR_FRAC_OFFERED = 0.60  # eMBB deve entregar >=60% da carga ofertada
+# Calibração decidida no piloto congestion (2026-07-18): dos alvos de SLA, apenas
+# a latência de cauda URLLC (p99) é fisicamente atingível sob sobrecarga; PDR e
+# throughput de MTC/eMBB têm teto abaixo do ideal quando a célula está saturada
+# (245 Mbps ofertados vs. capacidade da célula), tornando qualquer região viável
+# vazia se fossem restrições rígidas. Portanto:
+#   - restrição RÍGIDA: p99_URLLC <= V2_URLLC_DELAY_MS_MAX (o SLA canônico URLLC);
+#   - PDR/throughput entram GRADUADOS na satisfação composta por slice
+#     (sla_satisfaction_pct do C++ = min(S_thr,S_pdr,S_delay), com alvos em
+#     SLA_TARGETS do rslaq-sim.cc), não como gates.
+# Assim todo cenário com p99 atingível tem região viável, e o score discrimina
+# por quão bem a alocação serve seus slices (fairness max-min + média).
+V2_URLLC_DELAY_MS_MAX = 10.0     # deadline p99 URLLC — ÚNICA restrição rígida
+# Alvos de GRADAÇÃO (espelham SLA_TARGETS no C++; NÃO são gates em Python — o
+# grading S_thr/S_pdr/S_delay já é feito no C++ e chega via sla_satisfaction_pct).
+V2_URLLC_PDR_MIN_PCT = 90.0
+V2_MTC_PDR_MIN_PCT = 80.0
+V2_EMBB_THR_FRAC_OFFERED = 0.60
+# Peso da componente max-min (fairness) vs. média na pontuação de soluções
+# viáveis. 0.5 pune fortemente starvation (min domina) sem ignorar o serviço
+# global (média).
+V2_MINSLA_WEIGHT = 0.5
 
 
 def score_summary_rows_v2(rows: Iterable[dict[str, str]]) -> float:
-    """Score feasibility-first (auditoria).
+    """Score v2: URLLC tail latency é a única restrição rígida; fairness governa.
 
-    Restrições rígidas (proposta §D): p99_URLLC<=10ms, PDR_URLLC>=min,
-    PDR_MTC>=min, throughput_eMBB>=fração da carga ofertada. Uma solução
-    INFEASÍVEL recebe score negativo proporcional à soma das violações
-    normalizadas (gradiente rumo à viabilidade); portanto SEMPRE perde para
-    qualquer solução feasível (score>=0). Uma solução FEASÍVEL é pontuada pela
-    média da satisfação de SLA composta por slice (a mesma métrica composta
-    min(S_thr,S_pdr,S_delay) calculada no C++), em [0,100]. Sem termo de
-    utilização (a auditoria observou que premiar esgotar espectro é indevido).
+    - INFEASÍVEL (p99_URLLC > deadline): score < 0 proporcional ao excesso de
+      latência (gradiente rumo à viabilidade); sempre perde para qualquer viável.
+    - FEASÍVEL: score = 100 * (w*min_i SLA_i + (1-w)*mean_i SLA_i), onde SLA_i é
+      a satisfação COMPOSTA por slice (min(S_thr,S_pdr,S_delay), vinda do C++).
+      O termo min_i implementa fairness max-min e pune starvation de qualquer
+      slice; a média recompensa servir bem todos os slices. Sem termo de
+      utilização (a auditoria observou que premiar esgotar espectro é indevido).
 
-    Mantém a assinatura list[dict]->float de score_summary_rows para ser
-    plugável no runner via --score_version=v2, sem tocar nos otimizadores.
+    Assinatura list[dict]->float idêntica a score_summary_rows (plugável via
+    --score_version=v2, sem tocar nos otimizadores).
     """
     by_slice = {row.get("slice", ""): row for row in rows}
     if not all(name in by_slice for name in SLICE_NAMES):
         return -1e9
 
-    urllc = by_slice["URLLC"]
-    mtc = by_slice["MTC"]
-    embb = by_slice["eMBB"]
+    urllc_p99 = safe_float(by_slice["URLLC"].get("delay_ms_p99"))
 
-    urllc_p99 = safe_float(urllc.get("delay_ms_p99"))
-    urllc_pdr = safe_float(urllc.get("pdr_pct"))
-    mtc_pdr = safe_float(mtc.get("pdr_pct"))
-    # eMBB: satisfação de carga ofertada (%) já é throughput/oferta; a restrição
-    # é entregar >= V2_EMBB_THR_FRAC_OFFERED da carga ofertada.
-    embb_offered = safe_float(embb.get("offered_load_satisfaction_pct"))
-    embb_thr_target_pct = 100.0 * V2_EMBB_THR_FRAC_OFFERED
-
-    # --- Violações normalizadas das restrições rígidas ---
-    violations = 0.0
+    # Única restrição rígida: latência de cauda URLLC.
     if urllc_p99 > V2_URLLC_DELAY_MS_MAX and V2_URLLC_DELAY_MS_MAX > 0.0:
-        violations += (urllc_p99 - V2_URLLC_DELAY_MS_MAX) / V2_URLLC_DELAY_MS_MAX
-    if urllc_pdr < V2_URLLC_PDR_MIN_PCT and V2_URLLC_PDR_MIN_PCT > 0.0:
-        violations += (V2_URLLC_PDR_MIN_PCT - urllc_pdr) / V2_URLLC_PDR_MIN_PCT
-    if mtc_pdr < V2_MTC_PDR_MIN_PCT and V2_MTC_PDR_MIN_PCT > 0.0:
-        violations += (V2_MTC_PDR_MIN_PCT - mtc_pdr) / V2_MTC_PDR_MIN_PCT
-    if embb_offered < embb_thr_target_pct and embb_thr_target_pct > 0.0:
-        violations += (embb_thr_target_pct - embb_offered) / embb_thr_target_pct
+        return -100.0 * (urllc_p99 - V2_URLLC_DELAY_MS_MAX) / V2_URLLC_DELAY_MS_MAX
 
-    if violations > 0.0:
-        # Infeasível: sempre < 0 <= qualquer feasível.
-        return -100.0 * violations
-
-    # Feasível: média da satisfação de SLA composta por slice (do C++ v2).
+    # Feasível: fairness max-min + média da satisfação de SLA composta por slice.
     sla = [clamp(safe_float(by_slice[name].get("sla_satisfaction_pct")) / 100.0)
            for name in SLICE_NAMES]
-    return 100.0 * (sum(sla) / len(sla))
+    mean_sla = sum(sla) / len(sla)
+    min_sla = min(sla)
+    return 100.0 * (V2_MINSLA_WEIGHT * min_sla + (1.0 - V2_MINSLA_WEIGHT) * mean_sla)
