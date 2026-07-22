@@ -158,20 +158,37 @@ its own supervision" com esses números. Zero experimento novo.
 
 ---
 
-## R7. Falta baseline RL online (Exigência 8) ⚖️ decisão
+## R7. Falta baseline RL online (Exigência 8) — DECIDIDO: incluir RSLAQ DDQN online
 
-Opções:
-1. **Atenuar alegações (recomendado p/ conferência):** reescrever comparações
-   para "static allocation derived from RSLAQ" (o que "RSLAQ fixed" já é,
-   rotulado honestamente) e declarar o agente DRL online como trabalho em
-   andamento. O revisor aceita explicitamente a atenuação.
-2. **Incluir o agente online:** a infra existe (Fase 4 da campanha,
-   `rslaq_train_ddqn.py` + `ingest_online_rslaq.py`), mas treinar DDQN online
-   custa dias de máquina e abre nova frente de validação. Adequado para a
-   versão de periódico.
+**Decisão do usuário (2026-07-20):** incluir o **RSLAQ DDQN online real** como
+baseline (não apenas "RSLAQ fixed"), rodado APÓS o piloto de metaheurísticas
+concluir (os dois são ns-3 CPU-bound e não coexistem).
 
-**Ação imediata:** opção 1 no texto; opção 2 vai para "future work" com
-compromisso explícito.
+**Auditoria de fidelidade ao paper (`_RSLAQ-...pdf`, feita 2026-07-19/20):** a
+implementação do repositório é fiel — verificado item a item:
+- Estado 4×4 `[btx,bfs,rsh,tdp]×[m1,m2,m3,cell]` (Eq. 1) → `rslaq_kpis.build_observation(mode="paper")`
+- 198 ações = 66 pesos × {RR,PF,BCQI} (Eq. 2,7) → `build_discrete_action_table(step=0.1, include_scheduler=True)`
+- P_STA semi-dinâmico 50/50 (Eq. 3-5), ω=[0.3333,0.4000,0.2667]
+- Recompensa Eqs. 8/9/11/12/16-18 → `rslaq_reward.py` (modo `paper`); targets Tabela V → `SLA_TARGETS_BY_SCENARIO` (5 cenários idênticos aos nossos)
+- DDQN 4×Conv2D+BN+Tanh+FC (Seção IV-C), γ=0.80, ε_decay=0.998, ε_min=0.05, target_update=200, 35×100=3500 steps → `rslaq_train_ddqn.py`
+- Cenários/TDD/UEs idênticos (Tabela IV/V): TDD `D|D|8D|4GB|4U|U|U`, 20 UEs (5/5/10), μ=1.
+
+**Divergência a corrigir para fidelidade máxima:** buffer/batch do trainer
+(`L=128, btsz=32`) < Hyp-set3 do paper (`L=500, btsz=350`). Rodar com
+`--buffer_size 500 --batch_size 350` (checar estabilidade; se episódios ns-3
+forem curtos demais para encher L=500, documentar o desvio).
+
+**Custo medido (smokes 2026-07-20, sob contenção do piloto):**
+- low_traffic: ~0.75 s/step → ~45 min/seed (3500 steps)
+- congestion: ~15.8 s/step (contended) → ~15h/seed contended, ~5h/seed limpo
+- **Full 5 cenários × 10 seeds ≈ 1–2 semanas** de máquina dedicada.
+
+**Plano de execução (pós-piloto):** definir escopo no momento (recomendo
+começar por 3 cenários × 3–5 seeds para o RSLAQ online, declarando n do baseline
+como limitação, e expandir se houver tempo). Avaliar as políticas RSLAQ
+resultantes pelo MESMO caminho de score/KPI que o MODA (extrair pesos via
+`ingest_online_rslaq.py` → re-avaliar em malha fechada), para comparação justa.
+Ver medições em AGENTS.md §14.7.
 
 ---
 

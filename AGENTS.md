@@ -376,6 +376,17 @@ A auditoria (`auditoria_tecnica_completa.md`, verificada contra os dados brutos:
 
 **Protocolo em dois níveis (decisão 2026-07-19):** `SIM_TIME=15` em congestion custa ~1.5–2h por eval, tornando a busca a 15s inviável (semanas). Adotado o protocolo padrão de otimização cara: **(nível 1) busca com fitness a `SIM_TIME=5`** (idêntico ao protocolo v1) e **(nível 2) validação de alta fidelidade a `SIM_TIME=15`** apenas dos best candidates por (cenário, seed). Declarar ambos os níveis no paper. Material do nível 2 já existente: `v2_pilot_congestion_15s_partial/` (29 evals GA a 15s, Path C, binário com fix do IpForward) e `v2_pilot_congestion_precalib/` (97 evals a 15s, scores pré-Path C — usar apenas os summary.csv, re-pontuando).
 
+**Comparação central da v2 = otimização vs NÃO-otimização (decisão 2026-07-21):** o claim do paper não é "qual metaheurística vence" nem comparar cenários entre si — é que a **otimização metaheurística supera baselines sem otimização**, sob Path C, no mesmo protocolo. Os baselines da v1 (`heuristics_ns3`) NÃO são reaproveitáveis (binário antigo, sem percentil por-pacote nem `sla_satisfaction_pct` composto) — precisam ser RE-EXECUTADOS com o binário v2. Baselines "sem otimização": schedulers puros (pure_rr/pf/bcqi), pesos fixos (psta_equal, slice_weighted_*), heurísticas adaptativas (slice_aqps, slice_*_greedy, ...). Cada um é **1 run** (não uma busca), pontuado com `score_summary_rows_v2` (Path C), comparado ao best candidate metaheurístico por (cenário, seed). **Ordem:** rodar APÓS o piloto metaheurístico (sem contenção de CPU). Comando (congestion × 10 seeds, 5s, binário v2):
+```
+cd ns-o-ran-gym
+REPO_ROOT=/home/eliothluy/Documentos/artigo_jussi RUN_TAG=v2_baselines_congestion \
+OUTPUT_ROOT=$PWD/results_controlled/heuristics_metaheuristics_v2/v2_baselines_congestion \
+SCENARIOS="congestion" SEEDS="1 2 3 4 5 6 7 8 9 10" SIM_TIME=5 \
+RUN_BASELINES=1 RUN_METAHEURISTICS=0 RUN_META_EVALUATION=0 RUN_RSLAQ_DDQN_PAPER=0 \
+PARALLEL_JOBS=10 bash examples/run_all_scenarios.sh
+```
+Depois: estender `analyze_v2_stats.py` para pontuar os `summary.csv` dos baselines com Path C e tabelar best-metaheurística vs cada baseline por seed (Wilcoxon pareado, n=10). Nota: schedulers puros não têm vetor de pesos, mas produzem KPIs por slice → pontuáveis por Path C normalmente.
+
 **Modelo de custo CORRETO desta máquina (bisseção 2026-07-19 — não repetir o erro):** congestion com pesos balanceados custa **~5–7 min de wall-clock por segundo simulado** (~25–35 min por eval a 5s; ~1.5–2h a 15s), e SEMPRE custou — verificado com bancada de 4 variantes (código v2 atual, código pré-v2, binwidth 1ms, HARQ-log off: todas idênticas, 750ms simulados em 300s). As métricas v2 e o fix do IpForward NÃO tornaram o binário mais lento. Os "47–160s por eval" da auditoria (§2) foram medidos na MÁQUINA ANTIGA (`elioth`), ~15× mais rápida neste regime — não usar esses números para planejar campanhas aqui. Cenários leves (low_traffic/normal) são ~5–10× mais baratos por eval. Piloto congestion×10 seeds a 5s com 48 evals/método: ~2 dias com `PARALLEL_JOBS=10`.
 
 **Análise v2:** `examples/analyze_v2_stats.py` (estatística) e `examples/generate_v2_audit_figures.py` (figuras da auditoria) → `paper_v2_campaign/`.
