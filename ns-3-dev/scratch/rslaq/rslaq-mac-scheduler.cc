@@ -267,11 +267,21 @@ RslaqMacScheduler::SetSliceConfiguration(const std::vector<double>& prbWeights,
     {
         NS_ASSERT_MSG(weight >= 0.0, "PRB weights must be non-negative, got " << weight);
     }
-    NS_ASSERT_MSG(std::abs(sum - 1.0) < 1e-6,
-                  "PRB weights must sum to 1.0, got " << sum);
+    NS_ASSERT_MSG(sum > 0.0, "PRB weights must have positive sum, got " << sum);
 
-    m_prbWeights = prbWeights;
-    m_lastDecisionWeights = prbWeights;
+    // Renormalize to absorb rounding drift from external callers (e.g. weights
+    // serialized with 6 decimal places can sum to 0.999999 or 1.000001, which
+    // tripped the original strict 1e-6 assert and aborted the simulation).
+    // The scheduler always works with sum=1.0 internally after this point.
+    std::vector<double> normalizedWeights;
+    normalizedWeights.reserve(prbWeights.size());
+    for (double w : prbWeights)
+    {
+        normalizedWeights.push_back(w / sum);
+    }
+
+    m_prbWeights = normalizedWeights;
+    m_lastDecisionWeights = normalizedWeights;
     m_intraAlgorithms = algorithms;
 
     std::ostringstream oss;

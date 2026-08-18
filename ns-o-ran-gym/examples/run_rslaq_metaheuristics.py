@@ -266,6 +266,7 @@ def run_candidate(
             run=run,
             weights=weights,
             reason=f"ns-3 exit code {completed.returncode}",
+            score_version=score_version,
         )
 
     out_summary = summary_path(candidate_root, scenario, seed, run)
@@ -281,6 +282,7 @@ def run_candidate(
             run=run,
             weights=weights,
             reason="summary.csv missing after ns-3 run",
+            score_version=score_version,
         )
 
     rows = read_summary(out_summary)
@@ -343,11 +345,19 @@ def _failed_evaluation(
     run: int,
     weights: Sequence[float],
     reason: str,
+    score_version: str = "v1",
 ) -> Evaluation:
     """Build and checkpoint a penalized Evaluation for a crashed ns-3 run.
 
     Also appends a structured line to ``eval_root/.ns3_failures.log`` so the
     dashboard / analysis can find every tolerated crash in one place.
+
+    ``score_version`` must be stamped on the sidecar even though FAILED_SCORE is
+    a constant that no objective computed: the resume cache rejects any sidecar
+    whose version differs from the requested one, so a sidecar left at the "v1"
+    default would be re-simulated on every v2 resume — violating the
+    never-retry contract and, if the crash turned out to be transient, silently
+    diverging the optimizer trajectory from that evaluation onward.
     """
     normalized = normalize_weights(weights)
     evaluation = Evaluation(

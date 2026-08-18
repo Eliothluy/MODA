@@ -90,6 +90,21 @@ class ScoringV2Test(unittest.TestCase):
             score_summary_rows_v2(_feasible_case()), score_summary_rows_v2(acid)
         )
 
+    def test_dead_urllc_is_infeasible_not_feasible(self):
+        """Loophole closed: a URLLC slice that delivers ZERO packets has no
+        delay samples (p99='NA'). It must be treated as an outage (infeasible),
+        NOT as '0ms <= 10ms feasible' — otherwise the optimizer can satisfy the
+        latency constraint by starving URLLC entirely (v1 starvation paradox)."""
+        rows = _feasible_case()
+        rows[1]["delay_ms_p99"] = "NA"   # empty histogram
+        rows[1]["pdr_pct"] = "0"          # zero packets delivered
+        rows[1]["throughput_mbps_mean"] = "0"
+        self.assertLess(score_summary_rows_v2(rows), 0.0)
+        # And it must lose to a genuinely feasible allocation.
+        self.assertGreater(
+            score_summary_rows_v2(_feasible_case()), score_summary_rows_v2(rows)
+        )
+
     def test_better_served_scores_higher(self):
         """Monotonicity: raising the worst slice's composite SLA raises the score."""
         worse = _feasible_case()

@@ -376,6 +376,17 @@ A auditoria (`auditoria_tecnica_completa.md`, verificada contra os dados brutos:
 
 **Protocolo em dois níveis (decisão 2026-07-19):** `SIM_TIME=15` em congestion custa ~1.5–2h por eval, tornando a busca a 15s inviável (semanas). Adotado o protocolo padrão de otimização cara: **(nível 1) busca com fitness a `SIM_TIME=5`** (idêntico ao protocolo v1) e **(nível 2) validação de alta fidelidade a `SIM_TIME=15`** apenas dos best candidates por (cenário, seed). Declarar ambos os níveis no paper. Material do nível 2 já existente: `v2_pilot_congestion_15s_partial/` (29 evals GA a 15s, Path C, binário com fix do IpForward) e `v2_pilot_congestion_precalib/` (97 evals a 15s, scores pré-Path C — usar apenas os summary.csv, re-pontuando).
 
+**Brecha de scoring Path C fechada (2026-07-23, revelada pelo piloto):** um URLLC
+MORTO (0 pacotes entregues → histograma de delay vazio → `delay_ms_p99=NA`) era
+tratado por `safe_float("NA")→0 ≤ 10ms` como "latência-viável", permitindo ao
+otimizador satisfazer a restrição rígida MATANDO o URLLC (reintroduzindo o
+paradoxo de starvation da v1). Corrigido em `score_summary_rows_v2`: p99 ausente/NA
+OU PDR_URLLC≈0 → latência sentinela `V2_URLLC_DEAD_P99_MS=10000` → infeasível.
+Impacto medido no piloto: 22/943 evals (2.3%) eram falsos-viáveis; corrige
+best-por-seed de ≥1 seed. **Ação:** re-pontuar o cache do piloto com
+`rescore_cache.py --score_version v2` ANTES da análise (recomputa dos summaries,
+sem re-rodar ns-3); os baselines já usarão o fix. Teste: `test_scoring_v2.py::test_dead_urllc_is_infeasible_not_feasible`.
+
 **Comparação central da v2 = otimização vs NÃO-otimização (decisão 2026-07-21):** o claim do paper não é "qual metaheurística vence" nem comparar cenários entre si — é que a **otimização metaheurística supera baselines sem otimização**, sob Path C, no mesmo protocolo. Os baselines da v1 (`heuristics_ns3`) NÃO são reaproveitáveis (binário antigo, sem percentil por-pacote nem `sla_satisfaction_pct` composto) — precisam ser RE-EXECUTADOS com o binário v2. Baselines "sem otimização": schedulers puros (pure_rr/pf/bcqi), pesos fixos (psta_equal, slice_weighted_*), heurísticas adaptativas (slice_aqps, slice_*_greedy, ...). Cada um é **1 run** (não uma busca), pontuado com `score_summary_rows_v2` (Path C), comparado ao best candidate metaheurístico por (cenário, seed). **Ordem:** rodar APÓS o piloto metaheurístico (sem contenção de CPU). Comando (congestion × 10 seeds, 5s, binário v2):
 ```
 cd ns-o-ran-gym
@@ -388,6 +399,12 @@ PARALLEL_JOBS=10 bash examples/run_all_scenarios.sh
 Depois: estender `analyze_v2_stats.py` para pontuar os `summary.csv` dos baselines com Path C e tabelar best-metaheurística vs cada baseline por seed (Wilcoxon pareado, n=10). Nota: schedulers puros não têm vetor de pesos, mas produzem KPIs por slice → pontuáveis por Path C normalmente.
 
 **Modelo de custo CORRETO desta máquina (bisseção 2026-07-19 — não repetir o erro):** congestion com pesos balanceados custa **~5–7 min de wall-clock por segundo simulado** (~25–35 min por eval a 5s; ~1.5–2h a 15s), e SEMPRE custou — verificado com bancada de 4 variantes (código v2 atual, código pré-v2, binwidth 1ms, HARQ-log off: todas idênticas, 750ms simulados em 300s). As métricas v2 e o fix do IpForward NÃO tornaram o binário mais lento. Os "47–160s por eval" da auditoria (§2) foram medidos na MÁQUINA ANTIGA (`elioth`), ~15× mais rápida neste regime — não usar esses números para planejar campanhas aqui. Cenários leves (low_traffic/normal) são ~5–10× mais baratos por eval. Piloto congestion×10 seeds a 5s com 48 evals/método: ~2 dias com `PARALLEL_JOBS=10`.
+
+**Custo por cenário MEDIDO (probe 5s, 2026-07-25):** low_traffic <1 min/eval (completa 5s em <180s); normal ~5 min/eval (2980ms em 180s); stressed ~16 min/eval (920ms em 180s); insufficient_resources ~27 min/eval (550ms em 180s, o mais pesado, ~= congestion); congestion ~30-55 min/eval. Ordenar campanhas do mais barato ao mais caro para resultados incrementais.
+
+**Estado da campanha v2 (2026-07-25):**
+- `v2_pilot_congestion/` — CONCLUÍDO: metaheurísticas (999 evals, iter=4, Path C corrigido, re-scored) + 140 baselines. Resultado central: OTIMIZAÇÃO 7/10 seeds latência-viável vs ≤4/10 de qualquer baseline (PF/RR/AQPS = 0/10); heurísticas gulosas MATAM o URLLC (3-5% RBG → p99 ~1s). Metaheurísticas empatam entre si (Friedman p=0.29). Análise: `analyze_v2_opt_vs_baseline.py`, CSV `v2_opt_vs_baseline_per_slice.csv`.
+- `v2_all_scenarios/` — RODANDO (~4-5 dias): low_traffic+normal+stressed+insufficient_resources, baselines (560) + metaheurísticas (~4000 evals), mesma config. Ao concluir, análise otimização-vs-baseline por-slice dos 5 cenários (combinar os dois roots).
 
 **Análise v2:** `examples/analyze_v2_stats.py` (estatística) e `examples/generate_v2_audit_figures.py` (figuras da auditoria) → `paper_v2_campaign/`.
 
@@ -410,3 +427,30 @@ Existe um dashboard Streamlit read-only para acompanhar a campanha em tempo real
 - **Fonte de dados**: lê apenas sidecars `candidate.json`, `best_candidate_*.json`, `metaheuristic_results_*.csv` e o `batch_manifest.csv` da Phase 1. **Nunca modifica a campanha** (read-only).
 - **Contagens embutidas** (iter=12, pop=6): GA=72, PSO=72, SA=72, híbrida=84 → 300 evals/par, 4500 avaliações globais para 15 pares cenário×seed. As constantes executáveis `EVALS_PER_METHOD` do `dashboard.py` já refletem esses valores; manter também comentários e textos do dashboard sincronizados se os hiperparâmetros mudarem.
 - **Limitação conhecida**: o `streamlit-autorefresh` opcional não está instalado; o app usa fallback via `<meta http-equiv="refresh">` (recarrega a página no browser a cada 15s). Para auto-refresh nativo (sem reload visível), instale `streamlit-autorefresh` no venv-dashboard.
+
+### 14.8 Campanha RSLAQ DDQN paper-faithful — Phase 4 (2026-08-11)
+
+Baseline DRL do paper. Treina o agente DDQN paper-faithful (Yungaicela-Naula et al., IEEE TMC 2026) sobre o binário v2 (com fix do PDCP §14.3 e percentis por-pacote), para comparar diretamente com as meta-heurísticas e baselines da campanha v2 sob o mesmo protocolo (SIM_TIME=5, score Path C).
+
+**Fidelidade ao paper (Hyp-set3, Table VI):** LR=0.001, γ=0.80, λϵ=0.998, ϵ_min=0.05, L=500, btsz=350, nsut=200, ntsr=100, E≈3500 interaction steps (= 35 episódios × 100 steps), psta=0.5, ω=[0.3333, 0.4000, 0.2667], reward piecewise Eq. 12 (não soma ponderada), arquitetura 4×Conv2D+BN+Tanh+FC, action space discreto 198 ações (66 pesos × 3 schedulers). O wrapper sobrescreve `DDQN_INTERACTION_STEPS=3500` e `DDQN_BUFFER_SIZE=500`/`DDQN_BATCH_SIZE=350` (defaults do `run_all_scenarios.sh` eram 20000/10000/64, divergentes do paper).
+
+**Escopo vigente (decisão 2026-08-11):** 3 cenários leves (`low_traffic`, `normal`, `stressed`) × 5 seeds (1-5). `congestion` e `insufficient_resources` **adiados** — custo proibitivo nesta máquina (~13-15 dias/seed em congestion com treino online IPC; §14.7). Serão abordados posteriormente, possivelmente via offline-RL.
+
+**Wrapper:** `ns-o-ran-gym/examples/run_rslaq_ddqn_paper_20260811.sh`. Invoca `run_all_scenarios.sh` com `RUN_TAG=20260811_rslaq_ddqn_paper`, `RUN_RSLAQ_DDQN_PAPER=1`, `DDQN_DRL_JOBS=5` (paralelismo). Output root: `results_controlled/heuristics_metaheuristics/20260811_rslaq_ddqn_paper/rslaq_ddqn_paper/`.
+
+**Correção de path aplicada:** `run_controlled_rslaq_validation.sh:17` tinha `REPO_ROOT=/home/elioth/...` (usuário errado, sem `luy`); corrigido para `/home/eliothluy/...`. Sem essa correção, a Phase 4 falhava com `cd: arquivo inexistente`.
+
+**Protocolo de métrica dupla (para comparação com meta-heurísticas):**
+- **Primária (comparável):** score v2 Path C. Como o DDQN online produz `step_metrics.csv`/`ddqn_summary.json` na escala reward paper (não comparável), extrai-se a política greedy do checkpoint (`extract_ddqn_weights.py`), re-roda-se ns-3 standalone com `--baselineMode=slice_custom --weights=<w_embb,w_urllc,w_mtc>` (`rescore_ddqn_standalone.py`), e pontua-se com `score_summary_rows_v2`. Resultado: `ddqn_scored_v2.csv`, mesmo formato que `v2_best_candidates.csv`.
+- **Secundária (fiel ao paper):** reward paper Eq. 8/12 (curva de treino em `ddqn_training_log.csv`), reportada no apêndice como convergência paper-faithful, **não** na tabela comparativa principal.
+
+**Pipeline pós-treino:**
+1. `extract_ddqn_weights.py` — carrega `ddqn_best.pt`, roda política greedy (ε=0), extrai pesos médios por (cenário, seed) → `ddqn_extracted_weights.csv`.
+2. `rescore_ddqn_standalone.py` — re-roda ns-3 standalone com os pesos extraídos, pontua com Path C → `ddqn_scored_v2.csv`.
+3. `analyze_ddqn_vs_meta.py` — tabela unificada {GA, PSO, SA, híbrida, RSLAQ DDQN} + Wilcoxon pareado (n=5) DDQN vs cada meta + boxplot → `comparison_ddqn_vs_meta_v2.csv`, `wilcoxon_ddqn_vs_meta.csv`, `fig_ddqn_vs_meta.pdf`.
+
+**Lacunas e limitações:**
+- O paper RSLAQ **não reporta número de seeds** (gap de reprodutibilidade); adotamos n=5 (mínimo para Wilcoxon válido).
+- Treino online via IPC (semáforo POSIX + CSV) é ~15× mais caro que a máquina original do paper; low_traffic ~50 min/seed, normal ~2.5 h/seed, stressed ~8-12 h/seed.
+- `btsz=350` com `L=500` é apertado (batch quase do tamanho do buffer) — fiel ao paper Table VI, mas pode degradar estabilidade do gradiente; documentar.
+- Não há modelo pré-treinado paper-faithful no disco (os `.pt` em `models/` são offline-RL, linha MODA, não RSLAQ).

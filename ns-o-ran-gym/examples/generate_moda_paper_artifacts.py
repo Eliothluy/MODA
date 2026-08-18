@@ -241,7 +241,10 @@ def fig_congestion_alloc(df_slice: pd.DataFrame):
 def fig_robustness(agg: pd.DataFrame):
     """Mean score vs std (dispersion across seeds) — upper-left = robust+good."""
     set_ieee_style()
-    fig, ax = plt.subplots(figsize=(3.5, 2.8))
+    # constrained layout + "outside" legends: matplotlib reserves the space for
+    # the legend bands below the axes automatically, so nothing gets clipped
+    # (in-axes legends overlapped points once n=3 spread congestion to std~44).
+    fig, ax = plt.subplots(figsize=(3.5, 3.0), layout="constrained")
     markers = {"low_traffic": "o", "normal": "s", "congestion": "^", "stressed": "D"}
     for m in [mm for mm in ORDER if mm in agg["method"].unique()]:
         for sc in SCENARIOS:
@@ -251,7 +254,7 @@ def fig_robustness(agg: pd.DataFrame):
             ax.scatter(r["std"], r["mean"], s=28, color=COLOR[m],
                        marker=markers[sc], edgecolor="black", linewidth=0.4,
                        zorder=3)
-    # legends: colors = methods, markers = scenarios
+    # legends: colors = methods, markers = scenarios (both outside the axes)
     from matplotlib.lines import Line2D
     meth_handles = [Line2D([0], [0], marker="o", color="w", markerfacecolor=COLOR[m],
                            markeredgecolor="black", markersize=6, label=m)
@@ -259,11 +262,16 @@ def fig_robustness(agg: pd.DataFrame):
     scen_handles = [Line2D([0], [0], marker=markers[s], color="w", markerfacecolor="grey",
                            markeredgecolor="black", markersize=6, label=SCEN_LABEL[s])
                     for s in SCENARIOS]
-    leg1 = ax.legend(handles=meth_handles, loc="lower left", frameon=False,
-                     fontsize=6, title="Method", title_fontsize=6.5)
-    ax.add_artist(leg1)
-    ax.legend(handles=scen_handles, loc="upper right", frameon=False,
-              fontsize=6, title="Scenario", title_fontsize=6.5)
+    # side-by-side outside legends: two legends sharing the same
+    # "outside lower center" loc are stacked on top of each other by
+    # constrained layout (bbox_to_anchor is ignored for outside locs),
+    # so place methods on the lower left and scenarios on the lower right
+    fig.legend(handles=meth_handles, loc="outside lower left", ncol=2,
+               frameon=False, fontsize=6, title="Method", title_fontsize=6.5,
+               columnspacing=0.9, handletextpad=0.3)
+    fig.legend(handles=scen_handles, loc="outside lower right", ncol=2,
+               frameon=False, fontsize=6, title="Scenario", title_fontsize=6.5,
+               columnspacing=0.9, handletextpad=0.3)
     ax.margins(y=0.10)
     ax.set_xlabel("Score std. across seeds (lower = robust)")
     ax.set_ylabel("Mean composite score")

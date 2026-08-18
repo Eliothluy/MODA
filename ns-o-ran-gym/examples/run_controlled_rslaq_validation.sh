@@ -14,7 +14,7 @@
 
 set -Eeuo pipefail
 
-REPO_ROOT="${REPO_ROOT:-/home/elioth/Documentos/artigo_jussi}"
+REPO_ROOT="${REPO_ROOT:-/home/eliothluy/Documentos/artigo_jussi}"
 NS3_DIR="${NS3_DIR:-${REPO_ROOT}/ns-3-dev}"
 GYM_DIR="${GYM_DIR:-${REPO_ROOT}/ns-o-ran-gym}"
 

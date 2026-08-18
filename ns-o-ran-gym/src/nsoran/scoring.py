@@ -126,6 +126,13 @@ def score_summary_rows(rows: Iterable[dict[str, str]]) -> float:
 # Assim todo cenário com p99 atingível tem região viável, e o score discrimina
 # por quão bem a alocação serve seus slices (fairness max-min + média).
 V2_URLLC_DELAY_MS_MAX = 10.0     # deadline p99 URLLC — ÚNICA restrição rígida
+# URLLC morto (nenhum pacote entregue -> histograma vazio -> p99=NA) NÃO é
+# "0 ms viável": é o pior outage possível. Sem esta guarda, o otimizador
+# poderia satisfazer a restrição de latência simplesmente MATANDO o URLLC
+# (PDR=0 -> p99=NA -> safe_float=0 <= 10ms -> "viável"), reintroduzindo o
+# paradoxo de starvation da v1. Tratamos como latência sentinela alta.
+V2_URLLC_DEAD_P99_MS = 10000.0   # p99 atribuído a URLLC morto (infeasível)
+V2_URLLC_MIN_PDR_ALIVE = 1e-9    # PDR abaixo disto = slice morto
 # Alvos de GRADAÇÃO (espelham SLA_TARGETS no C++; NÃO são gates em Python — o
 # grading S_thr/S_pdr/S_delay já é feito no C++ e chega via sla_satisfaction_pct).
 V2_URLLC_PDR_MIN_PCT = 90.0
@@ -155,9 +162,17 @@ def score_summary_rows_v2(rows: Iterable[dict[str, str]]) -> float:
     if not all(name in by_slice for name in SLICE_NAMES):
         return -1e9
 
-    urllc_p99 = safe_float(by_slice["URLLC"].get("delay_ms_p99"))
+    # Única restrição rígida: latência de cauda URLLC. Um URLLC morto (sem
+    # pacotes entregues -> p99 ausente/NA, ou PDR~0) é outage, não 0 ms: tratado
+    # como latência sentinela para ficar infeasível (fecha a brecha de starvation).
+    urllc_row = by_slice["URLLC"]
+    p99_raw = urllc_row.get("delay_ms_p99")
+    urllc_pdr = safe_float(urllc_row.get("pdr_pct"))
+    if p99_raw in (None, "", "NA") or urllc_pdr <= V2_URLLC_MIN_PDR_ALIVE:
+        urllc_p99 = V2_URLLC_DEAD_P99_MS
+    else:
+        urllc_p99 = safe_float(p99_raw)
 
-    # Única restrição rígida: latência de cauda URLLC.
     if urllc_p99 > V2_URLLC_DELAY_MS_MAX and V2_URLLC_DELAY_MS_MAX > 0.0:
         return -100.0 * (urllc_p99 - V2_URLLC_DELAY_MS_MAX) / V2_URLLC_DELAY_MS_MAX
 
