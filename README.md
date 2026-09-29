@@ -71,15 +71,24 @@ artigo_jussi/
 └── AGENTS.md                    # escopo da pesquisa + estado experimental
 ```
 
-### Cenários (`InitScenarios()` em `rslaq-sim.cc`)
+### Cenários e configuração de UEs por slice (`InitScenarios()` em `rslaq-sim.cc`)
 
-| Cenário | eMBB/URLLC/MTC UEs | Oferta total | Regime |
-|---|---|---|---|
-| low_traffic | 2/2/6 | ~57 Mbps | leve |
-| normal | 5/5/10 | ~73 Mbps | moderado |
-| congestion | 15/10/35 | ~245 Mbps | saturado |
-| stressed | 8/12/20 | ~128 Mbps | degradado |
-| insufficient_resources | 20/10/40 | ~295 Mbps | sobrecarga extrema |
+| Cenário | UEs (eMBB/URLLC/MTC) | Total | Taxa por slice (eMBB/URLLC/MTC) | Pacotes (eMBB/URLLC/MTC) | Oferta total | Regime |
+|---|---|---|---|---|---|---|
+| low_traffic | 2/2/6 | 10 | 55 / 1 / 1 Mbps | 1500/50/100 B | 57 Mbps | leve |
+| normal | 5/5/10 | 20 | 70 / 1 / 2 Mbps | 1500/50/100 B | 73 Mbps | moderado |
+| congestion | 15/10/35 | 60 | 180 / 5 / 60 Mbps | 1500/100/500 B | 245 Mbps | saturado |
+| stressed | 8/12/20 | 40 | 100 / 3 / 25 Mbps | 1500/100/500 B | 128 Mbps | degradado |
+| insufficient_resources | 20/10/40 | 70 | 220 / 5 / 70 Mbps | 1500/100/500 B | 295 Mbps | sobrecarga extrema |
+
+**Mecânica por slice:**
+
+- A **taxa do slice é dividida igualmente entre seus UEs** (ex.: congestion = 15 UEs eMBB × 12 Mbps cada). Cada UE recebe 1 fluxo UDP downlink próprio (porta única mapeia UE→slice para o FlowMonitor atribuir métricas por slice).
+- **Atribuição por faixa contígua de ID**: UEs 1..N_eMBB = eMBB, seguintes N_URLLC = URLLC, restantes = MTC (`GetSliceForUe`).
+- **Perfil por slice**: eMBB = poucos UEs, pacotes de 1500 B, alto throughput por UE; URLLC = pacotes de 50-100 B, alvo de delay p99 ≤ 10 ms (gate rígido do Path C); MTC = muitos UEs, pacotes de 100-500 B, proteção anti-starvation.
+- **Posições**: disco uniforme de 100 m ao redor do gNB, UEs estáticos — a seed do ns-3 sorteia as posições (principal fonte de variância entre seeds).
+- **Rádio comum**: 100 MHz @ 3,55 GHz, numerologia 1, TDD `D|D|8D|4GB|4U|U|U`, ~266 RBs = **16 RBGs** particionados pelos pesos otimizados; alocação intra-slice por PF.
+- Tráfego em taxa constante (sem rajadas intra-run) — ver limitações no AGENTS.md §14.4.
 
 ---
 
