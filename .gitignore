@@ -26,3 +26,13 @@ ns-3-dev/build/
 # Virtual environments (locais, não versionados)
 .venv-dashboard/
 .venv/
+
+# Pastas de artefatos/paper mantidas apenas localmente (2026-09-29)
+analysis_rslaq_validation/
+backup_v1_scratch_rslaq_20260626/
+figuras_overleaf/
+paper_ieee_v2_latex/
+paper_moda_offline_drl/
+paper_v2_campaign/
+projetoUFPA/
+resultados_cenarios_finalizados_20260715/
