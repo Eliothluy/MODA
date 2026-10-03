@@ -51,6 +51,66 @@ vence 10/10 seeds contra todos os 14 baselines em `normal`, `stressed` e
 
 ---
 
+## Camera-Ready WPMC 2026 — Grid Search como referência + seeds independentes (protocolo v1)
+
+Extensão experimental para a versão final do paper de meta-heurísticas:
+**Uniform Grid Search** (Δw = 0.05 → 231 pontos) como referência de busca,
+**5 seeds ns-3 independentes da calibração** (4-8), função objetivo e
+algoritmos congelados, e **instrumentação de custo** (`elapsed_s` por
+avaliação, cache nunca contabilizado). Consolidação em
+`ns-o-ran-gym/results_controlled/v1_camera_ready/consolidated/`.
+
+### Q1 — Proximidade à referência do Grid (10 pares: Low Traffic + Normal)
+
+| Método | % de J(w) da referência (média) | Faixa |
+|---|---|---|
+| **GA** | **99,61%** | 96,4–100,5% |
+| Híbrida | 99,41% | 96,2–102,2% |
+| PSO | 98,95% | 97,1–101,3% |
+| SA | 98,48% | 95,0–100,3% |
+
+Em **7/10 pares as meta-heurísticas atingem ≥99%** do melhor ponto da grade;
+em **3/10 superam a referência** (política no interior de células da grade).
+Com 72 avaliações contra 231 da varredura.
+
+### Q2 — Avaliações até a referência (medianas sobre 10 pares)
+
+| Método | 95% da ref. | 99% da ref. |
+|---|---|---|
+| Híbrida | **1** | **3** |
+| GA | 1,5 | 2 |
+| PSO | 2 | 16 |
+| SA | 4 | 6 |
+
+### Q3 — Custo da busca (seeds 4-8, Low+Normal; política de concorrência constante)
+
+| Método | Evals | Horas totais | Média s/eval |
+|---|---|---|---|
+| Grid (referência) | 2.310 | 138,3 | 216 |
+| PSO | 720 | 47,6 | 238 |
+| GA | 720 | 44,6 | 223 |
+| SA | 720 | 43,8 | 219 |
+| Híbrida | 840 | 38,9 | **167** |
+
+Meta-heurísticas custam **~⅓ da varredura exaustiva** e atingem a mesma qualidade.
+
+### Q4/Q5 — Seeds independentes: qualidade e SLA
+
+Melhor J(w) por seed (média das 5 seeds independentes): Low Traffic **76,3**,
+Normal **86,0**, Congestion (GA completo) **83,60 ± 1,06** — o cenário mais
+estável. Pareado contra o melhor baseline por seed: **meta-heurísticas vencem
+8/10 pares** em Low+Normal (perdem apenas em Low nas seeds 4 e 8, onde a
+variância inter-seed domina). Em Congestion, o GA independente (83,60 ± 1,06)
+supera com folga os baselines re-executados (BCQI 69,4 ± 13,4; PF 64,8 ± 12,1;
+RR 56,3 ± 4,6).
+
+**Status**: campanha interrompida pelo prazo de submissão — Low Traffic e
+Normal **100% completos** (todas as buscas + grade + baselines); Congestion
+com GA completo nas 5 seeds (PSO/SA/Híbrida/Grade parciais ou não iniciados;
+linha para versão estendida).
+
+---
+
 ## Estrutura do repositório
 
 ```
