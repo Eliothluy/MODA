@@ -111,6 +111,71 @@ linha para versão estendida).
 
 ---
 
+## MODA — xApp offline destilado das meta-heurísticas (segunda linha de trabalho)
+
+**MODA** (*Metaheuristic-Offline Distilled Allocation*) empacota políticas
+neurais treinadas **offline** a partir das trajetórias de busca das
+meta-heurísticas como uma xApp conceitual de O-RAN (treinar offline, inferir
+online — método inspirado em Bordin et al., CCNC 2025). Três receitas de
+destilação sobre **MLPs 14→128→128** (Adam, lr 1e-3, 300 épocas, ~1 s de
+treino em CPU):
+
+| Variante | Rede/cabeça | Loss | Rótulo honesto |
+|---|---|---|---|
+| **MODA-Q** | → 66 saídas (simplex step 0.1) | Regressão-Q (MSE vs score da run) | Bandit contextual Q-regression — **não** é DDQN/TD |
+| **MODA-BC** | → 3 + softmax | Cloning do top-20% por cenário | Behavioral cloning supervisado |
+| **MODA-RWR** | → mean(3) + softmax | Ponderação por recompensa `exp(R/τ)`, τ=0.1 | Reward-weighted regression |
+
+**Regra de honestidade**: o dataset não tem next-state (avaliações ns-3
+independentes), então nenhuma variante usa TD-learning — os labels
+`ddqn/sac/ppo` são identificadores de receita, e os checkpoints carregam
+`algo_description` com a descrição real.
+
+### Resultados closed-loop (score v1 composto, média ± std, n=3 seeds)
+
+| Cenário | MODA-Q | MODA-BC | MODA-RWR | Best meta. | RSLAQ fixed | Equal |
+|---|---|---|---|---|---|---|
+| low_traffic | 75,9 ± 30,2 | 74,9 ± 31,8 | **84,1 ± 16,4** | 82,9 ± 18,4 | 83,6 ± 17,3 | 83,7 ± 17,1 |
+| normal | **88,3 ± 8,1** | 86,9 ± 10,0 | 87,1 ± 9,6 | 87,3 ± 9,4 | 87,7 ± 9,8 | 87,9 ± 9,9 |
+| congestion | 75,6 ± 18,8 | **82,6 ± 5,4** | 54,3 ± 44,4 | 61,8 ± 32,9 | 77,2 ± 8,3 | 75,9 ± 6,0 |
+| stressed | 83,0 ± 18,4 | 82,4 ± 14,9 | **83,5 ± 17,0** | 83,6 ± 14,1 | 82,8 ± 18,2 | 84,9 ± 14,8 |
+
+Leituras principais: **MODA-BC domina em congestion** (82,6 ± 5,4 — o melhor
+baseline re-otimizado fica em 61,8 ± 32,9); **MODA-RWR é a formulação mais
+estável** (menor divergência entre arquiteturas L1 ≤ 0,097 e degradação OOD
+mínima); MODA-Q colapsa para um vetor fixo entre cenários e é o mais sensível
+à arquitetura — documentado como limitação.
+
+### Robustez OOD e sensibilidade (resposta a peer review)
+
+- **Held-out zero-shot** em `insufficient_resources` (295 Mbps — acima do
+  máximo do treino, 245 Mbps): todas as políticas degradam fora do domínio
+  (`RESPONSE_PEER_REVIEW_OOD.md`), confirmando que o MODA é **intra-regime** —
+  a fronteira de validade é declarada e motiva a linha de controle adaptativo.
+- **Ablações**: one-hot vs observáveis (R5a), δ/τ/q (R8), multi-seed de treino
+  e grid de arquitetura/lr 81 configs — `ablation_R5a_R8.md`,
+  `models/ablation/`.
+- **Não-generalização entre seeds** (cross-eval viável 7/10 → 14/90) é o que
+  fundamenta a linha seguinte: **xApp DRL offline com transições (s,a,r,s′)**
+  (AGENTS.md §14.9).
+
+### Como reproduzir a linha MODA
+
+```bash
+cd ns-o-ran-gym
+python3 examples/build_offline_dataset.py            # dataset (parquet)
+python3 examples/train_offline_rl.py                 # treina MODA-Q/BC/RWR (~1s cada; --seeds p/ multi-seed)
+python3 examples/eval_offline_rl_closedloop.py --jobs 6   # malha fechada ns-3 (cache de sidecars)
+python3 examples/analyze_closedloop_radio_efficiency.py   # eficiência por slice
+python3 examples/generate_moda_paper_artifacts.py    # figuras + tabelas IEEE
+```
+
+Artefatos: `models/{ddqn,sac,ppo}_offline.pt`,
+`models/closedloop_eval/` (72 células), `paper_moda_offline_drl/` (figuras,
+tabelas, docs de resposta a revisão).
+
+---
+
 ## Estrutura do repositório
 
 ```
