@@ -211,7 +211,16 @@ run_worker() {
 old_ok_entries=""
 if [[ "$RESUME" == "1" ]] && [[ -f "$MANIFEST" ]]; then
     old_ok_entries="$(tail -n +2 "$MANIFEST" | grep ",ok," 2>/dev/null || true)"
-    old_ok_count="$(echo "$old_ok_entries" | grep -c . 2>/dev/null || echo 0)"
+    # Count only when there is something to count. `grep -c .` on an empty
+    # string prints "0" *and* exits 1, so a `|| echo 0` fallback appends a
+    # second "0" and the variable becomes the two-line string "0\n0", which
+    # blows up the arithmetic below. That aborted every resume whose manifest
+    # held no ",ok," rows -- silently skipping jobs the resume was meant to run.
+    if [[ -n "$old_ok_entries" ]]; then
+        old_ok_count="$(printf '%s\n' "$old_ok_entries" | wc -l)"
+    else
+        old_ok_count=0
+    fi
     echo "Resume: found ${old_ok_count} already-completed job(s) in existing manifest."
 else
     old_ok_count=0

@@ -18,6 +18,7 @@ import os
 import random
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -51,6 +52,12 @@ class Evaluation:
     score: float
     result_dir: Path
     log_file: Path
+    # Camera-ready search-cost instrumentation (WPMC 2026): wall-clock of the
+    # ns-3 execution (0.0 when served from cache) and whether the result was
+    # recovered from the checkpoint cache. Cost analyses must only sum
+    # elapsed_s over evaluations with cached=False.
+    elapsed_s: float = 0.0
+    cached: bool = False
 
 
 @dataclass
@@ -195,6 +202,8 @@ def load_cached_evaluation(
         score=float(payload["score"]),
         result_dir=Path(payload["result_dir"]),
         log_file=Path(payload["log_file"]),
+        elapsed_s=float(payload.get("elapsed_s", 0.0)),
+        cached=True,
     )
 
 
@@ -239,6 +248,7 @@ def run_candidate(
     )
 
     with log_file.open("w") as log:
+        t_start = time.perf_counter()
         completed = subprocess.run(
             ["./ns3", "run", command],
             cwd=ns3_dir,
@@ -247,6 +257,7 @@ def run_candidate(
             text=True,
             check=False,
         )
+        elapsed_s = time.perf_counter() - t_start
     if completed.returncode != 0:
         # The ns-3 simulator occasionally hits an internal NS_ASSERT bug in the
         # RLC UM reassembly path (SIGABRT). Rather than aborting the whole
@@ -267,6 +278,7 @@ def run_candidate(
             weights=weights,
             reason=f"ns-3 exit code {completed.returncode}",
             score_version=score_version,
+            elapsed_s=elapsed_s,
         )
 
     out_summary = summary_path(candidate_root, scenario, seed, run)
@@ -283,6 +295,7 @@ def run_candidate(
             weights=weights,
             reason="summary.csv missing after ns-3 run",
             score_version=score_version,
+            elapsed_s=elapsed_s,
         )
 
     rows = read_summary(out_summary)
@@ -296,6 +309,8 @@ def run_candidate(
         score=score_fn(rows),
         result_dir=result_dir(candidate_root, scenario, seed, run),
         log_file=log_file,
+        elapsed_s=elapsed_s,
+        cached=False,
     )
 
     _write_sidecar(candidate_root, evaluation, score_version=score_version)
@@ -325,6 +340,8 @@ def _write_sidecar(candidate_root: Path, evaluation: Evaluation, *,
         "result_dir": str(evaluation.result_dir),
         "log_file": str(evaluation.log_file),
         "failed": failed,
+        "elapsed_s": evaluation.elapsed_s,
+        "cached": evaluation.cached,
     }), encoding="utf-8")
 
 
@@ -346,6 +363,7 @@ def _failed_evaluation(
     weights: Sequence[float],
     reason: str,
     score_version: str = "v1",
+    elapsed_s: float = 0.0,
 ) -> Evaluation:
     """Build and checkpoint a penalized Evaluation for a crashed ns-3 run.
 
@@ -370,6 +388,8 @@ def _failed_evaluation(
         score=FAILED_SCORE,
         result_dir=result_dir(candidate_root, scenario, seed, run),
         log_file=log_file,
+        elapsed_s=elapsed_s,
+        cached=False,
     )
     _write_sidecar(candidate_root, evaluation, failed=True)
 
@@ -486,6 +506,33 @@ def optimize_sa(
             current = list(candidate_result.weights)
             current_result = candidate_result
 
+    return evaluations
+
+
+def optimize_grid(
+    evaluate: Callable[[str, int, Sequence[float]], Evaluation],
+    grid_step: float,
+) -> list[Evaluation]:
+    """Uniform grid search over the weight simplex (camera-ready reference).
+
+    Deterministically enumerates every combination (i, j, k) of non-negative
+    multiples of ``grid_step`` with i+j+k = 1/grid_step, in ascending (i, j)
+    order. Consumes NO randomness, so running it alongside (or before/after)
+    the metaheuristics does not perturb their seeded RNG trajectories. With
+    step 0.05 this yields 231 combinations. Uses the exact same evaluate()
+    pipeline (run_candidate -> ns-3 -> summary.csv -> score) as the other
+    methods — no separate objective.
+    """
+    n = int(round(1.0 / grid_step))
+    combinations: list[list[float]] = []
+    for i in range(n + 1):
+        for j in range(n + 1 - i):
+            k = n - i - j
+            combinations.append([i * grid_step, j * grid_step, k * grid_step])
+
+    evaluations: list[Evaluation] = []
+    for eval_id, weights in enumerate(combinations, start=1):
+        evaluations.append(evaluate("grid", eval_id, weights))
     return evaluations
 
 
@@ -625,6 +672,11 @@ def write_results(path: Path, evaluations: Sequence[Evaluation]) -> None:
                 "weight_mtc",
                 "result_dir",
                 "log_file",
+                # Camera-ready search-cost instrumentation (appended; parsers
+                # reading by column name keep working). Cost analyses sum
+                # elapsed_s only over rows with cached=False.
+                "elapsed_s",
+                "cached",
             ],
         )
         writer.writeheader()
@@ -642,6 +694,8 @@ def write_results(path: Path, evaluations: Sequence[Evaluation]) -> None:
                     "weight_mtc": f"{item.weights[2]:.6f}",
                     "result_dir": str(item.result_dir),
                     "log_file": str(item.log_file),
+                    "elapsed_s": f"{item.elapsed_s:.3f}",
+                    "cached": item.cached,
                 }
             )
 
@@ -679,7 +733,9 @@ def best_candidate_filename(scenario: str, seed: int) -> str:
 def parse_args() -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description="Run metaheuristic optimization over RSLAQ slice_custom weights")
-    parser.add_argument("--method", choices=["ga", "pso", "sa", "hybrid", "all"], default="ga")
+    parser.add_argument("--method", choices=["ga", "pso", "sa", "hybrid", "grid", "all"], default="ga")
+    parser.add_argument("--grid_step", type=float, default=0.05,
+                        help="Uniform grid step for --method grid (0.05 -> 231 simplex points)")
     parser.add_argument("--scenario", default="normal", help="Single scenario (backward compatible)")
     parser.add_argument("--scenarios", default=None, help="Space-separated list of scenarios (overrides --scenario)")
     parser.add_argument("--seed", type=int, default=1, help="Single seed (backward compatible)")
@@ -727,6 +783,9 @@ def main() -> None:
         subprocess.run(["./ns3", "build", "rslaq-sim"], cwd=args.ns3_dir, check=True)
 
     methods = ["ga", "pso", "sa", "hybrid"] if args.method == "all" else [args.method]
+    # Grid search shares the pair loop and evaluate() but is invoked as its own
+    # --method grid run (kept out of "all" so it never interleaves with the
+    # metaheuristics' seeded search in one process).
 
     score_fn = SCORE_FUNCTIONS[args.score_version]
     print(f"[META] score_version={args.score_version} ({score_fn.__name__})")
@@ -794,6 +853,11 @@ def main() -> None:
                     all_evaluations.extend(optimize_pso(rng, evaluate, args.iterations, args.population))
                 elif method == "sa":
                     all_evaluations.extend(optimize_sa(rng, evaluate, sa_steps, args.mutation_strength))
+                elif method == "grid":
+                    # Deterministic sweep; does not consume rng, so the seeded
+                    # trajectories of ga/pso/sa/hybrid are unaffected whether
+                    # grid runs alone or in the same invocation.
+                    all_evaluations.extend(optimize_grid(evaluate, args.grid_step))
                 elif method == "hybrid":
                     all_evaluations.extend(
                         optimize_hybrid(rng, evaluate, args.iterations, args.population, args.mutation_strength)

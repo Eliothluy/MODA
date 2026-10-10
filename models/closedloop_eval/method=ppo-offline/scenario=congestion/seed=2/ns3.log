@@ -151,24 +151,30 @@ UE 60 [ MTC] port=12060 rate=      1.71 Mbps pkt=500 B
 ==========================================
 UE/RNTI mapping written to: /home/eliothluy/Documentos/artigo_jussi/models/closedloop_eval/method=ppo-offline/scenario=congestion/seed=2/results_rslaq_network_only/scenario=congestion/mode=slice_custom/seed=2_run=1/congestion_ue_rnti_mapping.csv
 
-NS_ASSERT failed, cond="false", msg="INTERNAL ERROR: We are in the WAITING_SI_SF state and no packet loss has occurred, so the received RLC PDU is expected to have FI = 10 (2) or FI = 11 (3), not FI = 0", +2.406564281s 20 file=/home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc-um.cc, line=910
-NS_FATAL, terminating
-   0# ns3::NrRlcUm::ReassembleAndDeliver(ns3::Ptr<ns3::Packet>) at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc-um.cc:910
-   1# ns3::NrRlcUm::ReassembleSnInterval(ns3::nr::SequenceNumber10, ns3::nr::SequenceNumber10) at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc-um.cc:1209
-   2# ns3::NrRlcUm::DoReceivePdu(ns3::NrMacSapUser::ReceivePduParameters) at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc-um.cc:587
-   3# ns3::NrRlcSpecificNrMacSapUser::ReceivePdu(ns3::NrMacSapUser::ReceivePduParameters) at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-rlc.cc:67
-   4# ns3::NrSimpleUeComponentCarrierManager::DoReceivePdu(ns3::NrMacSapUser::ReceivePduParameters) at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-simple-ue-component-carrier-manager.cc:239
-   5# ns3::NrSimpleUeCcmMacSapUser::ReceivePdu(ns3::NrMacSapUser::ReceivePduParameters) at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-simple-ue-component-carrier-manager.cc:104
-   6# ns3::NrUeMac::DoReceivePhyPdu(ns3::Ptr<ns3::Packet>) at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-ue-mac.cc:699
-   7# ns3::MacUeMemberPhySapUser::ReceivePhyPdu(ns3::Ptr<ns3::Packet>) at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/contrib/nr/model/nr-ue-mac.cc:188
-   8# void std::__invoke_impl<void, void (ns3::NrUePhySapUser::*&)(ns3::Ptr<ns3::Packet>), ns3::NrUePhySapUser*&, ns3::Ptr<ns3::Packet>&>(std::__invoke_memfun_deref, void (ns3::NrUePhySapUser::*&)(ns3::Ptr<ns3::Packet>), ns3::NrUePhySapUser*&, ns3::Ptr<ns3::Packet>&) at /usr/include/c++/13/bits/invoke.h:74
-   9# ns3::DefaultSimulatorImpl::ProcessOneEvent() at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/src/core/model/default-simulator-impl.cc:133
-  10# ns3::DefaultSimulatorImpl::Run() at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/src/core/model/default-simulator-impl.cc:186
-  11# main at /home/eliothluy/Documentos/artigo_jussi/ns-3-dev/scratch/rslaq/rslaq-sim.cc:1871
-  12# __libc_start_call_main at ../sysdeps/nptl/libc_start_call_main.h:58
-  13# __libc_start_main_impl at ../csu/libc-start.c:360
-  14# _start at :0
-  15# 
 
-terminate called without an active exception
-Command 'build/scratch/rslaq/ns3.46-rslaq-sim-default --scenario=congestion --baselineMode=slice_custom --weights=0.481314,0.237763,0.280923 --intraAlgo=PF --simTime=5 --appStart=0.4 --drainTimeSec=0.2 --periodMs=10 --seed=2 --run=1 --txPower=43 --tddPattern=D|D|8D|4GB|4U|U|U --rlcMode=um --outputDir=/home/eliothluy/Documentos/artigo_jussi/models/closedloop_eval/method=ppo-offline/scenario=congestion/seed=2' died with <Signals.SIGABRT: 6>.
+========================================
+  RESULTS (congestion)
+========================================
+eMBB:
+  Throughput : 52.5549 Mbps
+  Avg delay  : 453.330 ms
+  PDR        : 0.2867
+  TX/RX pkts : 65985 / 18917
+
+URLLC:
+  Throughput : 5.1167 Mbps
+  Avg delay  : 6.119 ms
+  PDR        : 0.7998
+  TX/RX pkts : 27490 / 21986
+
+MTC:
+  Throughput : 29.1610 Mbps
+  Avg delay  : 242.245 ms
+  PDR        : 0.4604
+  TX/RX pkts : 65975 / 30376
+
+CSV outputs:
+  /home/eliothluy/Documentos/artigo_jussi/models/closedloop_eval/method=ppo-offline/scenario=congestion/seed=2/results_rslaq_network_only/scenario=congestion/mode=slice_custom/seed=2_run=1/timeseries.csv
+  /home/eliothluy/Documentos/artigo_jussi/models/closedloop_eval/method=ppo-offline/scenario=congestion/seed=2/results_rslaq_network_only/scenario=congestion/mode=slice_custom/seed=2_run=1/slice_alloc.csv
+  /home/eliothluy/Documentos/artigo_jussi/models/closedloop_eval/method=ppo-offline/scenario=congestion/seed=2/results_rslaq_network_only/scenario=congestion/mode=slice_custom/seed=2_run=1/summary.csv
+  /home/eliothluy/Documentos/artigo_jussi/models/closedloop_eval/method=ppo-offline/scenario=congestion/seed=2/results_rslaq_network_only/scenario=congestion/mode=slice_custom/seed=2_run=1/metadata.json

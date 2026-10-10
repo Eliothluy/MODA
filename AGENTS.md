@@ -454,3 +454,35 @@ Baseline DRL do paper. Treina o agente DDQN paper-faithful (Yungaicela-Naula et 
 - Treino online via IPC (semáforo POSIX + CSV) é ~15× mais caro que a máquina original do paper; low_traffic ~50 min/seed, normal ~2.5 h/seed, stressed ~8-12 h/seed.
 - `btsz=350` com `L=500` é apertado (batch quase do tamanho do buffer) — fiel ao paper Table VI, mas pode degradar estabilidade do gradiente; documentar.
 - Não há modelo pré-treinado paper-faithful no disco (os `.pt` em `models/` são offline-RL, linha MODA, não RSLAQ).
+
+### 14.9 xApp DRL offline a partir das meta-heurísticas — método Bordin et al. (2026-08-18, sancionada pelo autor)
+
+**Nova linha sancionada explicitamente pelo autor** (exceção ao §13, que proíbe deslocar o foco para DRL por iniciativa de agente): uma **xApp própria** com agente DRL **treinado offline a partir dos resultados das meta-heurísticas e heurísticas**, seguindo o método de *Bordin, Lacava, Polese, Cuomo, Melodia — "Design and Evaluation of Deep Reinforcement Learning for Energy Saving in Open RAN" (IEEE CCNC 2025, arXiv:2410.14021)* e do follow-up *"Enabling DRL Research for Energy Saving in Open RAN" (CCNC 2025 demo, arXiv:2601.02240; PDF local: `~/Documentos/openRAn/2601.02240v2.pdf` e `~/Documentos/openRAn/artigosBase/Design_and_Evaluation...pdf`)* — mas aplicado a **pesos de slice** em vez de energy saving. Esta linha absorve e evolui a linha MODA existente (§ CLAUDE.md "Offline DRL xApp"); o firewall de escopo permanece: o PRIMEIRO paper continua sendo o das meta-heurísticas.
+
+**Princípio do método Bordin (o que copiamos):**
+1. **Treinar offline, inferir online** — aderente à recomendação O-RAN WG2 AI/ML (não treinar online em rede viva); a exploração acontece no simulador, não na rede.
+2. **Dataset de exploração gerado por HEURÍSTICAS seguras** — no paper, 4 políticas de sleep (Random, Static, Dynamic, Always On) × 3 configurações × 2 posicionamentos de UEs ≈ 3.000 simulações de 10 s → >300k data points. No nosso caso, as heurísticas de exploração são: as heurísticas adaptativas já implementadas (`slice_aqps`, `slice_demand_greedy`, `slice_sla_greedy`, `slice_least_waste`, `slice_qos_mixed`, `slice_random_vine`, `slice_meta_risk_elastic`) + **as trajetórias de busca das próprias meta-heurísticas** (todas as avaliações GA/PSO/SA/híbrida já logadas com pesos+KPIs).
+3. **Offline RL conservativo** — o DQN do paper usa **REM-DQN + CQL** (Random Ensemble Mixture + Conservative Q-Learning) para não extrapolar o suporte do dataset; alternativa PPO offline (Stable-Baselines3, batch 256, entropy 0.001-0.003).
+4. **Normalização cuidadosa** — quantile transformer (Normal/Uniform) nos componentes do reward; KPMs do estado em [0,1]. Destacado pelos autores como essencial (dados power-law).
+5. **Seleção de features por correlação com o reward** (12 KPMs/célula + 1 global no paper).
+6. **Avaliação em malha fechada** no simulador, seeds estatisticamente independentes do treino, CDFs por KPM + fronteira de trade-off; baselines = as próprias heurísticas que geraram o dataset.
+7. **xApp no Near-RT RIC**, decisão na periodicidade de indicação (100 ms lá; nossa periodicidade natural = 10 ms de frame, mas o `slice_custom` offline é estático — ver adaptações abaixo).
+
+**Adaptações necessárias ao nosso problema (diferenças declaradas):**
+- **Ação**: pesos de slice contínuos no simplexo (3-D) ou discretizados (66 ações step 0.1, como RSLAQ) — não bits on/off. AActionController existente (`nsoran/action_controller.py`) já converte pesos em `dedicatedPRB` por slice.
+- **Reward**: usar o **score Path C** como recompensa (mesma escala das meta-heurísticas) — ou versão contínua dele (termo de viabilidade + fairness), jamais o reward paper RSLAQ (escalas não comparáveis; §14.8). Peso de trade-off estilo Tabela I do Bordin: w·SLA vs w·eficiência.
+- **Estado**: KPMs por slice (throughput, delay p99, PDR, buffers, satisfação composta) + carga/cenário; normalizar [0,1].
+
+**Gap crítico da linha atual (MODA) → o que evoluir:** o dataset atual (`offline_dataset_v2.parquet`, 3.722 rows) **não tem next-state** (avaliações standalone independentes) — por isso os modelos ddqn/sac/ppo atuais são honestamente rotulados de **contextual-bandit/supervised** (Q-regression/BC/RWR), NÃO offline RL com TD. Para implementar o método Bordin de fato:
+1. **Construir transições (s, a, r, s')**: as fontes viáveis são (a) os `timeseries.csv`/`slice_alloc.csv` das runs existentes (KPIs por período de 10 ms dentro de cada simulação — janelas consecutivas formam transições), e/ou (b) novas coletas com heurísticas dinâmicas rodando via IPC (como o treino RSLAQ, ~3500 steps/run), logando a sequência de decisões.
+2. **Treinar offline RL pleno**: REM-DQN+CQL e/ou PPO offline sobre as transições; manter os bandits atuais como baselines internos da linha.
+3. **Avaliação closed-loop**: re-executar a política inferida via `eval_offline_rl_closedloop.py` (protocolo já validado, Path C) contra {meta-heurísticas best, RSLAQ DDQN, heurísticas}, seeds disjuntas do treino.
+
+**Regras de honestidade (herdadas e reforçadas):**
+- Nomear os modelos pelo que são: `rem_cql_dqn`, `ppo_offline`, e os bandits legados `q_regression`/`bc_top20`/`rwr` — nunca chamar bandit de "DRL".
+- Nunca misturar escalas de reward sem rótulo; a métrica de comparação primária é Path C.
+- Runs `pure_rr/pf/bcqi` continuam EXCLUÍDAS do dataset (sem semântica de pesos; envenenaria a regressão).
+- Baselines fechados: as heurísticas que geram o dataset DEVEM também aparecer na avaliação closed-loop (auto-consistência do método Bordin).
+- Diversidade do dataset é requisito (>= 3 políticas de exploração × múltiplos cenários/seeds) antes de qualquer claim de generalização.
+
+**Artefatos existentes reaproveitáveis:** `build_offline_dataset.py`/`offline_dataset.py`, `train_offline_rl.py`/`offline_models.py`, `eval_offline_rl_closedloop.py`, `xapp_slice_optimizer.py`, `models/closedloop_eval/` (protocolo de avaliação com 72/72 células n=3), teste `test_scoring_v2.py`. O `es_env.py`/`datalake.py` do ns-o-ran-gym carregam o esqueleto Bordin original (KPMs cell-centric fora do Datalake UE-cêntrico — mesma limitação que teremos com KPMs slice-cêntricos).
